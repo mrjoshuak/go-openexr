@@ -76,6 +76,20 @@ LOW_PRIORITY=(
 
 FAILED_TESTS=()
 
+# Convert duration string (e.g., "1h", "30m", "10s") to seconds
+duration_to_seconds() {
+    local dur=$1
+    if [[ $dur =~ ^([0-9]+)h$ ]]; then
+        echo $((${BASH_REMATCH[1]} * 3600))
+    elif [[ $dur =~ ^([0-9]+)m$ ]]; then
+        echo $((${BASH_REMATCH[1]} * 60))
+    elif [[ $dur =~ ^([0-9]+)s$ ]]; then
+        echo ${BASH_REMATCH[1]}
+    else
+        echo 60  # default 1 minute
+    fi
+}
+
 run_fuzz() {
     local pkg=$1
     local test=$2
@@ -83,7 +97,11 @@ run_fuzz() {
     echo "----------------------------------------" | tee -a "$LOG_FILE"
     echo "[$test] Starting at $(date) (duration: $duration)" | tee -a "$LOG_FILE"
 
-    if timeout --signal=KILL $((${duration%m}*60 + ${duration%h}*3600 + 60))s \
+    # Calculate timeout (duration + 60s buffer)
+    local dur_secs=$(duration_to_seconds "$duration")
+    local timeout_secs=$((dur_secs + 60))
+
+    if timeout --signal=KILL ${timeout_secs}s \
        go test -fuzz="$test" -fuzztime="$duration" "$pkg" >> "$LOG_FILE" 2>&1; then
         echo "[$test] PASSED" | tee -a "$LOG_FILE"
     else
