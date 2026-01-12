@@ -623,7 +623,7 @@ func (h *Header) LevelHeight(ly int) int {
 // NumXTiles returns the number of tiles in the X direction at level lx.
 func (h *Header) NumXTiles(lx int) int {
 	td := h.TileDescription()
-	if td == nil {
+	if td == nil || td.XSize == 0 {
 		return 0
 	}
 	w := h.LevelWidth(lx)
@@ -633,7 +633,7 @@ func (h *Header) NumXTiles(lx int) int {
 // NumYTiles returns the number of tiles in the Y direction at level ly.
 func (h *Header) NumYTiles(ly int) int {
 	td := h.TileDescription()
-	if td == nil {
+	if td == nil || td.YSize == 0 {
 		return 0
 	}
 	ht := h.LevelHeight(ly)

@@ -803,7 +803,10 @@ func TestGetFastHufDecoder(t *testing.T) {
 	lengths := encoder.GetLengths()
 
 	// Get decoder from pool
-	decoder := GetFastHufDecoder(lengths)
+	decoder, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	if decoder == nil {
 		t.Fatal("GetFastHufDecoder returned nil")
 	}
@@ -827,7 +830,10 @@ func TestGetFastHufDecoder(t *testing.T) {
 	PutFastHufDecoder(decoder)
 
 	// Get another one (should reuse)
-	decoder2 := GetFastHufDecoder(lengths)
+	decoder2, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed on reuse: %v", err)
+	}
 	if decoder2 == nil {
 		t.Fatal("GetFastHufDecoder returned nil on reuse")
 	}
@@ -865,11 +871,14 @@ func TestFastHufDecoderReset(t *testing.T) {
 	lengths := encoder.GetLengths()
 
 	// Get decoder and use it
-	decoder := GetFastHufDecoder(lengths)
+	decoder, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	values := []uint16{0, 0, 1, 0, 2, 1, 0, 3, 0, 0}
 	encoded := encoder.Encode(values)
 
-	_, err := decoder.Decode(encoded, len(values))
+	_, err = decoder.Decode(encoded, len(values))
 	if err != nil {
 		t.Fatalf("First decode error: %v", err)
 	}
@@ -883,7 +892,9 @@ func TestFastHufDecoderReset(t *testing.T) {
 	encoder2 := NewHuffmanEncoder(freqs2)
 	lengths2 := encoder2.GetLengths()
 
-	decoder.Reset(lengths2)
+	if err := decoder.Reset(lengths2); err != nil {
+		t.Fatalf("Reset failed: %v", err)
+	}
 
 	values2 := []uint16{10, 20, 30, 10, 10, 20}
 	encoded2 := encoder2.Encode(values2)

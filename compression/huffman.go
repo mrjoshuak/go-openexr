@@ -13,8 +13,9 @@ import (
 // OpenEXR uses a custom Huffman encoding for 16-bit values.
 
 var (
-	ErrHuffmanCorrupted = errors.New("compression: corrupted Huffman data")
-	ErrHuffmanOverflow  = errors.New("compression: Huffman decode overflow")
+	ErrHuffmanCorrupted   = errors.New("compression: corrupted Huffman data")
+	ErrHuffmanOverflow    = errors.New("compression: Huffman decode overflow")
+	ErrHuffmanInvalidCode = errors.New("compression: invalid Huffman code (table overflow)")
 )
 
 // huffmanCode represents a Huffman code
@@ -343,18 +344,24 @@ var fastHufDecoderPool = sync.Pool{
 
 // GetFastHufDecoder gets a decoder from the pool and initializes it with the given code lengths.
 // Call PutFastHufDecoder when done to return it to the pool.
-func GetFastHufDecoder(codeLengths []int) *FastHufDecoder {
+func GetFastHufDecoder(codeLengths []int) (*FastHufDecoder, error) {
 	d := fastHufDecoderPool.Get().(*FastHufDecoder)
-	d.Reset(codeLengths)
-	return d
+	if err := d.Reset(codeLengths); err != nil {
+		fastHufDecoderPool.Put(d)
+		return nil, err
+	}
+	return d, nil
 }
 
 // GetFastHufDecoderWithBounds gets a decoder from the pool and initializes it with code lengths,
 // only examining the range [minIdx, maxIdx]. This is much faster when most code lengths are zero.
-func GetFastHufDecoderWithBounds(codeLengths []int, minIdx, maxIdx int) *FastHufDecoder {
+func GetFastHufDecoderWithBounds(codeLengths []int, minIdx, maxIdx int) (*FastHufDecoder, error) {
 	d := fastHufDecoderPool.Get().(*FastHufDecoder)
-	d.ResetWithBounds(codeLengths, minIdx, maxIdx)
-	return d
+	if err := d.ResetWithBounds(codeLengths, minIdx, maxIdx); err != nil {
+		fastHufDecoderPool.Put(d)
+		return nil, err
+	}
+	return d, nil
 }
 
 // PutFastHufDecoder returns a decoder to the pool for reuse.
@@ -366,7 +373,8 @@ func PutFastHufDecoder(d *FastHufDecoder) {
 }
 
 // Reset reinitializes the decoder with new code lengths, reusing allocated memory.
-func (d *FastHufDecoder) Reset(codeLengths []int) {
+// Returns an error if the code lengths would produce invalid table indices.
+func (d *FastHufDecoder) Reset(codeLengths []int) error {
 	// Clear only the used portion of the table (much faster than clearing all 16K entries)
 	if d.maxTableIdx > 0 {
 		for i := 0; i <= d.maxTableIdx; i++ {
@@ -386,7 +394,7 @@ func (d *FastHufDecoder) Reset(codeLengths []int) {
 
 	d.maxLen = maxLen
 	if maxLen == 0 {
-		return
+		return nil
 	}
 
 	// Use pre-allocated buffers for canonical code generation
@@ -420,6 +428,11 @@ func (d *FastHufDecoder) Reset(codeLengths []int) {
 			count := 1 << shift
 			endIdx := base + count - 1
 
+			// Bounds check: ensure we don't write outside the table
+			if endIdx >= fastHufTableSize {
+				return ErrHuffmanInvalidCode
+			}
+
 			for i := 0; i < count; i++ {
 				idx := base + i
 				d.tableSymbol[idx] = uint16(symbol)
@@ -450,11 +463,13 @@ func (d *FastHufDecoder) Reset(codeLengths []int) {
 		})
 	}
 	d.longCodesSorted = true
+	return nil
 }
 
 // ResetWithBounds reinitializes the decoder with new code lengths, only examining [minIdx, maxIdx].
 // This is much faster than Reset when most code lengths are zero (typical for PIZ).
-func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) {
+// Returns an error if the code lengths would produce invalid table indices.
+func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) error {
 	// Clear only the used portion of the table
 	if d.maxTableIdx > 0 {
 		for i := 0; i <= d.maxTableIdx; i++ {
@@ -474,7 +489,7 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 	}
 	if minIdx > maxIdx {
 		d.maxLen = 0
-		return
+		return nil
 	}
 
 	// Find maxLen only in the valid range
@@ -487,7 +502,7 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 
 	d.maxLen = maxLen
 	if maxLen == 0 {
-		return
+		return nil
 	}
 
 	// Use pre-allocated lengthCount buffer
@@ -542,6 +557,11 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 			count := 1 << shift
 			endIdx := base + count - 1
 
+			// Bounds check: ensure we don't write outside the table
+			if endIdx >= fastHufTableSize {
+				return ErrHuffmanInvalidCode
+			}
+
 			for i := 0; i < count; i++ {
 				idx := base + i
 				d.tableSymbol[idx] = uint16(symbol)
@@ -571,6 +591,7 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 		})
 	}
 	d.longCodesSorted = true
+	return nil
 }
 
 // generateCanonicalCodesReuse generates canonical Huffman codes using pre-allocated buffers.

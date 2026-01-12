@@ -187,11 +187,14 @@ func TestFastHufDecoderDecodeInto(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Test with empty data
-	err := d.DecodeInto(nil, []uint16{})
+	err = d.DecodeInto(nil, []uint16{})
 	if err != nil {
 		t.Errorf("DecodeInto with nil data should not error: %v", err)
 	}
@@ -221,11 +224,14 @@ func TestFastHufDecoderDecodeInto(t *testing.T) {
 
 func TestFastHufDecoderDecodeIntoMaxLenZero(t *testing.T) {
 	// Test DecodeInto with maxLen = 0
-	d := GetFastHufDecoder([]int{}) // All zero lengths
+	d, err := GetFastHufDecoder([]int{}) // All zero lengths
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	result := make([]uint16, 10)
-	err := d.DecodeInto([]byte{0xFF}, result)
+	err = d.DecodeInto([]byte{0xFF}, result)
 	if err != ErrHuffmanCorrupted {
 		t.Errorf("Expected ErrHuffmanCorrupted, got %v", err)
 	}
@@ -240,7 +246,10 @@ func TestFastHufDecoderDecodeIntoWithBits(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	values := []uint16{0, 1, 2, 0, 1, 0}
@@ -255,7 +264,7 @@ func TestFastHufDecoderDecodeIntoWithBits(t *testing.T) {
 	}
 
 	result := make([]uint16, len(values))
-	err := d.DecodeIntoWithBits(encoded, result, nBits, 65536)
+	err = d.DecodeIntoWithBits(encoded, result, nBits, 65536)
 	if err != nil {
 		t.Fatalf("DecodeIntoWithBits error: %v", err)
 	}
@@ -273,11 +282,14 @@ func TestFastHufDecoderDecodeIntoWithBitsEmpty(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Empty data
-	err := d.DecodeIntoWithBits(nil, []uint16{}, 0, 65536)
+	err = d.DecodeIntoWithBits(nil, []uint16{}, 0, 65536)
 	if err != nil {
 		t.Errorf("Empty data should not error: %v", err)
 	}
@@ -290,35 +302,47 @@ func TestFastHufDecoderDecodeIntoWithBitsEmpty(t *testing.T) {
 }
 
 func TestFastHufDecoderDecodeIntoWithBitsMaxLenZero(t *testing.T) {
-	d := GetFastHufDecoder([]int{})
+	d, err := GetFastHufDecoder([]int{})
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	result := make([]uint16, 10)
-	err := d.DecodeIntoWithBits([]byte{0xFF}, result, 8, 65536)
+	err = d.DecodeIntoWithBits([]byte{0xFF}, result, 8, 65536)
 	if err != ErrHuffmanCorrupted {
 		t.Errorf("Expected ErrHuffmanCorrupted, got %v", err)
 	}
 }
 
 func TestFastHufDecoderResetWithBoundsEdgeCases(t *testing.T) {
-	d := GetFastHufDecoder(nil)
+	d, err := GetFastHufDecoder(nil)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Test with minIdx > maxIdx
-	d.ResetWithBounds([]int{1, 2, 3}, 5, 2)
+	if err := d.ResetWithBounds([]int{1, 2, 3}, 5, 2); err != nil {
+		t.Errorf("ResetWithBounds failed: %v", err)
+	}
 	if d.maxLen != 0 {
 		t.Errorf("Expected maxLen=0 for invalid bounds, got %d", d.maxLen)
 	}
 
 	// Test with negative minIdx
 	lengths := []int{0, 0, 3, 0, 2}
-	d.ResetWithBounds(lengths, -1, 4)
+	if err := d.ResetWithBounds(lengths, -1, 4); err != nil {
+		t.Errorf("ResetWithBounds failed: %v", err)
+	}
 	if d.maxLen == 0 {
 		t.Error("Expected non-zero maxLen after ResetWithBounds")
 	}
 
 	// Test with maxIdx > len
-	d.ResetWithBounds(lengths, 0, 100)
+	if err := d.ResetWithBounds(lengths, 0, 100); err != nil {
+		t.Errorf("ResetWithBounds failed: %v", err)
+	}
 	if d.maxLen == 0 {
 		t.Error("Expected non-zero maxLen after ResetWithBounds with large maxIdx")
 	}
@@ -333,10 +357,15 @@ func TestFastHufDecoderResetClearsTable(t *testing.T) {
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
 
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 
 	// Reset with empty lengths
-	d.Reset([]int{})
+	if err := d.Reset([]int{}); err != nil {
+		t.Errorf("Reset failed: %v", err)
+	}
 
 	// Verify cleared
 	if d.maxLen != 0 {
@@ -408,7 +437,10 @@ func TestFastHufDecoderTailBytesRead(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Create short data that will have tail bytes
@@ -421,7 +453,7 @@ func TestFastHufDecoderTailBytesRead(t *testing.T) {
 	}
 
 	result := make([]uint16, len(values))
-	err := d.DecodeInto(encoded, result)
+	err = d.DecodeInto(encoded, result)
 	if err != nil {
 		t.Fatalf("DecodeInto error: %v", err)
 	}
@@ -489,7 +521,10 @@ func TestFastHufDecoderBufferRefill(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Create enough values to require multiple buffer refills
@@ -501,7 +536,7 @@ func TestFastHufDecoderBufferRefill(t *testing.T) {
 	encoded := encoder.Encode(values)
 
 	result := make([]uint16, len(values))
-	err := d.DecodeInto(encoded, result)
+	err = d.DecodeInto(encoded, result)
 	if err != nil {
 		t.Fatalf("DecodeInto error: %v", err)
 	}
@@ -528,7 +563,10 @@ func TestFastHufDecoderDecodeIntoNotFound(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Manually create data that won't decode properly
@@ -536,7 +574,7 @@ func TestFastHufDecoderDecodeIntoNotFound(t *testing.T) {
 	badData := []byte{0x00, 0x00, 0x00, 0x00}
 
 	result := make([]uint16, 1000)
-	err := d.DecodeInto(badData, result)
+	err = d.DecodeInto(badData, result)
 	if err == nil {
 		t.Error("Expected error for bad data, got none")
 	}
@@ -583,7 +621,10 @@ func TestFastHufDecoderEndOfStreamLookup(t *testing.T) {
 
 	encoder := NewHuffmanEncoder(freqs)
 	lengths := encoder.GetLengths()
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		t.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	defer PutFastHufDecoder(d)
 
 	// Create very short encoded data
@@ -591,7 +632,7 @@ func TestFastHufDecoderEndOfStreamLookup(t *testing.T) {
 	encoded := encoder.Encode(values)
 
 	result := make([]uint16, len(values))
-	err := d.DecodeInto(encoded, result)
+	err = d.DecodeInto(encoded, result)
 	if err != nil {
 		t.Fatalf("DecodeInto error: %v", err)
 	}
@@ -617,7 +658,10 @@ func BenchmarkFastHufDecoderDecodeInto(b *testing.B) {
 	}
 	encoded := encoder.Encode(values)
 
-	d := GetFastHufDecoder(lengths)
+	d, err := GetFastHufDecoder(lengths)
+	if err != nil {
+		b.Fatalf("GetFastHufDecoder failed: %v", err)
+	}
 	result := make([]uint16, len(values))
 
 	b.ResetTimer()
@@ -649,7 +693,10 @@ func BenchmarkFastHufDecoderPooled(b *testing.B) {
 	b.SetBytes(int64(len(encoded)))
 
 	for i := 0; i < b.N; i++ {
-		d := GetFastHufDecoder(lengths)
+		d, err := GetFastHufDecoder(lengths)
+		if err != nil {
+			b.Fatalf("GetFastHufDecoder failed: %v", err)
+		}
 		result := make([]uint16, len(values))
 		d.DecodeInto(encoded, result)
 		PutFastHufDecoder(d)

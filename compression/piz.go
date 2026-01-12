@@ -548,7 +548,13 @@ func pizDecompressInternal(data []byte, width, height, numChannels int, decBuf *
 	}
 
 	// Build pooled Huffman decoder - use bounded version since we know im/iM range
-	decoder := GetFastHufDecoderWithBounds(codeLengths, int(im), int(iM))
+	decoder, err := GetFastHufDecoderWithBounds(codeLengths, int(im), int(iM))
+	if err != nil {
+		if debugPIZ {
+			println("  ERROR building Huffman decoder:", err.Error())
+		}
+		return nil, err
+	}
 	defer PutFastHufDecoder(decoder)
 
 	// Decode Huffman data - starts after the table
