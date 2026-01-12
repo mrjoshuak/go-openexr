@@ -55,6 +55,15 @@ func NewTiledReaderPart(f *File, part int) (*TiledReader, error) {
 	}
 
 	td := h.TileDescription()
+	if td == nil || td.XSize == 0 || td.YSize == 0 {
+		return nil, errors.New("exr: missing or invalid tile description")
+	}
+
+	cl := h.Channels()
+	if cl == nil || cl.Len() == 0 {
+		return nil, errors.New("exr: missing or empty channels attribute")
+	}
+
 	dw := h.DataWindow()
 
 	return &TiledReader{
@@ -62,7 +71,7 @@ func NewTiledReaderPart(f *File, part int) (*TiledReader, error) {
 		part:        part,
 		header:      h,
 		dataWindow:  dw,
-		channelList: h.Channels(),
+		channelList: cl,
 		tileDesc:    td,
 		tilesX:      (int(dw.Width()) + int(td.XSize) - 1) / int(td.XSize),
 		tilesY:      (int(dw.Height()) + int(td.YSize) - 1) / int(td.YSize),

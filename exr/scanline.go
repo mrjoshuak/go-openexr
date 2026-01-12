@@ -79,6 +79,9 @@ func NewScanlineReaderPart(f *File, part int) (*ScanlineReader, error) {
 	}
 
 	cl := h.Channels()
+	if cl == nil || cl.Len() == 0 {
+		return nil, errors.New("exr: missing or empty channels attribute")
+	}
 	dw := h.DataWindow()
 
 	// Pre-sort channels by name (file order) once
