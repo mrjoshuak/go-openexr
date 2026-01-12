@@ -63,14 +63,30 @@ func NewTiledReaderPart(f *File, part int) (*TiledReader, error) {
 	if cl == nil || cl.Len() == 0 {
 		return nil, errors.New("exr: missing or empty channels attribute")
 	}
-	// Validate all channels have known pixel types
+	// Validate all channels have known pixel types and valid sampling
 	for i := 0; i < cl.Len(); i++ {
-		if cl.At(i).Type.Size() == 0 {
+		ch := cl.At(i)
+		if ch.Type.Size() == 0 {
 			return nil, errors.New("exr: channel has unknown pixel type")
+		}
+		if ch.XSampling == 0 || ch.YSampling == 0 {
+			return nil, errors.New("exr: channel has invalid sampling (zero)")
 		}
 	}
 
 	dw := h.DataWindow()
+
+	// Validate data window dimensions
+	width := int(dw.Width())
+	height := int(dw.Height())
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("exr: invalid data window dimensions")
+	}
+	// Limit to reasonable size to prevent OOM (64K x 64K max)
+	const maxDimension = 65536
+	if width > maxDimension || height > maxDimension {
+		return nil, errors.New("exr: data window dimensions too large")
+	}
 
 	return &TiledReader{
 		file:        f,
@@ -79,8 +95,8 @@ func NewTiledReaderPart(f *File, part int) (*TiledReader, error) {
 		dataWindow:  dw,
 		channelList: cl,
 		tileDesc:    td,
-		tilesX:      (int(dw.Width()) + int(td.XSize) - 1) / int(td.XSize),
-		tilesY:      (int(dw.Height()) + int(td.YSize) - 1) / int(td.YSize),
+		tilesX:      (width + int(td.XSize) - 1) / int(td.XSize),
+		tilesY:      (height + int(td.YSize) - 1) / int(td.YSize),
 	}, nil
 }
 

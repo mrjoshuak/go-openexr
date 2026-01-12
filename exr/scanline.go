@@ -82,19 +82,34 @@ func NewScanlineReaderPart(f *File, part int) (*ScanlineReader, error) {
 	if cl == nil || cl.Len() == 0 {
 		return nil, errors.New("exr: missing or empty channels attribute")
 	}
-	// Validate all channels have known pixel types
+	// Validate all channels have known pixel types and valid sampling
 	for i := 0; i < cl.Len(); i++ {
-		if cl.At(i).Type.Size() == 0 {
+		ch := cl.At(i)
+		if ch.Type.Size() == 0 {
 			return nil, errors.New("exr: channel has unknown pixel type")
+		}
+		if ch.XSampling == 0 || ch.YSampling == 0 {
+			return nil, errors.New("exr: channel has invalid sampling (zero)")
 		}
 	}
 	dw := h.DataWindow()
+
+	// Validate data window dimensions
+	width := int(dw.Width())
+	height := int(dw.Height())
+	if width <= 0 || height <= 0 {
+		return nil, errors.New("exr: invalid data window dimensions")
+	}
+	// Limit to reasonable size to prevent OOM (64K x 64K max)
+	const maxDimension = 65536
+	if width > maxDimension || height > maxDimension {
+		return nil, errors.New("exr: data window dimensions too large")
+	}
 
 	// Pre-sort channels by name (file order) once
 	sortedChannels := cl.SortedByName()
 
 	// Pre-allocate reusable buffers for performance
-	width := int(dw.Width())
 	halfBuf := make([]uint16, width)
 	chunkHeaderBuf := make([]byte, 8)
 
