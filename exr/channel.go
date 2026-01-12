@@ -157,11 +157,7 @@ func (cl *ChannelList) Names() []string {
 
 // SortedByName returns a copy of all channels sorted alphabetically by name.
 // This is the canonical order for OpenEXR compression algorithms.
-// Returns nil if the ChannelList is nil.
 func (cl *ChannelList) SortedByName() []Channel {
-	if cl == nil {
-		return nil
-	}
 	result := make([]Channel, len(cl.channels))
 	copy(result, cl.channels)
 	sort.Slice(result, func(i, j int) bool {
