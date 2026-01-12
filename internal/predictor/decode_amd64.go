@@ -8,8 +8,3 @@ package predictor
 //
 //go:noescape
 func decodeASM(data []byte)
-
-// hasSSE41 returns true if the CPU supports SSE4.1 instructions.
-//
-//go:noescape
-func hasSSE41() bool

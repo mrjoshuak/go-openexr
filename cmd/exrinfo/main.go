@@ -376,7 +376,7 @@ func formatAttributeValue(attr *exr.Attribute, showHex bool) string {
 	case exr.Rational:
 		return fmt.Sprintf("%d/%d (%.6f)", v.Num, v.Denom, v.Float64())
 	case exr.TimeCode:
-		return fmt.Sprintf("%02d:%02d:%02d:%02d", v.Hours(), v.Minutes(), v.Seconds(), v.Frames())
+		return fmt.Sprintf("%02d:%02d:%02d:%02d", v.Hours(), v.Minutes(), v.Seconds(), v.Frame())
 	case exr.KeyCode:
 		return fmt.Sprintf("mfc=%d type=%d prefix=%d count=%d perf_offset=%d perfs_per_frame=%d perfs_per_count=%d",
 			v.FilmMfcCode, v.FilmType, v.Prefix, v.Count, v.PerfOffset, v.PerfsPerFrame, v.PerfsPerCount)

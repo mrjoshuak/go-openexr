@@ -704,7 +704,9 @@ func writeSingleLevel(w *exr.TiledWriter, fb *exr.FrameBuffer, buffers map[strin
 }
 
 func writeSingleLevelMultiPart(mpOut *exr.MultiPartOutputFile, partIndex int, fb *exr.FrameBuffer, header *exr.Header, width, height int, verbose bool) error {
-	mpOut.SetFrameBuffer(partIndex, fb)
+	if err := mpOut.SetFrameBuffer(partIndex, fb); err != nil {
+		return fmt.Errorf("cannot set frame buffer: %w", err)
+	}
 
 	td := header.TileDescription()
 	numXTiles := (width + int(td.XSize) - 1) / int(td.XSize)
@@ -786,7 +788,9 @@ func writeMipmapLevelsMultiPart(mpOut *exr.MultiPartOutputFile, partIndex int, f
 				level, level, levelData.Width, levelData.Height)
 		}
 
-		mpOut.SetFrameBuffer(partIndex, levelData.FrameBuffer)
+		if err := mpOut.SetFrameBuffer(partIndex, levelData.FrameBuffer); err != nil {
+			return fmt.Errorf("cannot set frame buffer at level %d: %w", level, err)
+		}
 
 		numXTiles := (levelData.Width + int(td.XSize) - 1) / int(td.XSize)
 		numYTiles := (levelData.Height + int(td.YSize) - 1) / int(td.YSize)
@@ -876,7 +880,9 @@ func writeRipmapLevelsMultiPart(mpOut *exr.MultiPartOutputFile, partIndex int, f
 					lx, ly, levelData.Width, levelData.Height)
 			}
 
-			mpOut.SetFrameBuffer(partIndex, levelData.FrameBuffer)
+			if err := mpOut.SetFrameBuffer(partIndex, levelData.FrameBuffer); err != nil {
+				return fmt.Errorf("cannot set frame buffer at level (%d, %d): %w", lx, ly, err)
+			}
 
 			numXTiles := (levelData.Width + int(td.XSize) - 1) / int(td.XSize)
 			numYTiles := (levelData.Height + int(td.YSize) - 1) / int(td.YSize)

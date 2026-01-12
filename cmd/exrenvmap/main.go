@@ -718,13 +718,13 @@ func writeTiledEnvMap(f *os.File, img *exr.EnvMapImage, srcHeader *exr.Header, f
 	// Create tiled header
 	h := exr.NewHeader()
 
-	dataWindow := exr.Box2i{Min: exr.V2i{0, 0}, Max: exr.V2i{int32(img.Width - 1), int32(img.Height - 1)}}
+	dataWindow := exr.Box2i{Min: exr.V2i{X: 0, Y: 0}, Max: exr.V2i{X: int32(img.Width - 1), Y: int32(img.Height - 1)}}
 	h.SetDataWindow(dataWindow)
 	h.SetDisplayWindow(dataWindow)
 	h.SetCompression(comp)
 	h.SetLineOrder(exr.LineOrderIncreasing)
 	h.SetPixelAspectRatio(1.0)
-	h.SetScreenWindowCenter(exr.V2f{0, 0})
+	h.SetScreenWindowCenter(exr.V2f{X: 0, Y: 0})
 	h.SetScreenWindowWidth(1.0)
 	h.SetEnvmap(img.Type)
 	h.SetChannels(channels)

@@ -341,7 +341,10 @@ func benchmarkOne(inputFile string, targetComp exr.Compression, mode pixelMode, 
 		ch := srcHeader.Channels().At(j)
 		channelNames = append(channelNames, ch.Name)
 		data := make([]byte, width*height*targetType.Size())
-		srcFb.Insert(ch.Name, exr.NewSlice(targetType, data, width, height))
+		if err := srcFb.Insert(ch.Name, exr.NewSlice(targetType, data, width, height)); err != nil {
+			fmt.Fprintf(os.Stderr, "Error inserting channel %s: %v\n", ch.Name, err)
+			os.Exit(1)
+		}
 	}
 	srcReader.SetFrameBuffer(srcFb)
 	if err := srcReader.ReadPixels(int(dw.Min.Y), int(dw.Max.Y)); err != nil {
@@ -400,7 +403,10 @@ func benchmarkOne(inputFile string, targetComp exr.Compression, mode pixelMode, 
 		}
 		readFb := exr.NewFrameBuffer()
 		for _, name := range channelNames {
-			readFb.Insert(name, exr.NewSlice(targetType, make([]byte, width*height*targetType.Size()), width, height))
+			if err := readFb.Insert(name, exr.NewSlice(targetType, make([]byte, width*height*targetType.Size()), width, height)); err != nil {
+				fmt.Fprintf(os.Stderr, "Error inserting channel %s: %v\n", name, err)
+				os.Exit(1)
+			}
 		}
 		reader.SetFrameBuffer(readFb)
 		if err := reader.ReadPixels(0, height-1); err != nil {

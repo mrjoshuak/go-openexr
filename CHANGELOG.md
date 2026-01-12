@@ -11,7 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - GitHub Actions CI workflow for automated testing
 - CI runs on Go 1.23, 1.24 across Linux, macOS, and Windows
-- Linting with golangci-lint
 - Format checking with gofmt
 
 ### Changed

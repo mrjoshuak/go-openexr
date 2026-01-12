@@ -284,7 +284,7 @@ func printChannelList(cl *exr.ChannelList) {
 
 func printTimeCode(tc exr.TimeCode) {
 	fmt.Printf("    time %02d:%02d:%02d:%02d\n",
-		tc.Hours(), tc.Minutes(), tc.Seconds(), tc.Frames())
+		tc.Hours(), tc.Minutes(), tc.Seconds(), tc.Frame())
 
 	// Print flags using proper accessors
 	fmt.Printf("    drop frame %d, color frame %d, field/phase %d\n",
