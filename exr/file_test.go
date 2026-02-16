@@ -416,6 +416,84 @@ func TestMultiPartWriteChunkPart(t *testing.T) {
 	t.Logf("Multi-part file size: %d bytes", buf.Len())
 }
 
+// TestMultiPartReadChunkRoundtrip verifies that ReadChunk correctly handles
+// the 4-byte part number prefix in multipart EXR chunk headers.
+func TestMultiPartReadChunkRoundtrip(t *testing.T) {
+	h1 := NewScanlineHeader(4, 4)
+	h1.SetCompression(CompressionNone)
+	h1.Set(&Attribute{Name: AttrNameName, Type: AttrTypeString, Value: "part1"})
+
+	h2 := NewScanlineHeader(4, 4)
+	h2.SetCompression(CompressionNone)
+	h2.Set(&Attribute{Name: AttrNameName, Type: AttrTypeString, Value: "part2"})
+
+	var buf bytes.Buffer
+	ws := &seekableWriter{Buffer: &buf}
+
+	w, err := NewMultiPartWriter(ws, []*Header{h1, h2})
+	if err != nil {
+		t.Fatalf("NewMultiPartWriter() error = %v", err)
+	}
+
+	// Write chunks with distinct data per part and scanline
+	// Each scanline: 4 pixels * 3 channels (R,G,B half) * 2 bytes = 24 bytes
+	chunkSize := 24
+	written := make(map[[2]int][]byte) // [part, y] -> data
+	for part := 0; part < 2; part++ {
+		for y := 0; y < 4; y++ {
+			data := make([]byte, chunkSize)
+			// Fill with recognizable pattern: part in first byte, y in second
+			for i := range data {
+				data[i] = byte(part*16 + y + i)
+			}
+			written[[2]int{part, y}] = append([]byte(nil), data...)
+			if err := w.WriteChunkPart(part, int32(y), data); err != nil {
+				t.Fatalf("WriteChunkPart(%d, %d) error = %v", part, y, err)
+			}
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Read back and verify
+	fileData := buf.Bytes()
+	r := &readerAtWrapper{bytes.NewReader(fileData)}
+
+	f, err := OpenReader(r, int64(len(fileData)))
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+
+	if !f.IsMultiPart() {
+		t.Fatal("expected multipart file")
+	}
+	if f.NumParts() != 2 {
+		t.Fatalf("expected 2 parts, got %d", f.NumParts())
+	}
+
+	for part := 0; part < 2; part++ {
+		offsets := f.Offsets(part)
+		if len(offsets) != 4 {
+			t.Fatalf("part %d: expected 4 chunks, got %d", part, len(offsets))
+		}
+		for chunkIdx := 0; chunkIdx < 4; chunkIdx++ {
+			y, data, err := f.ReadChunk(part, chunkIdx)
+			if err != nil {
+				t.Fatalf("ReadChunk(%d, %d) error = %v", part, chunkIdx, err)
+			}
+			if int(y) != chunkIdx {
+				t.Errorf("ReadChunk(%d, %d) y = %d, want %d", part, chunkIdx, y, chunkIdx)
+			}
+			expected := written[[2]int{part, chunkIdx}]
+			if !bytes.Equal(data, expected) {
+				t.Errorf("ReadChunk(%d, %d) data mismatch: got %v, want %v", part, chunkIdx, data[:4], expected[:4])
+			}
+		}
+	}
+}
+
 func TestMultiPartWriteInvalidPart(t *testing.T) {
 	h := NewScanlineHeader(4, 4)
 	h.SetCompression(CompressionNone)
