@@ -294,14 +294,22 @@ func (f *File) ReadChunk(part int, chunkIndex int) (int32, []byte, error) {
 
 	offset := f.offsets[part][chunkIndex]
 
-	// Read chunk header (y coordinate + packed size)
-	chunkHeader := make([]byte, 8)
+	// Multipart chunks have a 4-byte part number prefix before the header
+	headerSize := int64(8)
+	headerStart := int64(0)
+	if f.IsMultiPart() {
+		headerSize = 12
+		headerStart = 4 // skip part number
+	}
+
+	// Read chunk header (optionally: part number +) y coordinate + packed size
+	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return 0, nil, err
 	}
 
-	y := int32(xdr.ByteOrder.Uint32(chunkHeader[0:4]))
-	packedSize := int32(xdr.ByteOrder.Uint32(chunkHeader[4:8]))
+	y := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart : headerStart+4]))
+	packedSize := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+4 : headerStart+8]))
 
 	// Validate packedSize to prevent DoS
 	if packedSize < 0 || packedSize > maxChunkSize {
@@ -310,7 +318,7 @@ func (f *File) ReadChunk(part int, chunkIndex int) (int32, []byte, error) {
 
 	// Read chunk data
 	data := make([]byte, packedSize)
-	if _, err := f.reader.ReadAt(data, offset+8); err != nil {
+	if _, err := f.reader.ReadAt(data, offset+headerSize); err != nil {
 		return 0, nil, err
 	}
 
@@ -329,17 +337,25 @@ func (f *File) ReadTileChunk(part int, chunkIndex int) ([4]int32, []byte, error)
 
 	offset := f.offsets[part][chunkIndex]
 
-	// Read tile chunk header (tileX, tileY, levelX, levelY, packedSize)
-	chunkHeader := make([]byte, 20)
+	// Multipart chunks have a 4-byte part number prefix before the header
+	headerSize := int64(20)
+	headerStart := int64(0)
+	if f.IsMultiPart() {
+		headerSize = 24
+		headerStart = 4 // skip part number
+	}
+
+	// Read tile chunk header (optionally: part number +) tileX, tileY, levelX, levelY, packedSize
+	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return [4]int32{}, nil, err
 	}
 
-	tileX := int32(xdr.ByteOrder.Uint32(chunkHeader[0:4]))
-	tileY := int32(xdr.ByteOrder.Uint32(chunkHeader[4:8]))
-	levelX := int32(xdr.ByteOrder.Uint32(chunkHeader[8:12]))
-	levelY := int32(xdr.ByteOrder.Uint32(chunkHeader[12:16]))
-	packedSize := int32(xdr.ByteOrder.Uint32(chunkHeader[16:20]))
+	tileX := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart : headerStart+4]))
+	tileY := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+4 : headerStart+8]))
+	levelX := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+8 : headerStart+12]))
+	levelY := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+12 : headerStart+16]))
+	packedSize := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+16 : headerStart+20]))
 
 	// Validate packedSize to prevent DoS
 	if packedSize < 0 || packedSize > maxChunkSize {
@@ -348,7 +364,7 @@ func (f *File) ReadTileChunk(part int, chunkIndex int) ([4]int32, []byte, error)
 
 	// Read chunk data
 	data := make([]byte, packedSize)
-	if _, err := f.reader.ReadAt(data, offset+20); err != nil {
+	if _, err := f.reader.ReadAt(data, offset+headerSize); err != nil {
 		return [4]int32{}, nil, err
 	}
 
@@ -373,25 +389,33 @@ func (f *File) ReadDeepChunk(part int, chunkIndex int) (int32, []byte, []byte, e
 
 	offset := f.offsets[part][chunkIndex]
 
-	// Read deep chunk header (y + packedSize + unpackedSize = 20 bytes)
-	chunkHeader := make([]byte, 20)
+	// Multipart chunks have a 4-byte part number prefix before the header
+	headerSize := int64(20)
+	headerStart := int64(0)
+	if f.IsMultiPart() {
+		headerSize = 24
+		headerStart = 4 // skip part number
+	}
+
+	// Read deep chunk header (optionally: part number +) y + packedSize + unpackedSize
+	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return 0, nil, nil, err
 	}
 
-	y := int32(xdr.ByteOrder.Uint32(chunkHeader[0:4]))
-	packedSampleCountSize := int64(xdr.ByteOrder.Uint64(chunkHeader[4:12]))
-	packedPixelDataSize := int64(xdr.ByteOrder.Uint64(chunkHeader[12:20]))
+	y := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart : headerStart+4]))
+	packedSampleCountSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+4 : headerStart+12]))
+	packedPixelDataSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+12 : headerStart+20]))
 
 	// Read sample count table
 	sampleCountTable := make([]byte, packedSampleCountSize)
-	if _, err := f.reader.ReadAt(sampleCountTable, offset+20); err != nil {
+	if _, err := f.reader.ReadAt(sampleCountTable, offset+headerSize); err != nil {
 		return 0, nil, nil, err
 	}
 
 	// Read pixel data
 	pixelData := make([]byte, packedPixelDataSize)
-	if _, err := f.reader.ReadAt(pixelData, offset+20+packedSampleCountSize); err != nil {
+	if _, err := f.reader.ReadAt(pixelData, offset+headerSize+packedSampleCountSize); err != nil {
 		return 0, nil, nil, err
 	}
 
@@ -419,30 +443,38 @@ func (f *File) ReadDeepTileChunk(part int, chunkIndex int) ([4]int32, []byte, []
 
 	offset := f.offsets[part][chunkIndex]
 
-	// Read deep tile chunk header (tileX + tileY + levelX + levelY + packedSampleCountSize + packedPixelDataSize = 32 bytes)
-	chunkHeader := make([]byte, 32)
+	// Multipart chunks have a 4-byte part number prefix before the header
+	headerSize := int64(32)
+	headerStart := int64(0)
+	if f.IsMultiPart() {
+		headerSize = 36
+		headerStart = 4 // skip part number
+	}
+
+	// Read deep tile chunk header (optionally: part number +) tileX + tileY + levelX + levelY + packedSampleCountSize + packedPixelDataSize
+	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return [4]int32{}, nil, nil, err
 	}
 
-	tileX := int32(xdr.ByteOrder.Uint32(chunkHeader[0:4]))
-	tileY := int32(xdr.ByteOrder.Uint32(chunkHeader[4:8]))
-	levelX := int32(xdr.ByteOrder.Uint32(chunkHeader[8:12]))
-	levelY := int32(xdr.ByteOrder.Uint32(chunkHeader[12:16]))
-	packedSampleCountSize := int64(xdr.ByteOrder.Uint64(chunkHeader[16:24]))
-	packedPixelDataSize := int64(xdr.ByteOrder.Uint64(chunkHeader[24:32]))
+	tileX := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart : headerStart+4]))
+	tileY := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+4 : headerStart+8]))
+	levelX := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+8 : headerStart+12]))
+	levelY := int32(xdr.ByteOrder.Uint32(chunkHeader[headerStart+12 : headerStart+16]))
+	packedSampleCountSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+16 : headerStart+24]))
+	packedPixelDataSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+24 : headerStart+32]))
 
 	coords := [4]int32{tileX, tileY, levelX, levelY}
 
 	// Read sample count table
 	sampleCountTable := make([]byte, packedSampleCountSize)
-	if _, err := f.reader.ReadAt(sampleCountTable, offset+32); err != nil {
+	if _, err := f.reader.ReadAt(sampleCountTable, offset+headerSize); err != nil {
 		return coords, nil, nil, err
 	}
 
 	// Read pixel data
 	pixelData := make([]byte, packedPixelDataSize)
-	if _, err := f.reader.ReadAt(pixelData, offset+32+packedSampleCountSize); err != nil {
+	if _, err := f.reader.ReadAt(pixelData, offset+headerSize+packedSampleCountSize); err != nil {
 		return coords, nil, nil, err
 	}
 

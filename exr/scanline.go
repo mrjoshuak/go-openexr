@@ -50,7 +50,7 @@ type ScanlineReader struct {
 	sortedChannels []Channel
 	cachedChannels []channelInfo // Cached channel info with slice pointers
 	halfBuf        []uint16      // Reusable buffer for half conversion
-	chunkHeaderBuf []byte        // Reusable 8-byte buffer for chunk headers
+	chunkHeaderBuf []byte        // Reusable buffer for chunk headers (8 or 12 bytes)
 	chunkDataBuf   []byte        // Reusable buffer for chunk data
 	// Note: ZIP decompression uses zipDecompressBufPool instead of a shared buffer
 	// because decompressZIP is called from multiple goroutines in parallel mode
@@ -111,7 +111,11 @@ func NewScanlineReaderPart(f *File, part int) (*ScanlineReader, error) {
 
 	// Pre-allocate reusable buffers for performance
 	halfBuf := make([]uint16, width)
-	chunkHeaderBuf := make([]byte, 8)
+	chunkHeaderSize := 8
+	if f.IsMultiPart() {
+		chunkHeaderSize = 12
+	}
+	chunkHeaderBuf := make([]byte, chunkHeaderSize)
 
 	// Calculate max chunk size for buffer pre-allocation
 	compression := h.Compression()
@@ -176,21 +180,29 @@ func (r *ScanlineReader) readChunkReuse(chunkIndex int) (int32, []byte, error) {
 
 	offset := offsets[chunkIndex]
 
+	// Multipart chunks have a 4-byte part number prefix before the header
+	headerSize := int64(8)
+	headerStart := 0
+	if r.file.IsMultiPart() {
+		headerSize = 12
+		headerStart = 4 // skip part number
+	}
+
 	// Fast path: zero-copy with mmap
 	if r.file.sliceReader != nil {
 		// Get chunk header directly from mmap
-		header := r.file.sliceReader.Slice(offset, 8)
+		header := r.file.sliceReader.Slice(offset, headerSize)
 		if header == nil {
 			return 0, nil, errors.New("exr: failed to read chunk header")
 		}
 
-		y := int32(header[0]) | int32(header[1])<<8 |
-			int32(header[2])<<16 | int32(header[3])<<24
-		packedSize := int64(header[4]) | int64(header[5])<<8 |
-			int64(header[6])<<16 | int64(header[7])<<24
+		y := int32(header[headerStart]) | int32(header[headerStart+1])<<8 |
+			int32(header[headerStart+2])<<16 | int32(header[headerStart+3])<<24
+		packedSize := int64(header[headerStart+4]) | int64(header[headerStart+5])<<8 |
+			int64(header[headerStart+6])<<16 | int64(header[headerStart+7])<<24
 
 		// Get chunk data directly from mmap (zero-copy!)
-		data := r.file.sliceReader.Slice(offset+8, packedSize)
+		data := r.file.sliceReader.Slice(offset+headerSize, packedSize)
 		if data == nil {
 			return 0, nil, errors.New("exr: failed to read chunk data")
 		}
@@ -203,10 +215,10 @@ func (r *ScanlineReader) readChunkReuse(chunkIndex int) (int32, []byte, error) {
 		return 0, nil, err
 	}
 
-	y := int32(r.chunkHeaderBuf[0]) | int32(r.chunkHeaderBuf[1])<<8 |
-		int32(r.chunkHeaderBuf[2])<<16 | int32(r.chunkHeaderBuf[3])<<24
-	packedSize := int(r.chunkHeaderBuf[4]) | int(r.chunkHeaderBuf[5])<<8 |
-		int(r.chunkHeaderBuf[6])<<16 | int(r.chunkHeaderBuf[7])<<24
+	y := int32(r.chunkHeaderBuf[headerStart]) | int32(r.chunkHeaderBuf[headerStart+1])<<8 |
+		int32(r.chunkHeaderBuf[headerStart+2])<<16 | int32(r.chunkHeaderBuf[headerStart+3])<<24
+	packedSize := int(r.chunkHeaderBuf[headerStart+4]) | int(r.chunkHeaderBuf[headerStart+5])<<8 |
+		int(r.chunkHeaderBuf[headerStart+6])<<16 | int(r.chunkHeaderBuf[headerStart+7])<<24
 
 	// Ensure chunkDataBuf has enough capacity
 	if cap(r.chunkDataBuf) < packedSize {
@@ -216,7 +228,7 @@ func (r *ScanlineReader) readChunkReuse(chunkIndex int) (int32, []byte, error) {
 	}
 
 	// Read chunk data into cached buffer
-	if _, err := r.file.reader.ReadAt(r.chunkDataBuf, offset+8); err != nil {
+	if _, err := r.file.reader.ReadAt(r.chunkDataBuf, offset+headerSize); err != nil {
 		return 0, nil, err
 	}
 
