@@ -464,7 +464,6 @@ func (r *ScanlineReader) decodeUncompressedChunkParallel(chunkY int, data []byte
 
 	minY := int(r.dataWindow.Min.Y)
 	maxY := int(r.dataWindow.Max.Y)
-	minX := int(r.dataWindow.Min.X)
 
 	comp := r.header.Compression()
 	linesPerChunk := comp.ScanlinesPerChunk()
@@ -483,6 +482,11 @@ func (r *ScanlineReader) decodeUncompressedChunkParallel(chunkY int, data []byte
 			continue
 		}
 
+		// Map from absolute data window coordinates to buffer-relative coordinates.
+		// The framebuffer is allocated for the data window dimensions, so pixel
+		// (minX, minY) maps to buffer position (0, 0).
+		bufY := y - minY
+
 		for i := range channelInfos {
 			ci := &channelInfos[i]
 			if ci.slice == nil {
@@ -496,11 +500,11 @@ func (r *ScanlineReader) decodeUncompressedChunkParallel(chunkY int, data []byte
 
 			switch ci.ch.Type {
 			case PixelTypeHalf:
-				ci.slice.WriteRowHalfBytes(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowHalfBytes(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			case PixelTypeFloat:
-				ci.slice.WriteRowFloat(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowFloat(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			case PixelTypeUint:
-				ci.slice.WriteRowUint(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowUint(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			}
 			pos += ci.bytesInChannel
 		}
@@ -519,7 +523,6 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 
 	minY := int(r.dataWindow.Min.Y)
 	maxY := int(r.dataWindow.Max.Y)
-	minX := int(r.dataWindow.Min.X)
 
 	// Calculate how many lines are in this chunk
 	compression := r.header.Compression()
@@ -540,6 +543,11 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 			continue
 		}
 
+		// Map from absolute data window coordinates to buffer-relative coordinates.
+		// The framebuffer is allocated for the data window dimensions, so pixel
+		// (minX, minY) maps to buffer position (0, 0).
+		bufY := y - minY
+
 		for i := range channelInfos {
 			ci := &channelInfos[i]
 			if ci.slice == nil {
@@ -553,11 +561,11 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 
 			switch ci.ch.Type {
 			case PixelTypeHalf:
-				ci.slice.WriteRowHalfBytes(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowHalfBytes(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			case PixelTypeFloat:
-				ci.slice.WriteRowFloat(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowFloat(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			case PixelTypeUint:
-				ci.slice.WriteRowUint(y, data[pos:pos+ci.bytesInChannel], minX, ci.pixelsInChannel)
+				ci.slice.WriteRowUint(bufY, data[pos:pos+ci.bytesInChannel], 0, ci.pixelsInChannel)
 			}
 			pos += ci.bytesInChannel
 		}
@@ -981,7 +989,7 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 // encodeUncompressedChunk encodes scanlines as uncompressed data.
 func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
-	minX := int(w.dataWindow.Min.X)
+	minY := int(w.dataWindow.Min.Y)
 
 	// Calculate buffer size
 	bufSize := 0
@@ -1003,6 +1011,11 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 	pos := 0 // Current position in output
 
 	for y := y1; y <= y2; y++ {
+		// Map from absolute data window coordinates to buffer-relative coordinates.
+		// The framebuffer is allocated for the data window dimensions, so pixel
+		// (minX, minY) maps to buffer position (0, 0).
+		bufY := y - minY
+
 		for _, ch := range sortedChannels {
 			pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
 			bytesInChannel := pixelsInChannel * ch.Type.Size()
@@ -1020,7 +1033,7 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 			// Use optimized bulk row operations
 			switch ch.Type {
 			case PixelTypeHalf:
-				slice.ReadRowHalf(y, halfBuf, minX, pixelsInChannel)
+				slice.ReadRowHalf(bufY, halfBuf, 0, pixelsInChannel)
 				// Convert uint16 to bytes
 				for i := 0; i < pixelsInChannel; i++ {
 					output[pos] = byte(halfBuf[i])
@@ -1029,11 +1042,11 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 				}
 
 			case PixelTypeFloat:
-				slice.ReadRowFloat(y, output[pos:pos+bytesInChannel], minX, pixelsInChannel)
+				slice.ReadRowFloat(bufY, output[pos:pos+bytesInChannel], 0, pixelsInChannel)
 				pos += bytesInChannel
 
 			case PixelTypeUint:
-				slice.ReadRowUint(y, output[pos:pos+bytesInChannel], minX, pixelsInChannel)
+				slice.ReadRowUint(bufY, output[pos:pos+bytesInChannel], 0, pixelsInChannel)
 				pos += bytesInChannel
 			}
 		}
