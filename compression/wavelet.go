@@ -271,14 +271,20 @@ func wdec16_4(data []uint16, px, p01, p10, p11 int) {
 // If maxValue < 16384, uses wenc14 (signed arithmetic).
 // Otherwise, uses wenc16 (modulo arithmetic).
 func Wav2DEncode(data []uint16, nx, ny int, maxValue uint16) {
+	Wav2DEncodeStrided(data, nx, 1, ny, nx, maxValue)
+}
+
+// Wav2DEncodeStrided applies forward 2D Haar wavelet transform in place with
+// arbitrary strides. ox is the stride between adjacent X samples, oy is the
+// stride between adjacent Y rows. This matches the C++ OpenEXR wav2Encode
+// signature and is needed for PIZ compression of float/uint channels where
+// each channel's uint16 sub-planes are interleaved (stride=2).
+func Wav2DEncodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 	if len(data) == 0 || nx == 0 || ny == 0 {
 		return
 	}
 
 	w14 := maxValue < wavMaxFor14
-
-	ox := 1  // x stride
-	oy := nx // y stride
 
 	n := nx
 	if ny < nx {
@@ -353,14 +359,20 @@ func Wav2DEncode(data []uint16, nx, ny int, maxValue uint16) {
 // If maxValue < 16384, uses wdec14 (signed arithmetic).
 // Otherwise, uses wdec16 (modulo arithmetic).
 func Wav2DDecode(data []uint16, nx, ny int, maxValue uint16) {
+	Wav2DDecodeStrided(data, nx, 1, ny, nx, maxValue)
+}
+
+// Wav2DDecodeStrided applies inverse 2D Haar wavelet transform in place with
+// arbitrary strides. ox is the stride between adjacent X samples, oy is the
+// stride between adjacent Y rows. This matches the C++ OpenEXR wav2Decode
+// signature and is needed for PIZ decompression of float/uint channels where
+// each channel's uint16 sub-planes are interleaved (stride=2).
+func Wav2DDecodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 	if len(data) == 0 || nx == 0 || ny == 0 {
 		return
 	}
 
 	w14 := maxValue < wavMaxFor14
-
-	ox := 1  // x stride
-	oy := nx // y stride
 
 	n := nx
 	if ny < nx {
