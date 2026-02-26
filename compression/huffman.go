@@ -169,7 +169,9 @@ func computeLengths(node *huffmanNode, depth int, lengths []int) {
 	computeLengths(node.right, depth+1, lengths)
 }
 
-// generateCanonicalCodes generates canonical Huffman codes from lengths
+// generateCanonicalCodes generates canonical Huffman codes from lengths.
+// Uses the OpenEXR canonical code assignment algorithm which computes
+// starting codes from longest to shortest code length.
 func generateCanonicalCodes(codes []huffmanCode, lengths []int) {
 	maxLen := 0
 	for _, l := range lengths {
@@ -183,26 +185,27 @@ func generateCanonicalCodes(codes []huffmanCode, lengths []int) {
 	}
 
 	// Count symbols per length
-	lengthCount := make([]int, maxLen+1)
+	lengthCount := make([]uint64, maxLen+2)
 	for _, length := range lengths {
 		if length > 0 {
 			lengthCount[length]++
 		}
 	}
 
-	// Calculate starting codes for each length
-	code := uint64(0)
-	nextCode := make([]uint64, maxLen+1)
-	for bits := 1; bits <= maxLen; bits++ {
-		code = (code + uint64(lengthCount[bits-1])) << 1
-		nextCode[bits] = code
+	// Compute starting codes from longest to shortest (OpenEXR algorithm).
+	// After the loop, lengthCount[i] holds the starting code for length i.
+	c := uint64(0)
+	for i := maxLen; i > 0; i-- {
+		nc := (c + lengthCount[i]) >> 1
+		lengthCount[i] = c
+		c = nc
 	}
 
-	// Assign codes to symbols in order
+	// Assign codes to symbols in symbol order
 	for symbol, length := range lengths {
 		if length > 0 {
-			codes[symbol] = huffmanCode{code: nextCode[length], length: length}
-			nextCode[length]++
+			codes[symbol] = huffmanCode{code: lengthCount[length], length: length}
+			lengthCount[length]++
 		}
 	}
 }
@@ -306,9 +309,8 @@ type FastHufDecoder struct {
 	tableMin uint64
 
 	// Pre-allocated buffers for Reset (avoid allocations)
-	codes       []huffmanCode // Reusable buffer for canonical codes
-	lengthCount []int         // Reusable buffer for length counting
-	nextCode    []uint64      // Reusable buffer for next code per length
+	codes    []huffmanCode // Reusable buffer for canonical codes
+	nextCode []uint64      // Reusable buffer for next code per length
 	maxTableIdx int           // Track max table index used for faster clearing
 }
 
@@ -334,10 +336,9 @@ var fastHufDecoderPool = sync.Pool{
 			tableCodeLen: make([]uint8, fastHufTableSize),
 			tableBits:    fastHufTableBits,
 			tableSize:    fastHufTableSize,
-			longCodes:    make([]longHufCode, 0, 64), // Pre-allocate some capacity
-			codes:        make([]huffmanCode, 65537), // Max symbols (65536 + RLE)
-			lengthCount:  make([]int, 64),            // Max code length
-			nextCode:     make([]uint64, 64),         // Max code length
+			longCodes: make([]longHufCode, 0, 64), // Pre-allocate some capacity
+			codes:    make([]huffmanCode, 65537), // Max symbols (65536 + RLE)
+			nextCode: make([]uint64, 64),         // Max code length
 		}
 	},
 }
@@ -505,36 +506,31 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 		return nil
 	}
 
-	// Use pre-allocated lengthCount buffer
-	lengthCount := d.lengthCount
-	if len(lengthCount) <= maxLen {
-		lengthCount = make([]int, maxLen+1)
-		d.lengthCount = lengthCount
+	// Use pre-allocated nextCode buffer for counts, then starting codes
+	nextCode := d.nextCode
+	if len(nextCode) <= maxLen+1 {
+		nextCode = make([]uint64, maxLen+2)
+		d.nextCode = nextCode
 	}
 	for i := 0; i <= maxLen; i++ {
-		lengthCount[i] = 0
+		nextCode[i] = 0
 	}
 
 	// Count symbols per length (only in valid range)
 	for i := minIdx; i <= maxIdx; i++ {
 		length := codeLengths[i]
 		if length > 0 {
-			lengthCount[length]++
+			nextCode[length]++
 		}
 	}
 
-	// Use pre-allocated nextCode buffer
-	nextCode := d.nextCode
-	if len(nextCode) <= maxLen {
-		nextCode = make([]uint64, maxLen+1)
-		d.nextCode = nextCode
-	}
-
-	// Calculate starting codes for each length
-	code := uint64(0)
-	for bits := 1; bits <= maxLen; bits++ {
-		code = (code + uint64(lengthCount[bits-1])) << 1
-		nextCode[bits] = code
+	// Compute starting codes from longest to shortest (OpenEXR algorithm).
+	// After the loop, nextCode[i] holds the starting code for length i.
+	c := uint64(0)
+	for i := maxLen; i > 0; i-- {
+		nc := (c + nextCode[i]) >> 1
+		nextCode[i] = c
+		c = nc
 	}
 
 	// Build tables - only process symbols in valid range
@@ -595,40 +591,36 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 }
 
 // generateCanonicalCodesReuse generates canonical Huffman codes using pre-allocated buffers.
+// Uses the OpenEXR canonical code assignment algorithm which computes
+// starting codes from longest to shortest code length.
 func (d *FastHufDecoder) generateCanonicalCodesReuse(codes []huffmanCode, lengths []int, maxLen int) {
-	// Use pre-allocated lengthCount buffer
-	lengthCount := d.lengthCount
-	if len(lengthCount) <= maxLen {
-		lengthCount = make([]int, maxLen+1)
-		d.lengthCount = lengthCount
+	// Use pre-allocated nextCode buffer for counts, then starting codes
+	nextCode := d.nextCode
+	if len(nextCode) <= maxLen+1 {
+		nextCode = make([]uint64, maxLen+2)
+		d.nextCode = nextCode
 	}
-	// Clear the portion we'll use
 	for i := 0; i <= maxLen; i++ {
-		lengthCount[i] = 0
+		nextCode[i] = 0
 	}
 
 	// Count symbols per length
 	for _, length := range lengths {
 		if length > 0 {
-			lengthCount[length]++
+			nextCode[length]++
 		}
 	}
 
-	// Use pre-allocated nextCode buffer
-	nextCode := d.nextCode
-	if len(nextCode) <= maxLen {
-		nextCode = make([]uint64, maxLen+1)
-		d.nextCode = nextCode
+	// Compute starting codes from longest to shortest (OpenEXR algorithm).
+	// After the loop, nextCode[i] holds the starting code for length i.
+	c := uint64(0)
+	for i := maxLen; i > 0; i-- {
+		nc := (c + nextCode[i]) >> 1
+		nextCode[i] = c
+		c = nc
 	}
 
-	// Calculate starting codes for each length
-	code := uint64(0)
-	for bits := 1; bits <= maxLen; bits++ {
-		code = (code + uint64(lengthCount[bits-1])) << 1
-		nextCode[bits] = code
-	}
-
-	// Assign codes to symbols in order
+	// Assign codes to symbols in symbol order
 	for symbol, length := range lengths {
 		if length > 0 {
 			codes[symbol] = huffmanCode{code: nextCode[length], length: length}
