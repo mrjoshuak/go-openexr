@@ -592,6 +592,330 @@ func pizDecompressInternal(data []byte, width, height, numChannels int, decBuf *
 	return decoded, nil
 }
 
+// PIZChannel describes a channel for channel-aware PIZ compression/decompression.
+// This matches how the C++ OpenEXR reference implementation handles PIZ data:
+// each actual image channel (B, G, R) is a separate PIZ channel, with Size
+// indicating how many uint16 samples per pixel (1 for half, 2 for float/uint).
+type PIZChannel struct {
+	Size int // uint16 samples per pixel: 1 for half, 2 for float/uint
+	NX   int // pixels per line (width / xSampling)
+	NY   int // lines in this chunk
+}
+
+// PIZDecompressBytesChannels decompresses PIZ data with channel-aware wavelet
+// application. This matches the C++ OpenEXR reference implementation which
+// applies the 2D wavelet independently to each uint16 sub-plane within each
+// channel using stride-based addressing. The output is channel-contiguous:
+// all data for channel 0 (all lines), then channel 1, etc.
+//
+// For half channels (Size=1), the wavelet is applied with stride 1.
+// For float/uint channels (Size=2), the wavelet is applied twice per channel
+// with stride 2, once for even uint16s and once for odd uint16s.
+func PIZDecompressBytesChannels(data []byte, channels []PIZChannel) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Calculate total uint16 values and total samples per pixel.
+	totalValues := 0
+	totalSamplesPerPixel := 0
+	for _, ch := range channels {
+		totalValues += ch.NX * ch.NY * ch.Size
+		totalSamplesPerPixel += ch.Size
+	}
+
+	width := channels[0].NX
+	height := channels[0].NY
+
+	// Decompress Huffman only (no wavelet, no inverse LUT).
+	decBuf := pizDecodedPool.Get().(*pizDecodedBuffer)
+	defer pizDecodedPool.Put(decBuf)
+
+	decoded, maxValue, inverseLUT, err := pizDecompressNoWavelet(
+		data, width, height, totalSamplesPerPixel, totalValues, decBuf,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply inverse wavelet per channel with correct strides.
+	offset := 0
+	for _, ch := range channels {
+		for j := 0; j < ch.Size; j++ {
+			Wav2DDecodeStrided(
+				decoded[offset+j:],
+				ch.NX,         // nx: pixels per row
+				ch.Size,       // ox: stride between adjacent X samples
+				ch.NY,         // ny: rows
+				ch.NX*ch.Size, // oy: stride between adjacent Y rows
+				maxValue,
+			)
+		}
+		offset += ch.NX * ch.NY * ch.Size
+	}
+
+	// Apply inverse LUT.
+	applyLut(inverseLUT, decoded)
+
+	// Convert to bytes.
+	result := make([]byte, len(decoded)*2)
+	for i, v := range decoded {
+		result[i*2] = byte(v)
+		result[i*2+1] = byte(v >> 8)
+	}
+
+	return result, nil
+}
+
+// PIZCompressBytesChannels compresses data using PIZ with channel-aware wavelet
+// application. Input data must be channel-contiguous uint16 bytes: all data for
+// channel 0 (all lines), then channel 1, etc. This matches the C++ reference.
+func PIZCompressBytesChannels(data []byte, channels []PIZChannel) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Convert bytes to uint16
+	uint16Data := make([]uint16, len(data)/2)
+	for i := range uint16Data {
+		uint16Data[i] = uint16(data[i*2]) | uint16(data[i*2+1])<<8
+	}
+
+	totalSamplesPerPixel := 0
+	for _, ch := range channels {
+		totalSamplesPerPixel += ch.Size
+	}
+
+	return pizCompressChannels(uint16Data, channels, totalSamplesPerPixel)
+}
+
+// pizCompressChannels compresses uint16 data with channel-aware wavelet.
+func pizCompressChannels(data []uint16, channels []PIZChannel, totalSamplesPerPixel int) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	// Make a copy since we modify in place.
+	transformed := make([]uint16, len(data))
+	copy(transformed, data)
+
+	// Get pooled work buffers.
+	work := pizWorkPool.Get().(*pizWorkBuffer)
+	defer pizWorkPool.Put(work)
+
+	for i := range work.bitmap {
+		work.bitmap[i] = 0
+	}
+
+	// Build bitmap from original data.
+	for _, v := range transformed {
+		work.bitmap[v>>3] |= 1 << (v & 7)
+	}
+
+	// Build forward LUT.
+	numUnique := uint16(0)
+	for i := 0; i < 65536; i++ {
+		if i == 0 || work.bitmap[i>>3]&(1<<(i&7)) != 0 {
+			work.forward[i] = numUnique
+			numUnique++
+		} else {
+			work.forward[i] = 0
+		}
+	}
+	maxValue := numUnique - 1
+
+	work.bitmap[0] &^= 1
+
+	minNonZero := uint16(pizBitmapSize)
+	maxNonZero := uint16(0)
+	for i := uint16(0); i < pizBitmapSize; i++ {
+		if work.bitmap[i] != 0 {
+			if minNonZero > i {
+				minNonZero = i
+			}
+			if maxNonZero < i {
+				maxNonZero = i
+			}
+		}
+	}
+
+	// Remap values.
+	applyLut(work.forward[:], transformed)
+
+	// Apply wavelet per channel with correct strides.
+	offset := 0
+	for _, ch := range channels {
+		for j := 0; j < ch.Size; j++ {
+			Wav2DEncodeStrided(
+				transformed[offset+j:],
+				ch.NX, ch.Size,
+				ch.NY, ch.NX*ch.Size,
+				maxValue,
+			)
+		}
+		offset += ch.NX * ch.NY * ch.Size
+	}
+
+	// Huffman encode (same as PIZCompress).
+	freqs := make([]uint64, hufEncSize)
+	for _, v := range transformed {
+		freqs[v]++
+	}
+
+	im := uint32(0)
+	for im < 65536 && freqs[im] == 0 {
+		im++
+	}
+	iM := uint32(65535)
+	for iM > im && freqs[iM] == 0 {
+		iM--
+	}
+	iM++
+	freqs[iM] = 1
+
+	encoder := NewHuffmanEncoder(freqs)
+
+	result := make([]byte, 0, len(data)*2)
+	result = binary.LittleEndian.AppendUint16(result, minNonZero)
+	result = binary.LittleEndian.AppendUint16(result, maxNonZero)
+
+	if minNonZero <= maxNonZero {
+		result = append(result, work.bitmap[minNonZero:maxNonZero+1]...)
+	}
+
+	huffSizePos := len(result)
+	result = append(result, 0, 0, 0, 0)
+	huffStartPos := len(result)
+	huffHeaderPos := len(result)
+	result = append(result, make([]byte, 20)...)
+	tableStartPos := len(result)
+
+	lengths := encoder.GetLengths()
+	result = packHufTableRange(result, lengths, int(im), int(iM))
+	tableLength := len(result) - tableStartPos
+
+	huffmanData := encoder.Encode(transformed)
+	nBits := 0
+	for _, v := range transformed {
+		if int(v) < len(lengths) {
+			nBits += lengths[v]
+		}
+	}
+	result = append(result, huffmanData...)
+
+	binary.LittleEndian.PutUint32(result[huffHeaderPos:], im)
+	binary.LittleEndian.PutUint32(result[huffHeaderPos+4:], iM)
+	binary.LittleEndian.PutUint32(result[huffHeaderPos+8:], uint32(tableLength))
+	binary.LittleEndian.PutUint32(result[huffHeaderPos+12:], uint32(nBits))
+	binary.LittleEndian.PutUint32(result[huffHeaderPos+16:], 0)
+
+	huffSize := len(result) - huffStartPos
+	binary.LittleEndian.PutUint32(result[huffSizePos:], uint32(huffSize))
+
+	return result, nil
+}
+
+// pizDecompressNoWavelet performs PIZ Huffman decode and returns the raw uint16
+// data BEFORE wavelet inverse and BEFORE inverse LUT. The caller is responsible
+// for applying the correct wavelet and then the inverse LUT.
+// Returns (decoded data, maxValue for wavelet, inverse LUT, error).
+func pizDecompressNoWavelet(data []byte, width, height, numSamplesPerPixel, totalValues int, decBuf *pizDecodedBuffer) ([]uint16, uint16, []uint16, error) {
+	if len(data) < 8 {
+		return nil, 0, nil, ErrPIZCorrupted
+	}
+
+	pos := 0
+
+	// Read bitmap.
+	minNonZero := binary.LittleEndian.Uint16(data[pos:])
+	pos += 2
+	maxNonZero := binary.LittleEndian.Uint16(data[pos:])
+	pos += 2
+
+	work := pizWorkPool.Get().(*pizWorkBuffer)
+	defer pizWorkPool.Put(work)
+
+	for i := range work.bitmap {
+		work.bitmap[i] = 0
+	}
+
+	if minNonZero <= maxNonZero && maxNonZero < pizBitmapSize {
+		bitmapLen := int(maxNonZero - minNonZero + 1)
+		if pos+bitmapLen > len(data) {
+			return nil, 0, nil, ErrPIZCorrupted
+		}
+		copy(work.bitmap[minNonZero:minNonZero+uint16(bitmapLen)], data[pos:pos+bitmapLen])
+		pos += bitmapLen
+	}
+
+	work.bitmap[0] |= 1
+
+	numUnique := uint16(0)
+	for i := 0; i < 65536; i++ {
+		if work.bitmap[i>>3]&(1<<(i&7)) != 0 {
+			work.inverse[numUnique] = uint16(i)
+			numUnique++
+		}
+	}
+	maxValue := numUnique - 1
+
+	// Read Huffman block.
+	if pos+4 > len(data) {
+		return nil, 0, nil, ErrPIZCorrupted
+	}
+	huffSize := binary.LittleEndian.Uint32(data[pos:])
+	pos += 4
+	if pos+int(huffSize) > len(data) {
+		return nil, 0, nil, ErrPIZCorrupted
+	}
+
+	huffBlock := data[pos : pos+int(huffSize)]
+	if len(huffBlock) < 20 {
+		return nil, 0, nil, ErrPIZCorrupted
+	}
+
+	im := binary.LittleEndian.Uint32(huffBlock[0:])
+	iM := binary.LittleEndian.Uint32(huffBlock[4:])
+	tableLength := binary.LittleEndian.Uint32(huffBlock[8:])
+	nBits := binary.LittleEndian.Uint32(huffBlock[12:])
+	_ = tableLength // used implicitly via unpack
+
+	if im >= hufEncSize || iM >= hufEncSize {
+		return nil, 0, nil, ErrPIZCorrupted
+	}
+
+	huffTableData := huffBlock[20:]
+	codeLengths, tableBytes, err := unpackHufTableRange(huffTableData, int(im), int(iM))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+
+	decoder, err := GetFastHufDecoderWithBounds(codeLengths, int(im), int(iM))
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer PutFastHufDecoder(decoder)
+
+	huffmanData := huffTableData[tableBytes:]
+
+	if cap(decBuf.data) < totalValues {
+		decBuf.data = make([]uint16, totalValues)
+	} else {
+		decBuf.data = decBuf.data[:totalValues]
+	}
+	decoded := decBuf.data
+
+	if err := decoder.DecodeIntoWithBits(huffmanData, decoded, int(nBits), int(iM)); err != nil {
+		return nil, 0, nil, err
+	}
+
+	// Copy inverse LUT before returning (caller needs it after wavelet).
+	inverseLUT := make([]uint16, 65536)
+	copy(inverseLUT, work.inverse[:])
+
+	return decoded, maxValue, inverseLUT, nil
+}
+
 // unpackHufTableRange unpacks Huffman code lengths from 6-bit packed format.
 // The table contains code lengths from im to iM (inclusive).
 // Returns the code lengths (full hufEncSize array), number of bytes consumed, and any error.
