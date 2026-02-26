@@ -645,24 +645,94 @@ func (r *ScanlineReader) decompressZIP(data []byte, numLines int) ([]byte, error
 // decompressPIZ decompresses PIZ-compressed chunk data.
 // PIZ uses wavelet transform + Huffman coding on 16-bit data.
 // For 32-bit types (float, uint), each value becomes two 16-bit samples.
+//
+// This uses channel-aware decompression matching the C++ OpenEXR reference:
+// data is decompressed to channel-contiguous format (each channel's data for
+// all lines contiguous), then rearranged back to per-scanline interleaved format
+// that decodeUncompressedChunk expects.
 func (r *ScanlineReader) decompressPIZ(data []byte, numLines int) ([]byte, error) {
 	width := int(r.dataWindow.Width())
 
-	// Count 16-bit samples per pixel (not channels).
-	// Half = 1 sample, Float/Uint = 2 samples per pixel.
-	samplesPerPixel := 0
-	for i := 0; i < r.channelList.Len(); i++ {
-		ch := r.channelList.At(i)
-		switch ch.Type {
-		case PixelTypeHalf:
-			samplesPerPixel += 1
-		case PixelTypeFloat, PixelTypeUint:
-			samplesPerPixel += 2
+	// Build channel info sorted by name (EXR channel order).
+	sortedChannels := r.channelList.SortedByName()
+	pizChannels := make([]compression.PIZChannel, len(sortedChannels))
+	for i, ch := range sortedChannels {
+		chWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
+		size := 1 // half
+		if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
+			size = 2
+		}
+		pizChannels[i] = compression.PIZChannel{
+			Size: size,
+			NX:   chWidth,
+			NY:   numLines,
 		}
 	}
 
-	// PIZ works on 16-bit data, decompress directly to bytes
-	return compression.PIZDecompressBytes(data, width, numLines, samplesPerPixel)
+	// Check for passthrough: when PIZ compression produces output >= input size,
+	// C++ stores the data uncompressed in per-scanline interleaved format.
+	expectedSize := r.calculateChunkSize(numLines)
+	if len(data) == expectedSize {
+		result := make([]byte, len(data))
+		copy(result, data)
+		return result, nil
+	}
+
+	// Decompress with channel-aware wavelet (returns channel-contiguous bytes).
+	channelData, err := compression.PIZDecompressBytesChannels(data, pizChannels)
+	if err != nil {
+		return nil, err
+	}
+
+	// Rearrange from channel-contiguous to per-scanline interleaved.
+	return pizChannelContiguousToScanline(channelData, sortedChannels, width, numLines), nil
+}
+
+// pizChannelContiguousToScanline rearranges PIZ channel-contiguous byte data
+// to per-scanline interleaved format. In channel-contiguous format, all data
+// for channel 0 (all lines) comes first, then channel 1, etc. In per-scanline
+// format, each scanline has: [chan0 bytes] [chan1 bytes] [chan2 bytes].
+func pizChannelContiguousToScanline(data []byte, channels []Channel, width, numLines int) []byte {
+	// Calculate total size and per-channel layout.
+	type chanLayout struct {
+		bytesPerLine int
+		totalBytes   int
+		srcOffset    int // offset into channel-contiguous data
+	}
+
+	layouts := make([]chanLayout, len(channels))
+	srcOff := 0
+	totalSize := 0
+	for i, ch := range channels {
+		chWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
+		bytesPerLine := chWidth * ch.Type.Size()
+		total := bytesPerLine * numLines
+		layouts[i] = chanLayout{
+			bytesPerLine: bytesPerLine,
+			totalBytes:   total,
+			srcOffset:    srcOff,
+		}
+		srcOff += total
+		totalSize += total
+	}
+
+	if len(data) < totalSize {
+		// Data is shorter than expected; return as-is to avoid panic.
+		return data
+	}
+
+	result := make([]byte, totalSize)
+	dstPos := 0
+	for line := 0; line < numLines; line++ {
+		for i := range layouts {
+			cl := &layouts[i]
+			srcPos := cl.srcOffset + line*cl.bytesPerLine
+			copy(result[dstPos:dstPos+cl.bytesPerLine], data[srcPos:srcPos+cl.bytesPerLine])
+			dstPos += cl.bytesPerLine
+		}
+	}
+
+	return result
 }
 
 // decompressPXR24 decompresses PXR24-compressed chunk data.
@@ -1097,30 +1167,78 @@ func (w *ScanlineWriter) compressZIP(data []byte) ([]byte, error) {
 // compressPIZ compresses chunk data using PIZ.
 // PIZ uses wavelet transform + Huffman coding on 16-bit data.
 // For 32-bit types (float, uint), each value becomes two 16-bit samples.
+//
+// This uses channel-aware compression matching the C++ OpenEXR reference:
+// per-scanline data is rearranged to channel-contiguous format, then compressed
+// with the wavelet applied per channel using strides for multi-byte types.
 func (w *ScanlineWriter) compressPIZ(data []byte, numLines int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
 
-	// Count 16-bit samples per pixel (not channels).
-	// Half = 1 sample, Float/Uint = 2 samples per pixel.
-	samplesPerPixel := 0
-	for i := 0; i < w.channelList.Len(); i++ {
-		ch := w.channelList.At(i)
-		switch ch.Type {
-		case PixelTypeHalf:
-			samplesPerPixel += 1
-		case PixelTypeFloat, PixelTypeUint:
-			samplesPerPixel += 2
+	// Build channel info.
+	sortedChannels := w.channelList.SortedByName()
+	pizChannels := make([]compression.PIZChannel, len(sortedChannels))
+	for i, ch := range sortedChannels {
+		chWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
+		size := 1
+		if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
+			size = 2
+		}
+		pizChannels[i] = compression.PIZChannel{
+			Size: size,
+			NX:   chWidth,
+			NY:   numLines,
 		}
 	}
 
-	// Convert bytes to uint16 slice
-	uint16Data := make([]uint16, len(data)/2)
-	for i := 0; i < len(uint16Data); i++ {
-		uint16Data[i] = uint16(data[i*2]) | uint16(data[i*2+1])<<8
+	// Rearrange from per-scanline to channel-contiguous.
+	channelData := pizScanlineToChannelContiguous(data, sortedChannels, width, numLines)
+
+	// Compress with channel-aware wavelet.
+	return compression.PIZCompressBytesChannels(channelData, pizChannels)
+}
+
+// pizScanlineToChannelContiguous rearranges per-scanline interleaved byte data
+// to channel-contiguous format for PIZ compression. This is the inverse of
+// pizChannelContiguousToScanline.
+func pizScanlineToChannelContiguous(data []byte, channels []Channel, width, numLines int) []byte {
+	type chanLayout struct {
+		bytesPerLine int
+		totalBytes   int
+		dstOffset    int
 	}
 
-	// PIZ compress - use samplesPerPixel as the "channel" count
-	return compression.PIZCompress(uint16Data, width, numLines, samplesPerPixel)
+	layouts := make([]chanLayout, len(channels))
+	dstOff := 0
+	totalSize := 0
+	for i, ch := range channels {
+		chWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
+		bytesPerLine := chWidth * ch.Type.Size()
+		total := bytesPerLine * numLines
+		layouts[i] = chanLayout{
+			bytesPerLine: bytesPerLine,
+			totalBytes:   total,
+			dstOffset:    dstOff,
+		}
+		dstOff += total
+		totalSize += total
+	}
+
+	if len(data) < totalSize {
+		return data
+	}
+
+	result := make([]byte, totalSize)
+	srcPos := 0
+	for line := 0; line < numLines; line++ {
+		for i := range layouts {
+			cl := &layouts[i]
+			dstPos := cl.dstOffset + line*cl.bytesPerLine
+			copy(result[dstPos:dstPos+cl.bytesPerLine], data[srcPos:srcPos+cl.bytesPerLine])
+			srcPos += cl.bytesPerLine
+		}
+	}
+
+	return result
 }
 
 // compressPXR24 compresses chunk data using PXR24.

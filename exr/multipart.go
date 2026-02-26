@@ -516,11 +516,17 @@ func compressChunkData(data []byte, width, height int, cl *ChannelList, comp Com
 		return compression.ZIPCompress(interleaved)
 
 	case CompressionPIZ:
-		uint16Data := make([]uint16, len(data)/2)
-		for i := 0; i < len(uint16Data); i++ {
-			uint16Data[i] = uint16(data[i*2]) | uint16(data[i*2+1])<<8
+		sortedChs := cl.SortedByName()
+		pizChs := make([]compression.PIZChannel, len(sortedChs))
+		for i, ch := range sortedChs {
+			size := 1
+			if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
+				size = 2
+			}
+			pizChs[i] = compression.PIZChannel{Size: size, NX: width, NY: height}
 		}
-		return compression.PIZCompress(uint16Data, width, height, cl.Len())
+		channelData := pizScanlineToChannelContiguous(data, sortedChs, width, height)
+		return compression.PIZCompressBytesChannels(channelData, pizChs)
 
 	case CompressionPXR24:
 		sortedChannels := cl.SortedByName()

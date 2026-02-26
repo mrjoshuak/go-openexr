@@ -385,10 +385,38 @@ func (r *TiledReader) decompressTileZIP(data []byte, tileWidth, tileHeight int) 
 
 // decompressTilePIZ decompresses PIZ-compressed tile data.
 func (r *TiledReader) decompressTilePIZ(data []byte, tileWidth, tileHeight int) ([]byte, error) {
-	numChannels := r.channelList.Len()
+	// Build channel info sorted by name (EXR channel order).
+	sortedChannels := r.channelList.SortedByName()
+	pizChannels := make([]compression.PIZChannel, len(sortedChannels))
+	for i, ch := range sortedChannels {
+		size := 1
+		if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
+			size = 2
+		}
+		pizChannels[i] = compression.PIZChannel{
+			Size: size,
+			NX:   tileWidth,
+			NY:   tileHeight,
+		}
+	}
 
-	// PIZ works on 16-bit data, decompress directly to bytes
-	return compression.PIZDecompressBytes(data, tileWidth, tileHeight, numChannels)
+	// Check for passthrough: when PIZ compression produces output >= input size,
+	// C++ stores the data uncompressed in per-scanline interleaved format.
+	expectedSize := r.calculateTileSize(tileWidth, tileHeight)
+	if len(data) == expectedSize {
+		result := make([]byte, len(data))
+		copy(result, data)
+		return result, nil
+	}
+
+	// Decompress with channel-aware wavelet.
+	channelData, err := compression.PIZDecompressBytesChannels(data, pizChannels)
+	if err != nil {
+		return nil, err
+	}
+
+	// Rearrange from channel-contiguous to per-scanline.
+	return pizChannelContiguousToScanline(channelData, sortedChannels, tileWidth, tileHeight), nil
 }
 
 // decompressTilePXR24 decompresses PXR24-compressed tile data.
@@ -800,16 +828,26 @@ func (w *TiledWriter) compressTileZIP(data []byte) ([]byte, error) {
 
 // compressTilePIZ compresses tile data using PIZ.
 func (w *TiledWriter) compressTilePIZ(data []byte, tileWidth, tileHeight int) ([]byte, error) {
-	numChannels := w.channelList.Len()
-
-	// Convert bytes to uint16 slice
-	uint16Data := make([]uint16, len(data)/2)
-	for i := 0; i < len(uint16Data); i++ {
-		uint16Data[i] = uint16(data[i*2]) | uint16(data[i*2+1])<<8
+	// Build channel info.
+	sortedChannels := w.channelList.SortedByName()
+	pizChannels := make([]compression.PIZChannel, len(sortedChannels))
+	for i, ch := range sortedChannels {
+		size := 1
+		if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
+			size = 2
+		}
+		pizChannels[i] = compression.PIZChannel{
+			Size: size,
+			NX:   tileWidth,
+			NY:   tileHeight,
+		}
 	}
 
-	// PIZ compress
-	return compression.PIZCompress(uint16Data, tileWidth, tileHeight, numChannels)
+	// Rearrange from per-scanline to channel-contiguous.
+	channelData := pizScanlineToChannelContiguous(data, sortedChannels, tileWidth, tileHeight)
+
+	// Compress with channel-aware wavelet.
+	return compression.PIZCompressBytesChannels(channelData, pizChannels)
 }
 
 // compressTilePXR24 compresses tile data using PXR24.
