@@ -309,8 +309,8 @@ type FastHufDecoder struct {
 	tableMin uint64
 
 	// Pre-allocated buffers for Reset (avoid allocations)
-	codes    []huffmanCode // Reusable buffer for canonical codes
-	nextCode []uint64      // Reusable buffer for next code per length
+	codes       []huffmanCode // Reusable buffer for canonical codes
+	nextCode    []uint64      // Reusable buffer for next code per length
 	maxTableIdx int           // Track max table index used for faster clearing
 }
 
@@ -336,9 +336,9 @@ var fastHufDecoderPool = sync.Pool{
 			tableCodeLen: make([]uint8, fastHufTableSize),
 			tableBits:    fastHufTableBits,
 			tableSize:    fastHufTableSize,
-			longCodes: make([]longHufCode, 0, 64), // Pre-allocate some capacity
-			codes:    make([]huffmanCode, 65537), // Max symbols (65536 + RLE)
-			nextCode: make([]uint64, 64),         // Max code length
+			longCodes:    make([]longHufCode, 0, 64), // Pre-allocate some capacity
+			codes:        make([]huffmanCode, 65537), // Max symbols (65536 + RLE)
+			nextCode:     make([]uint64, 64),         // Max code length
 		}
 	},
 }
