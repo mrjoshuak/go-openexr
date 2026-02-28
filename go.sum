@@ -1,4 +1,4 @@
 github.com/klauspost/compress v1.18.2 h1:iiPHWW0YrcFgpBYhsA6D1+fqHssJscY/Tm/y2Uqnapk=
 github.com/klauspost/compress v1.18.2/go.mod h1:R0h/fSBs8DE4ENlcrlib3PsXS61voFxhIs2DeRhCvJ4=
-github.com/mrjoshuak/go-jpeg2000 v1.0.0 h1:h+HpiOygumz7P/EqtEP/kfqQvqcJGBXC6HOfE6+76AQ=
-github.com/mrjoshuak/go-jpeg2000 v1.0.0/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=
+github.com/mrjoshuak/go-jpeg2000 v1.1.0 h1:/WwsVasvm6vT+gl0LG83mCp312WVszC6EABs3ezzWTI=
+github.com/mrjoshuak/go-jpeg2000 v1.1.0/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=
