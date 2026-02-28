@@ -22,17 +22,18 @@ go-openexr provides native Go support for reading and writing OpenEXR (.exr) fil
 
 **Full Read/Write Support** — Unlike read-only alternatives, go-openexr provides complete write capabilities for generating EXR files in your pipelines.
 
-**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and all ten compression codecs.
+**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and all eleven compression codecs including HTJ2K with progressive decode.
 
 ### Features
 
 - **100% Pure Go**: No CGO dependencies, fully portable across platforms
 - **HDR Support**: Full high-dynamic-range imaging with half-float (float16) precision
-- **All Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB
+- **All Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K
 - **Tiled Images**: Efficient random access with mipmap and ripmap support
 - **Multi-Part Files**: Multiple images in a single file
 - **Deep Data**: Variable samples per pixel for compositing workflows
 - **Multi-Channel**: Arbitrary channel layouts with layer support
+- **Progressive HTJ2K Decoding**: Extract wavelet packets and decode progressively for fast preview workflows
 - **Parallel Processing**: Configurable worker pools for efficient encoding/decoding
 
 ### OpenEXR Format Compatibility
@@ -42,7 +43,7 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 | Category                              | Status      |
 | ------------------------------------- | ----------- |
 | Storage types (scanline, tiled, deep) | ✅ Complete |
-| All compression codecs (10 types)     | ✅ Complete |
+| All compression codecs (11 types incl. HTJ2K) | ✅ Complete |
 | All pixel types (UINT, HALF, FLOAT)   | ✅ Complete |
 | Mipmap/Ripmap levels                  | ✅ Complete |
 | Multi-part files                      | ✅ Complete |
@@ -54,11 +55,63 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 
 Files produced by go-openexr are validated against the OpenEXR project's tools (`exrinfo`, `exrcheck`) to ensure full interoperability with the broader OpenEXR ecosystem.
 
+## What's New in v1.1.0
+
+### PIZ Float32 Channel Support
+
+PIZ compression now fully supports float32 and uint32 channels. Previous versions were limited to half-float and uint16 channel types. The implementation uses proper Haar wavelet transforms and Huffman coding for all channel widths, with canonical code assignment matching the C++ OpenEXR reference.
+
+### Progressive HTJ2K Decoding
+
+The headline feature of v1.1.0: extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images.
+
+Each wavelet packet represents one quality layer at one resolution level of one component -- the atomic unit for progressive quality improvement. Lower-resolution packets produce a coarse image instantly; higher-resolution and higher-quality-layer packets refine detail progressively. Packets can be delivered in any order, so applications can prioritize by resolution, component, or quality layer based on their needs.
+
+This enables progressive rendering workflows in VFX and post-production pipelines where fast visual feedback matters more than waiting for a complete decode.
+
+Key APIs in the `compression` package:
+
+- `HTJ2KNewProgressiveDecoder()` -- create a decoder that accepts packets via `FeedPacket()` and produces images via `Reconstruct()`
+- `HTJ2KExtractPackets()` -- extract all wavelet packets from HTJ2K data
+- `HTJ2KBuildPacketIndex()` -- build a memory-efficient index referencing packet byte ranges without copying data
+- `HTJ2KExtractCodestream()` -- extract the raw J2K codestream for advanced processing
+
+```go
+// Extract packets from HTJ2K-compressed EXR data
+packets, channelMap, err := compression.HTJ2KExtractPackets(htj2kData)
+
+// Create progressive decoder
+decoder, _, err := compression.HTJ2KNewProgressiveDecoder(htj2kData)
+
+// Feed packets — low resolution first for fast preview
+for _, pkt := range packets {
+    decoder.FeedPacket(pkt)
+    img, _ := decoder.Reconstruct() // progressively improving image
+    // Display or process img...
+}
+```
+
+### Float Image Output
+
+`HTJ2KDecompressFloat()` decompresses HTJ2K data directly to float32 component images instead of raw byte buffers. For HALF (float16) channels, the returned float32 values exactly represent the original half-float values. This simplifies processing workflows that operate on floating-point data.
+
+### Packet-Level Access
+
+`HTJ2KExtractPackets()` and `HTJ2KBuildPacketIndex()` provide random access to individual wavelet packets within HTJ2K-compressed data. The packet index variant references byte ranges in the original codestream without copying, making it suitable for large images where memory is a concern.
+
+### Known Limitations
+
+HTJ2K compression of FLOAT (32-bit) pixel type is not yet supported -- the underlying JPEG 2000 encoder is currently limited to 16-bit precision. HALF channels work fully with HTJ2K. This limitation is in the [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000) encoder, not in go-openexr itself.
+
+### Dependency
+
+The progressive HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000) v1.1.0, which provides the progressive decode, float output, and packet extraction APIs that go-openexr builds on.
+
 ## Status
 
 **Production Ready** — This project implements the complete OpenEXR specification:
 
-- All 10 compression codecs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB)
+- All 11 compression codecs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K)
 - Deep scanline and tiled images
 - Multi-part files with mixed storage types
 - Preview images and thumbnails
@@ -77,7 +130,7 @@ Security is a priority for go-openexr. Image parsers are a common attack vector,
 
 We use Go's built-in fuzzing framework to continuously test all parsing code paths:
 
-- **Compression codecs**: All 10 decompressors are fuzz-tested (RLE, ZIP, PIZ, PXR24, B44, DWAA, etc.)
+- **Compression codecs**: All decompressors are fuzz-tested (RLE, ZIP, PIZ, PXR24, B44, DWAA, HTJ2K, etc.)
 - **File parsing**: Header parsing, attribute decoding, and offset table validation
 - **Reader APIs**: ScanlineReader and TiledReader with arbitrary input
 
@@ -261,7 +314,7 @@ func main() {
 github.com/mrjoshuak/go-openexr/
 ├── exr/           # Core I/O - file reading/writing, headers, frame buffers
 ├── half/          # IEEE 754 half-precision float (float16)
-├── compression/   # All 10 compression codec implementations
+├── compression/   # All compression codecs + HTJ2K progressive decode APIs
 ├── exrmeta/       # Standard attribute accessors & frame rate utilities
 ├── exrutil/       # EXR utilities - validation, comparison, channel extraction
 └── exrid/         # ID Manifest / Cryptomatte support
@@ -392,7 +445,7 @@ hashFloat := exrid.CryptomatteHashFloat("Hero") // As float32 for pixel comparis
 
 ### Compression
 
-Supported compression methods:
+Supported compression methods (11 codecs):
 
 | Method             | ID  | Description             |
 | ------------------ | --- | ----------------------- |
@@ -406,6 +459,7 @@ Supported compression methods:
 | `CompressionB44A`  | 7   | B44 with flat detection |
 | `CompressionDWAA`  | 8   | DCT, 32 scanlines       |
 | `CompressionDWAB`  | 9   | DCT, 256 scanlines      |
+| `CompressionHTJ2K` | 10  | HTJ2K wavelet (lossy), progressive decode support |
 
 DWA compression quality can be configured via the header:
 

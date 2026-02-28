@@ -280,7 +280,7 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockS
 	// Validate all channels have consistent dimensions for JPEG 2000
 	for _, ch := range channels {
 		if ch.Type == HTJ2KPixelTypeFloat {
-			return nil, errors.New("htj2k: FLOAT pixel type not supported")
+			return nil, errors.New("htj2k: FLOAT (32-bit) pixel type not supported for compression; use HALF (16-bit) channels")
 		}
 	}
 
@@ -359,7 +359,7 @@ func HTJ2KDecompress(src []byte, expectedSize int, channels []HTJ2KChannelInfo) 
 		switch ch.Type {
 		case HTJ2KPixelTypeHalf:
 			bytesPerPixel += 2
-		case HTJ2KPixelTypeUint:
+		case HTJ2KPixelTypeUint, HTJ2KPixelTypeFloat:
 			bytesPerPixel += 4
 		}
 	}
