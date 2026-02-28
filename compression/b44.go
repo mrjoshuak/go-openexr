@@ -16,7 +16,8 @@ var b44BufferPool = sync.Pool{
 	New: func() any {
 		// Allocate buffer for typical 4K image channel (4096*4096 uint16 = 32MB)
 		// Will grow as needed for larger images
-		return make([]uint16, 4096*4096)
+		buf := make([]uint16, 4096*4096)
+		return &buf
 	},
 }
 
@@ -390,8 +391,9 @@ func B44Compress(data []byte, channels []B44ChannelInfo, width, height int, flat
 	initB44Tables()
 
 	// Get pooled buffer for channel data
-	poolBuf := b44BufferPool.Get().([]uint16)
-	defer b44BufferPool.Put(poolBuf)
+	poolBufPtr := b44BufferPool.Get().(*[]uint16)
+	poolBuf := *poolBufPtr
+	defer b44BufferPool.Put(poolBufPtr)
 
 	// First pass: reorganize data by channel instead of scanline
 	// B44 processes each channel's data separately

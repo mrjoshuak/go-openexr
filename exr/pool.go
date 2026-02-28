@@ -59,7 +59,8 @@ func NewBufferPoolWithLimit(limit int64) *BufferPool {
 		size := size // capture for closure
 		p.pools[i] = &sync.Pool{
 			New: func() interface{} {
-				return make([]byte, size)
+				buf := make([]byte, size)
+				return &buf
 			},
 		}
 	}
@@ -142,7 +143,8 @@ func (p *BufferPool) Get(size int) []byte {
 		}
 	}
 
-	buf := p.pools[idx].Get().([]byte)
+	bufPtr := p.pools[idx].Get().(*[]byte)
+	buf := *bufPtr
 	if buf == nil {
 		atomic.AddInt64(&p.missCount, 1)
 		if limit > 0 {
@@ -199,7 +201,8 @@ func (p *BufferPool) Put(buf []byte) {
 
 	// Only return to pool if capacity matches the pool size exactly
 	if bufCap == bufferSizes[idx] {
-		p.pools[idx].Put(buf[:bufCap])
+		b := buf[:bufCap]
+		p.pools[idx].Put(&b)
 	}
 }
 
@@ -274,7 +277,8 @@ func NewUint16Pool(defaultSize int) *Uint16Pool {
 	return &Uint16Pool{
 		pool: sync.Pool{
 			New: func() interface{} {
-				return make([]uint16, defaultSize)
+				buf := make([]uint16, defaultSize)
+				return &buf
 			},
 		},
 	}
@@ -282,7 +286,7 @@ func NewUint16Pool(defaultSize int) *Uint16Pool {
 
 // Get returns a uint16 slice of at least the requested size.
 func (p *Uint16Pool) Get(size int) []uint16 {
-	buf := p.pool.Get().([]uint16)
+	buf := *p.pool.Get().(*[]uint16)
 	if len(buf) < size {
 		return make([]uint16, size)
 	}
@@ -292,6 +296,6 @@ func (p *Uint16Pool) Get(size int) []uint16 {
 // Put returns a uint16 slice to the pool.
 func (p *Uint16Pool) Put(buf []uint16) {
 	if buf != nil {
-		p.pool.Put(buf)
+		p.pool.Put(&buf)
 	}
 }

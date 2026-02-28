@@ -11,7 +11,7 @@ import (
 func FuzzFromFloat32(f *testing.F) {
 	// Special values
 	f.Add(float32(0))
-	f.Add(float32(-0))
+	f.Add(math.Float32frombits(0x80000000)) // negative zero
 	f.Add(float32(1))
 	f.Add(float32(-1))
 	f.Add(float32(math.MaxFloat32))

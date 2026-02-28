@@ -228,15 +228,15 @@ func (s *Slice) WriteRowHalfBytes(y int, data []byte, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
 			// Contiguous: direct memcpy - no conversion needed on little-endian
-			dst := unsafe.Pointer(uintptr(base) + uintptr(xStart*2))
+			dst := unsafe.Add(base, xStart*2)
 			copy(unsafe.Slice((*byte)(dst), width*2), data[:width*2])
 			return
 		}
 		// Non-contiguous: strided write - copy 2 bytes at a time
-		ptr := uintptr(base) + uintptr(xStart*stride)
+		ptr := unsafe.Add(base, xStart*stride)
 		for i := 0; i < width; i++ {
-			*(*[2]byte)(unsafe.Pointer(ptr)) = *(*[2]byte)(unsafe.Pointer(&data[i*2]))
-			ptr += uintptr(stride)
+			*(*[2]byte)(ptr) = *(*[2]byte)(unsafe.Pointer(&data[i*2]))
+			ptr = unsafe.Add(ptr, stride)
 		}
 		return
 	}
@@ -254,14 +254,14 @@ func (s *Slice) WriteRowHalf(y int, data []uint16, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
 			// Contiguous: direct copy
-			dst := unsafe.Slice((*uint16)(unsafe.Pointer(uintptr(base)+uintptr(xStart*2))), width)
+			dst := unsafe.Slice((*uint16)(unsafe.Add(base, xStart*2)), width)
 			copy(dst, data[:width])
 		} else {
 			// Non-contiguous: strided write
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				*(*uint16)(unsafe.Pointer(ptr)) = data[i]
-				ptr += uintptr(stride)
+				*(*uint16)(ptr) = data[i]
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -278,14 +278,14 @@ func (s *Slice) WriteRowFloat(y int, data []byte, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
 			// Contiguous: direct copy
-			dst := unsafe.Pointer(uintptr(base) + uintptr(xStart*4))
+			dst := unsafe.Add(base, xStart*4)
 			copy(unsafe.Slice((*byte)(dst), width*4), data[:width*4])
 		} else {
 			// Non-contiguous: strided write
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				*(*[4]byte)(unsafe.Pointer(ptr)) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
-				ptr += uintptr(stride)
+				*(*[4]byte)(ptr) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -303,14 +303,14 @@ func (s *Slice) WriteRowUint(y int, data []byte, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
 			// Contiguous: direct copy
-			dst := unsafe.Pointer(uintptr(base) + uintptr(xStart*4))
+			dst := unsafe.Add(base, xStart*4)
 			copy(unsafe.Slice((*byte)(dst), width*4), data[:width*4])
 		} else {
 			// Non-contiguous: strided write
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				*(*[4]byte)(unsafe.Pointer(ptr)) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
-				ptr += uintptr(stride)
+				*(*[4]byte)(ptr) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -328,14 +328,14 @@ func (s *Slice) ReadRowHalf(y int, data []uint16, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
 			// Contiguous: direct copy
-			src := unsafe.Slice((*uint16)(unsafe.Pointer(uintptr(base)+uintptr(xStart*2))), width)
+			src := unsafe.Slice((*uint16)(unsafe.Add(base, xStart*2)), width)
 			copy(data[:width], src)
 		} else {
 			// Non-contiguous: strided read
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				data[i] = *(*uint16)(unsafe.Pointer(ptr))
-				ptr += uintptr(stride)
+				data[i] = *(*uint16)(ptr)
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -352,14 +352,14 @@ func (s *Slice) ReadRowFloat(y int, data []byte, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
 			// Contiguous: direct copy
-			src := unsafe.Pointer(uintptr(base) + uintptr(xStart*4))
+			src := unsafe.Add(base, xStart*4)
 			copy(data[:width*4], unsafe.Slice((*byte)(src), width*4))
 		} else {
 			// Non-contiguous: strided read
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(unsafe.Pointer(ptr))
-				ptr += uintptr(stride)
+				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(ptr)
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -377,14 +377,14 @@ func (s *Slice) ReadRowUint(y int, data []byte, xStart, width int) {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
 			// Contiguous: direct copy
-			src := unsafe.Pointer(uintptr(base) + uintptr(xStart*4))
+			src := unsafe.Add(base, xStart*4)
 			copy(data[:width*4], unsafe.Slice((*byte)(src), width*4))
 		} else {
 			// Non-contiguous: strided read
-			ptr := uintptr(base) + uintptr(xStart*stride)
+			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
-				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(unsafe.Pointer(ptr))
-				ptr += uintptr(stride)
+				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(ptr)
+				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {

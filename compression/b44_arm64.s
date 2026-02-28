@@ -95,7 +95,7 @@ TEXT ·toOrderedSIMD(SB), NOSPLIT, $0-16
 // func findMaxSIMD(src *[16]uint16) uint16
 // Finds the maximum value among 16 uint16 values using ARM NEON.
 // Uses VUMAX for unsigned max comparison.
-TEXT ·findMaxSIMD(SB), NOSPLIT, $0-16
+TEXT ·findMaxSIMD(SB), NOSPLIT, $0-10
     MOVD src+0(FP), R0          // R0 = src pointer
 
     // Load all 16 values

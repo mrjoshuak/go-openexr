@@ -24,7 +24,7 @@ var (
 // HTJ2K chunk header constants
 const (
 	htj2kMagic      uint16 = 0x4854 // "HT" in big-endian
-	htj2kHeaderSize        = 6      // Magic (2) + PLEN (4)
+	htj2kHeaderSize int    = 6      // Magic (2) + PLEN (4)
 )
 
 // HTJ2KChannelInfo describes a channel for HTJ2K compression
@@ -43,13 +43,6 @@ const (
 	HTJ2KPixelTypeHalf  = 1
 	HTJ2KPixelTypeFloat = 2
 )
-
-// htj2kChunkHeader represents the OpenEXR HTJ2K chunk header
-type htj2kChunkHeader struct {
-	Magic      uint16   // "HT" (0x4854)
-	PayloadLen uint32   // Length of header payload
-	ChannelMap []uint16 // Maps J2K component index to EXR channel index
-}
 
 // writeHTJ2KHeader writes the OpenEXR HTJ2K chunk header
 func writeHTJ2KHeader(w io.Writer, channelMap []uint16) error {

@@ -435,8 +435,9 @@ func (w *BufferWriter) Reset() {
 }
 
 // WriteByte writes a single byte.
-func (w *BufferWriter) WriteByte(b byte) {
+func (w *BufferWriter) WriteByte(b byte) error {
 	w.buf = append(w.buf, b)
+	return nil
 }
 
 // WriteBytes writes a byte slice.

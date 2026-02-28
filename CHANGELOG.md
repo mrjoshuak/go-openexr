@@ -11,11 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HTJ2K compression of FLOAT (32-bit) channels via `jpeg2000.EncodeFloat`
 - HTJ2K decompression of FLOAT channels via `jpeg2000.DecodeFloat`
 - Mixed FLOAT/non-FLOAT channel validation with clear error message
-- Float channel roundtrip tests (single-channel and RGB)
+- Progressive HTJ2K decode API and float image output
+- Channel-aware PIZ compress/decompress matching C++ OpenEXR layout
+- Strided 2D Haar wavelet for PIZ float/uint channel support
+- Float32 PIZ roundtrip and C++ interop tests
+
+### Fixed
+- Huffman canonical code assignment to match OpenEXR C++ algorithm
+- All go vet findings (unsafe.Pointer arithmetic, WriteByte signature, ARM64 frame size)
+- All staticcheck findings (sync.Pool pointer wrapping, unused types, constant types)
 
 ### Changed
 - `HTJ2KCompress` now routes FLOAT channels through `EncodeFloat` path
 - `HTJ2KDecompress` now routes FLOAT channels through `DecodeFloat` path
+- Updated go-jpeg2000 dependency to v1.2.1
+
+## [1.0.7] - 2026-02-16
+
+### Fixed
+- Scanline decoder crash on non-zero origin data windows (fixes #2)
+
+## [1.0.6] - 2026-02-16
+
+### Fixed
+- `ReadChunk` EOF on multipart EXR files by handling 4-byte part number prefix
+- Added regression test for multipart ReadChunk roundtrip
+
+## [1.0.5] - 2026-01-13
+
+### Fixed
+- LICENSE file format to match official Apache 2.0 for pkg.go.dev detection
+
+## [1.0.4] - 2026-01-13
+
+### Fixed
+- Nil pointer dereference in ScanlineReader/TiledReader
+- DWA decompressor slice bounds vulnerability
+- Zero sampling and data window dimension validation
+- Unknown pixel type validation in readers
+
+### Added
+- Fuzz corpus and fuzzing scripts for regression testing
+- Security section in README
 
 ## [1.0.3] - 2026-01-11
 
