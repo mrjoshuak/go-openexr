@@ -99,13 +99,13 @@ for _, pkt := range packets {
 
 `HTJ2KExtractPackets()` and `HTJ2KBuildPacketIndex()` provide random access to individual wavelet packets within HTJ2K-compressed data. The packet index variant references byte ranges in the original codestream without copying, making it suitable for large images where memory is a concern.
 
-### Known Limitations
+### HTJ2K FLOAT Channel Compression
 
-HTJ2K compression of FLOAT (32-bit) pixel type is not yet supported -- the underlying JPEG 2000 encoder is currently limited to 16-bit precision. HALF channels work fully with HTJ2K. This limitation is in the [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000) encoder, not in go-openexr itself.
+HTJ2K now fully supports FLOAT (32-bit) channels. Float values are encoded with bitwise lossless precision using NLT Type 3 markers -- the same approach used by the C++ OpenEXR 3.4 + OpenJPH implementation. This enables HTJ2K compression of depth maps, world-position passes, and other float-precision EXR channels.
 
 ### Dependency
 
-The progressive HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000) v1.1.0, which provides the progressive decode, float output, and packet extraction APIs that go-openexr builds on.
+The HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000), which provides float encoding/decoding, progressive decode, and packet extraction APIs that go-openexr builds on.
 
 ## Status
 
