@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"math"
 
 	"github.com/mrjoshuak/go-jpeg2000"
 )
@@ -277,15 +278,27 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockS
 	width := channels[0].Width
 	height := numLines
 
-	// Validate all channels have consistent dimensions for JPEG 2000
+	// Create channel map for RCT optimization
+	channelMap, isRGB := makeChannelMap(channels)
+
+	// Check if any channels are FLOAT
+	hasFloat := false
 	for _, ch := range channels {
 		if ch.Type == HTJ2KPixelTypeFloat {
-			return nil, errors.New("htj2k: FLOAT (32-bit) pixel type not supported for compression; use HALF (16-bit) channels")
+			hasFloat = true
+			break
 		}
 	}
 
-	// Create channel map for RCT optimization
-	channelMap, isRGB := makeChannelMap(channels)
+	if hasFloat {
+		// All channels must be FLOAT (mixed types not supported)
+		for _, ch := range channels {
+			if ch.Type != HTJ2KPixelTypeFloat {
+				return nil, errors.New("htj2k: mixed FLOAT and non-FLOAT channels not supported")
+			}
+		}
+		return htj2kCompressFloat(src, width, height, channels, channelMap)
+	}
 
 	// Create JPEG 2000 encoder options
 	opts := &jpeg2000.Options{
@@ -324,6 +337,60 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockS
 	return output, nil
 }
 
+// htj2kCompressFloat handles FLOAT channel compression via EncodeFloat.
+func htj2kCompressFloat(src []byte, width, height int, channels []HTJ2KChannelInfo, channelMap []uint16) ([]byte, error) {
+	numComponents := len(channels)
+	bytesPerPixel := numComponents * 4
+
+	// Build planar float32 components from interleaved binary data
+	components := make([][]float32, numComponents)
+	for i := range components {
+		components[i] = make([]float32, width*height)
+	}
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			pixelOffset := (y*width + x) * bytesPerPixel
+			for j2kComp := 0; j2kComp < numComponents; j2kComp++ {
+				srcCh := channelMap[j2kComp]
+				dataOffset := pixelOffset + int(srcCh)*4
+				bits := binary.LittleEndian.Uint32(src[dataOffset:])
+				components[j2kComp][y*width+x] = math.Float32frombits(bits)
+			}
+		}
+	}
+
+	img := &jpeg2000.FloatImage{
+		Width:      width,
+		Height:     height,
+		Components: components,
+		BitDepth:   32,
+		Signed:     true,
+	}
+
+	opts := &jpeg2000.Options{
+		Format:   jpeg2000.FormatJ2K,
+		Lossless: true,
+	}
+
+	var codestreamBuf bytes.Buffer
+	if err := jpeg2000.EncodeFloat(&codestreamBuf, img, opts); err != nil {
+		return nil, fmt.Errorf("htj2k: jpeg2000 float encode failed: %w", err)
+	}
+
+	headerSize := htj2kHeaderSize + 2 + len(channelMap)*2
+	output := make([]byte, 0, headerSize+codestreamBuf.Len())
+
+	var headerBuf bytes.Buffer
+	if err := writeHTJ2KHeader(&headerBuf, channelMap); err != nil {
+		return nil, err
+	}
+	output = append(output, headerBuf.Bytes()...)
+	output = append(output, codestreamBuf.Bytes()...)
+
+	return output, nil
+}
+
 // HTJ2KDecompress decompresses HTJ2K-compressed data
 func HTJ2KDecompress(src []byte, expectedSize int, channels []HTJ2KChannelInfo) ([]byte, error) {
 	if len(src) < htj2kHeaderSize {
@@ -342,8 +409,22 @@ func HTJ2KDecompress(src []byte, expectedSize int, channels []HTJ2KChannelInfo) 
 			len(channels), len(channelMap))
 	}
 
-	// Decode JPEG 2000 codestream
+	// Check if this is a float decode
 	codestream := src[headerSize:]
+
+	hasFloat := false
+	for _, ch := range channels {
+		if ch.Type == HTJ2KPixelTypeFloat {
+			hasFloat = true
+			break
+		}
+	}
+
+	if hasFloat {
+		return htj2kDecompressFloat(codestream, channels, channelMap)
+	}
+
+	// Decode JPEG 2000 codestream (integer path)
 	img, err := jpeg2000.Decode(bytes.NewReader(codestream))
 	if err != nil {
 		return nil, fmt.Errorf("htj2k: jpeg2000 decode failed: %w", err)
@@ -370,6 +451,35 @@ func HTJ2KDecompress(src []byte, expectedSize int, channels []HTJ2KChannelInfo) 
 	// This needs to handle the channel reordering from channelMap
 	if err := extractPixelData(img, output, channels, channelMap); err != nil {
 		return nil, err
+	}
+
+	return output, nil
+}
+
+// htj2kDecompressFloat handles FLOAT channel decompression via DecodeFloat.
+func htj2kDecompressFloat(codestream []byte, channels []HTJ2KChannelInfo, channelMap []uint16) ([]byte, error) {
+	floatImg, err := jpeg2000.DecodeFloat(bytes.NewReader(codestream))
+	if err != nil {
+		return nil, fmt.Errorf("htj2k: jpeg2000 float decode failed: %w", err)
+	}
+
+	width, height := floatImg.Width, floatImg.Height
+	numComponents := len(channels)
+	bytesPerPixel := numComponents * 4
+	output := make([]byte, width*height*bytesPerPixel)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			pixelIdx := y*width + x
+			pixelOffset := pixelIdx * bytesPerPixel
+
+			for j2kComp := 0; j2kComp < numComponents && j2kComp < floatImg.ComponentCount(); j2kComp++ {
+				outCh := channelMap[j2kComp]
+				val := floatImg.Components[j2kComp][pixelIdx]
+				bits := math.Float32bits(val)
+				binary.LittleEndian.PutUint32(output[pixelOffset+int(outCh)*4:], bits)
+			}
+		}
 	}
 
 	return output, nil

@@ -6,3 +6,5 @@ require (
 	github.com/klauspost/compress v1.18.2
 	github.com/mrjoshuak/go-jpeg2000 v1.1.0
 )
+
+replace github.com/mrjoshuak/go-jpeg2000 => ../go-jpeg2000

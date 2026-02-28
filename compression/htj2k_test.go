@@ -2,6 +2,8 @@ package compression
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math"
 	"testing"
 )
 
@@ -517,15 +519,102 @@ func TestHTJ2KCompressNoChannels(t *testing.T) {
 	}
 }
 
-func TestHTJ2KCompressFloatNotSupported(t *testing.T) {
+func TestHTJ2KCompressDecompressFloatRoundtrip(t *testing.T) {
+	width, height := 8, 8
+	channels := []HTJ2KChannelInfo{
+		{Type: HTJ2KPixelTypeFloat, Width: width, Height: height, XSampling: 1, YSampling: 1, Name: "Z"},
+	}
+
+	src := make([]byte, width*height*4)
+	testValues := []float32{0, 1.0, -1.0, 0.5, -0.5, 100.0, math.SmallestNonzeroFloat32, math.MaxFloat32}
+	for i := 0; i < width*height; i++ {
+		val := testValues[i%len(testValues)]
+		binary.LittleEndian.PutUint32(src[i*4:], math.Float32bits(val))
+	}
+
+	compressed, err := HTJ2KCompress(src, height, channels, 32)
+	if err != nil {
+		t.Fatalf("HTJ2KCompress FLOAT failed: %v", err)
+	}
+
+	decompressed, err := HTJ2KDecompress(compressed, len(src), channels)
+	if err != nil {
+		t.Fatalf("HTJ2KDecompress FLOAT failed: %v", err)
+	}
+
+	if len(decompressed) != len(src) {
+		t.Fatalf("size mismatch: got %d, want %d", len(decompressed), len(src))
+	}
+
+	// Verify bitwise equality
+	for i := 0; i < width*height; i++ {
+		gotBits := binary.LittleEndian.Uint32(decompressed[i*4:])
+		wantBits := binary.LittleEndian.Uint32(src[i*4:])
+		if gotBits != wantBits {
+			t.Errorf("pixel %d: got 0x%08X (%v), want 0x%08X (%v)",
+				i, gotBits, math.Float32frombits(gotBits),
+				wantBits, math.Float32frombits(wantBits))
+		}
+	}
+}
+
+func TestHTJ2KCompressDecompressFloatRGB(t *testing.T) {
+	width, height := 8, 8
+	channels := []HTJ2KChannelInfo{
+		{Type: HTJ2KPixelTypeFloat, Width: width, Height: height, XSampling: 1, YSampling: 1, Name: "B"},
+		{Type: HTJ2KPixelTypeFloat, Width: width, Height: height, XSampling: 1, YSampling: 1, Name: "G"},
+		{Type: HTJ2KPixelTypeFloat, Width: width, Height: height, XSampling: 1, YSampling: 1, Name: "R"},
+	}
+
+	// 3 FLOAT channels, interleaved: [B G R] per pixel
+	src := make([]byte, width*height*3*4)
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			offset := (y*width + x) * 12
+			// B
+			binary.LittleEndian.PutUint32(src[offset:], math.Float32bits(float32(x)*0.1))
+			// G
+			binary.LittleEndian.PutUint32(src[offset+4:], math.Float32bits(float32(y)*0.2))
+			// R
+			binary.LittleEndian.PutUint32(src[offset+8:], math.Float32bits(float32(x+y)*0.05))
+		}
+	}
+
+	compressed, err := HTJ2KCompress(src, height, channels, 32)
+	if err != nil {
+		t.Fatalf("HTJ2KCompress FLOAT RGB failed: %v", err)
+	}
+
+	decompressed, err := HTJ2KDecompress(compressed, len(src), channels)
+	if err != nil {
+		t.Fatalf("HTJ2KDecompress FLOAT RGB failed: %v", err)
+	}
+
+	if len(decompressed) != len(src) {
+		t.Fatalf("size mismatch: got %d, want %d", len(decompressed), len(src))
+	}
+
+	for i := 0; i < len(src)/4; i++ {
+		gotBits := binary.LittleEndian.Uint32(decompressed[i*4:])
+		wantBits := binary.LittleEndian.Uint32(src[i*4:])
+		if gotBits != wantBits {
+			t.Errorf("float[%d]: got 0x%08X (%v), want 0x%08X (%v)",
+				i, gotBits, math.Float32frombits(gotBits),
+				wantBits, math.Float32frombits(wantBits))
+		}
+	}
+}
+
+func TestHTJ2KCompressMixedFloatError(t *testing.T) {
 	channels := []HTJ2KChannelInfo{
 		{Type: HTJ2KPixelTypeFloat, Width: 8, Height: 8, XSampling: 1, YSampling: 1, Name: "Z"},
+		{Type: HTJ2KPixelTypeHalf, Width: 8, Height: 8, XSampling: 1, YSampling: 1, Name: "A"},
 	}
-	src := make([]byte, 8*8*4)
+	src := make([]byte, 8*8*(4+2))
 
 	_, err := HTJ2KCompress(src, 8, channels, 32)
 	if err == nil {
-		t.Error("Expected error for FLOAT pixel type")
+		t.Error("Expected error for mixed FLOAT and HALF channels")
 	}
 }
 
