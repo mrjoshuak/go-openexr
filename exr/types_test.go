@@ -613,10 +613,17 @@ func TestTimeCodePackings(t *testing.T) {
 			// Set time and flags with packing
 			tc.SetTimeAndFlags(0x12345678, tt.packing)
 
-			// Get time and flags with packing
+			// Get time and flags with packing — roundtrip must preserve value
 			val := tc.TimeAndFlags(tt.packing)
-			// Just verify it doesn't panic and returns some value
-			_ = val
+
+			// Set again from the retrieved value and read back — must be stable
+			tc2 := MustNewTimeCode(0, 0, 0, 0, false)
+			tc2.SetTimeAndFlags(val, tt.packing)
+			val2 := tc2.TimeAndFlags(tt.packing)
+
+			if val != val2 {
+				t.Errorf("SetTimeAndFlags/TimeAndFlags roundtrip not stable: first=0x%08X, second=0x%08X", val, val2)
+			}
 		})
 	}
 }

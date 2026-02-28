@@ -31,16 +31,19 @@ func TestBufferPoolGet(t *testing.T) {
 func TestBufferPoolReuse(t *testing.T) {
 	pool := NewBufferPool()
 
-	// Get a buffer and put it back
+	// Get a buffer, write a sentinel, and put it back
 	buf1 := pool.Get(1024)
+	buf1[0] = 0xAB
+	cap1 := cap(buf1)
 	pool.Put(buf1)
 
-	// Get another buffer of the same size
+	// Get another buffer of the same size — pool should reuse it
 	buf2 := pool.Get(1024)
-
-	// They should be from the same underlying array (capacity check)
-	if cap(buf2) != cap(buf1) {
-		t.Log("Buffer was not reused (this is OK, pool behavior is best-effort)")
+	if cap(buf2) != cap1 {
+		t.Errorf("Expected reused buffer with cap %d, got cap %d", cap1, cap(buf2))
+	}
+	if buf2[0] != 0xAB {
+		t.Errorf("Expected sentinel 0xAB in reused buffer, got 0x%02X", buf2[0])
 	}
 
 	pool.Put(buf2)
@@ -152,8 +155,13 @@ func TestBufferPoolStats(t *testing.T) {
 	if allocs != 3 {
 		t.Errorf("Expected 3 allocations, got %d", allocs)
 	}
-	// At least one hit expected when reusing
-	t.Logf("Stats: allocs=%d, hits=%d, misses=%d", allocs, hits, misses)
+	// At least one hit expected when reusing (buf1 was returned before buf3 requested)
+	if hits == 0 {
+		t.Error("Expected at least 1 cache hit after Put+Get cycle")
+	}
+	if hits+misses != allocs {
+		t.Errorf("hits(%d) + misses(%d) should equal allocs(%d)", hits, misses, allocs)
+	}
 }
 
 func TestBufferPoolMemoryUsed(t *testing.T) {
@@ -235,10 +243,20 @@ func TestMemoryLimitExceededError(t *testing.T) {
 	}
 
 	msg := err.Error()
-	if msg == "" {
-		t.Error("Error() should return a non-empty message")
+	if msg != "exr: memory limit exceeded" {
+		t.Errorf("Error() = %q, want %q", msg, "exr: memory limit exceeded")
 	}
-	t.Logf("Error message: %s", msg)
+
+	// Verify struct fields are accessible
+	if err.Requested != 1024*1024 {
+		t.Errorf("Requested = %d, want %d", err.Requested, 1024*1024)
+	}
+	if err.Current != 512*1024 {
+		t.Errorf("Current = %d, want %d", err.Current, 512*1024)
+	}
+	if err.Limit != 512*1024 {
+		t.Errorf("Limit = %d, want %d", err.Limit, 512*1024)
+	}
 }
 
 func TestGlobalMemoryFunctions(t *testing.T) {
@@ -252,19 +270,25 @@ func TestGlobalMemoryFunctions(t *testing.T) {
 	// Get a buffer through global pool
 	buf := GetBuffer(4096)
 
-	// Check memory used
+	// Memory used must increase after allocation
 	used := GlobalMemoryUsed()
-	t.Logf("Global memory used after alloc: %d", used)
+	if used == 0 {
+		t.Error("GlobalMemoryUsed() should be > 0 after allocation")
+	}
 
 	PutBuffer(buf)
 
-	// Check after return
+	// Memory used must decrease after return
 	usedAfter := GlobalMemoryUsed()
-	t.Logf("Global memory used after put: %d", usedAfter)
+	if usedAfter >= used {
+		t.Errorf("GlobalMemoryUsed() should decrease after Put: before=%d, after=%d", used, usedAfter)
+	}
 
-	// Get stats
-	allocs, hits, misses := GlobalPoolStats()
-	t.Logf("Global pool stats: allocs=%d, hits=%d, misses=%d", allocs, hits, misses)
+	// Stats should reflect at least one allocation
+	allocs, _, _ := GlobalPoolStats()
+	if allocs == 0 {
+		t.Error("GlobalPoolStats() allocs should be > 0 after allocation")
+	}
 }
 
 func TestGetBufferWithError(t *testing.T) {

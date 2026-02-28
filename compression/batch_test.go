@@ -452,25 +452,36 @@ func BenchmarkCopyBatch16(b *testing.B) {
 }
 
 func TestCSC709ForwardBatchShortSlice(t *testing.T) {
-	// Test with slices of different lengths (g or b shorter than r)
+	// Test with slices of different lengths (g shorter than r)
 	r := make([]float32, 100)
 	g := make([]float32, 50) // Shorter than r
 	b := make([]float32, 100)
 
 	for i := range r {
 		r[i] = 0.5
-		if i < len(g) {
-			g[i] = 0.5
-		}
 		b[i] = 0.5
 	}
+	for i := range g {
+		g[i] = 0.5
+	}
 
-	// Should not panic, just return early
+	// Save originals to verify guard returns early without modifying data
+	origR := make([]float32, len(r))
+	copy(origR, r)
+
 	CSC709ForwardBatch(r, g, b)
+
+	// Function should return early when g is shorter — data unchanged
+	for i := range r {
+		if r[i] != origR[i] {
+			t.Errorf("r[%d] was modified despite short g slice: got %v, want %v", i, r[i], origR[i])
+			break
+		}
+	}
 }
 
 func TestCSC709InverseBatchShortSlice(t *testing.T) {
-	// Test with slices of different lengths (cb or cr shorter than y)
+	// Test with slices of different lengths (cr shorter than y)
 	y := make([]float32, 100)
 	cb := make([]float32, 100)
 	cr := make([]float32, 50) // Shorter than y
@@ -478,13 +489,24 @@ func TestCSC709InverseBatchShortSlice(t *testing.T) {
 	for i := range y {
 		y[i] = 0.5
 		cb[i] = 0.0
-		if i < len(cr) {
-			cr[i] = 0.0
-		}
+	}
+	for i := range cr {
+		cr[i] = 0.0
 	}
 
-	// Should not panic, just return early
+	// Save originals to verify guard returns early without modifying data
+	origY := make([]float32, len(y))
+	copy(origY, y)
+
 	CSC709InverseBatch(y, cb, cr)
+
+	// Function should return early when cr is shorter — data unchanged
+	for i := range y {
+		if y[i] != origY[i] {
+			t.Errorf("y[%d] was modified despite short cr slice: got %v, want %v", i, y[i], origY[i])
+			break
+		}
+	}
 }
 
 func TestCSC709ForwardBatchSmallRemainder(t *testing.T) {
@@ -538,8 +560,9 @@ func TestCSC709ForwardBatchSmallRemainder(t *testing.T) {
 }
 
 func TestCSC709InverseBatchSmallRemainder(t *testing.T) {
-	// Test inverse with remainder
-	y := make([]float32, 13) // 8 + 5 remainder
+	// Test inverse with remainder: 13 = 8 batch + 5 remainder
+	// Use gray input (cb=0, cr=0) — inverse should yield R=G=B=Y
+	y := make([]float32, 13)
 	cb := make([]float32, 13)
 	cr := make([]float32, 13)
 
@@ -551,48 +574,106 @@ func TestCSC709InverseBatchSmallRemainder(t *testing.T) {
 
 	CSC709InverseBatch(y, cb, cr)
 
-	// Just verify it doesn't panic and produces output
+	// With cb=0, cr=0: R = Y + 1.5747*0 = Y, G = Y - 0 - 0 = Y, B = Y + 1.8556*0 = Y
+	// All channels should remain 0.5
+	const tolerance = 1e-5
 	for i := 0; i < 13; i++ {
-		if y[i] != y[i] { // NaN check
-			t.Errorf("y[%d] is NaN", i)
+		if diff := y[i] - 0.5; diff < -tolerance || diff > tolerance {
+			t.Errorf("y[%d] = %v, want ~0.5 for gray input", i, y[i])
+		}
+		if diff := cb[i] - 0.5; diff < -tolerance || diff > tolerance {
+			t.Errorf("cb[%d] = %v, want ~0.5 for gray input", i, cb[i])
+		}
+		if diff := cr[i] - 0.5; diff < -tolerance || diff > tolerance {
+			t.Errorf("cr[%d] = %v, want ~0.5 for gray input", i, cr[i])
 		}
 	}
 }
 
 func TestInterleaveChannelsBatchEmpty(t *testing.T) {
-	// Test with empty channels
+	// Test with empty channels — dst should remain unchanged
 	dst := make([]byte, 100)
-	channels := [][]byte{}
+	for i := range dst {
+		dst[i] = 0xFF
+	}
 
-	// Should not panic, just return
-	InterleaveChannelsBatch(dst, channels, 2)
+	InterleaveChannelsBatch(dst, [][]byte{}, 2)
+
+	// Verify dst was not modified
+	for i := range dst {
+		if dst[i] != 0xFF {
+			t.Errorf("dst[%d] = 0x%02X, want 0xFF (should be unchanged)", i, dst[i])
+			break
+		}
+	}
 }
 
 func TestDeinterleaveChannelsBatchEmpty(t *testing.T) {
-	// Test with empty channels
+	// Test with empty channels — src should remain unchanged
 	src := make([]byte, 100)
-	channels := [][]byte{}
+	for i := range src {
+		src[i] = byte(i)
+	}
 
-	// Should not panic, just return
-	DeinterleaveChannelsBatch(src, channels, 2)
+	DeinterleaveChannelsBatch(src, [][]byte{}, 2)
+
+	// Verify src was not modified
+	for i := range src {
+		if src[i] != byte(i) {
+			t.Errorf("src[%d] = %d, want %d (should be unchanged)", i, src[i], byte(i))
+			break
+		}
+	}
 }
 
 func TestWaveletEncode2DEmpty(t *testing.T) {
-	// Test with empty/zero dimensions
-	WaveletEncode2D(nil, 0, 0)
-	WaveletEncode2D([]uint16{}, 0, 10)
-	WaveletEncode2D([]uint16{}, 10, 0)
+	// Test with empty/zero dimensions — verify guard returns without error
+	// Use a non-nil slice with data to verify it isn't modified
+	data := []uint16{100, 200, 300}
+	origData := make([]uint16, len(data))
+	copy(origData, data)
 
-	// Should not panic
+	WaveletEncode2D(nil, 0, 0)
+	WaveletEncode2D(data, 0, 10)
+
+	// data should be unchanged since width=0 triggers early return
+	for i := range data {
+		if data[i] != origData[i] {
+			t.Errorf("data[%d] = %d, want %d (should be unchanged with zero width)", i, data[i], origData[i])
+		}
+	}
+
+	WaveletEncode2D(data, 10, 0)
+
+	for i := range data {
+		if data[i] != origData[i] {
+			t.Errorf("data[%d] = %d, want %d (should be unchanged with zero height)", i, data[i], origData[i])
+		}
+	}
 }
 
 func TestWaveletDecode2DEmpty(t *testing.T) {
-	// Test with empty/zero dimensions
-	WaveletDecode2D(nil, 0, 0)
-	WaveletDecode2D([]uint16{}, 0, 10)
-	WaveletDecode2D([]uint16{}, 10, 0)
+	// Test with empty/zero dimensions — verify guard returns without error
+	data := []uint16{100, 200, 300}
+	origData := make([]uint16, len(data))
+	copy(origData, data)
 
-	// Should not panic
+	WaveletDecode2D(nil, 0, 0)
+	WaveletDecode2D(data, 0, 10)
+
+	for i := range data {
+		if data[i] != origData[i] {
+			t.Errorf("data[%d] = %d, want %d (should be unchanged with zero width)", i, data[i], origData[i])
+		}
+	}
+
+	WaveletDecode2D(data, 10, 0)
+
+	for i := range data {
+		if data[i] != origData[i] {
+			t.Errorf("data[%d] = %d, want %d (should be unchanged with zero height)", i, data[i], origData[i])
+		}
+	}
 }
 
 func TestWaveletRowSmallData(t *testing.T) {

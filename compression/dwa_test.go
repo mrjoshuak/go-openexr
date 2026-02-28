@@ -661,18 +661,21 @@ func BenchmarkDctInverse8x8DcOnly(b *testing.B) {
 }
 
 func TestZlibDecompressError(t *testing.T) {
-	// Test with corrupted zlib data
+	// Test with corrupted zlib data — must return error
 	badData := []byte{0xFF, 0xFF, 0xFF, 0xFF}
 	_, err := zlibDecompress(badData, 100)
 	if err == nil {
 		t.Error("Expected error from corrupted zlib data")
 	}
 
-	// Test with valid zlib but short read
+	// Test with valid zlib but short read — should return error or short result
 	validZlib := []byte{0x78, 0x9C, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01}
-	result, err := zlibDecompress(validZlib, 1000) // Expect more than actual
-	if err == nil || len(result) == 1000 {
-		t.Logf("zlibDecompress returned: len=%d, err=%v", len(result), err)
+	result, err := zlibDecompress(validZlib, 1000)
+	if err == nil && len(result) == 1000 {
+		t.Error("Expected error or short result from zlib with insufficient data")
+	}
+	if err == nil && len(result) >= 1000 {
+		t.Errorf("zlibDecompress returned len=%d without error, expected short read", len(result))
 	}
 }
 
