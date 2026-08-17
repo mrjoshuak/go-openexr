@@ -358,7 +358,7 @@ func (r *ScanlineReader) readPixelsSequential(y1, y2 int) error {
 				return err
 			}
 		case comp == CompressionDWAA || comp == CompressionDWAB:
-			decompressedData, err = r.decompressDWA(data, numLinesInChunk)
+			decompressedData, err = r.decompressDWA(data, chunkStartY, numLinesInChunk)
 			if err != nil {
 				return err
 			}
@@ -421,7 +421,7 @@ func (r *ScanlineReader) readPixelsParallel(firstChunk, lastChunk, minY, maxY in
 		chunk := &chunks[i]
 
 		// Decompress the chunk data
-		decompressedData, err := r.decompressChunk(chunk.data, chunk.numLines, comp)
+		decompressedData, err := r.decompressChunk(chunk.data, int(chunk.chunkY), chunk.numLines, comp)
 		if err != nil {
 			mu.Lock()
 			if firstErr == nil {
@@ -463,7 +463,7 @@ func (r *ScanlineReader) chunkIsStoredRaw(data []byte, numLines int, comp Compre
 
 // decompressChunk decompresses a chunk based on compression type.
 // This is a thread-safe version that doesn't use shared reader buffers.
-func (r *ScanlineReader) decompressChunk(data []byte, numLines int, comp Compression) ([]byte, error) {
+func (r *ScanlineReader) decompressChunk(data []byte, startY, numLines int, comp Compression) ([]byte, error) {
 	if r.chunkIsStoredRaw(data, numLines, comp) {
 		result := make([]byte, len(data))
 		copy(result, data)
@@ -487,7 +487,7 @@ func (r *ScanlineReader) decompressChunk(data []byte, numLines int, comp Compres
 	case CompressionB44, CompressionB44A:
 		return r.decompressB44(data, numLines)
 	case CompressionDWAA, CompressionDWAB:
-		return r.decompressDWA(data, numLines)
+		return r.decompressDWA(data, startY, numLines)
 	case CompressionHTJ2K256, CompressionHTJ2K32:
 		return r.decompressHTJ2K(data, numLines)
 	default:
@@ -982,15 +982,9 @@ func (w *ScanlineWriter) writePixelsSequential(y1, y2 int) error {
 			if err != nil {
 				return err
 			}
-		case CompressionDWAA:
+		case CompressionDWAA, CompressionDWAB:
 			numLines := chunkEnd - chunkStart + 1
-			data, err = w.compressDWA(rawData, numLines, false)
-			if err != nil {
-				return err
-			}
-		case CompressionDWAB:
-			numLines := chunkEnd - chunkStart + 1
-			data, err = w.compressDWA(rawData, numLines, true)
+			data, err = w.compressDWA(rawData, chunkStart, numLines)
 			if err != nil {
 				return err
 			}
@@ -1085,10 +1079,8 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 			compressed, compErr = w.compressB44(chunk.rawData, numLines, false)
 		case CompressionB44A:
 			compressed, compErr = w.compressB44(chunk.rawData, numLines, true)
-		case CompressionDWAA:
-			compressed, compErr = w.compressDWA(chunk.rawData, numLines, false)
-		case CompressionDWAB:
-			compressed, compErr = w.compressDWA(chunk.rawData, numLines, true)
+		case CompressionDWAA, CompressionDWAB:
+			compressed, compErr = w.compressDWA(chunk.rawData, chunk.chunkStart, numLines)
 		case CompressionHTJ2K256:
 			compressed, compErr = w.compressHTJ2K(chunk.rawData, numLines, 128)
 		case CompressionHTJ2K32:
@@ -1382,19 +1374,45 @@ func (w *ScanlineWriter) compressB44(data []byte, numLines int, flatfields bool)
 	return compression.B44Compress(data, channels, width, numLines, flatfields)
 }
 
-// decompressDWA decompresses chunk data using DWAA or DWAB.
-func (r *ScanlineReader) decompressDWA(data []byte, numLines int) ([]byte, error) {
-	width := int(r.dataWindow.Width())
-	expectedSize := r.calculateChunkSize(numLines)
+// dwaChannels describes a file's channels for the DWA codec. DWA classifies on
+// the channel name and pixel type and groups a layer's R, G and B into a
+// colour-space-converted triple, so it needs the whole channel list, in the
+// order the samples are interleaved: sorted by name.
+func dwaChannels(cl *ChannelList) []compression.DwaChannel {
+	sorted := cl.SortedByName()
+	out := make([]compression.DwaChannel, len(sorted))
+	for i, ch := range sorted {
+		var pixelType int
+		switch ch.Type {
+		case PixelTypeUint:
+			pixelType = compression.DwaPixelTypeUint
+		case PixelTypeHalf:
+			pixelType = compression.DwaPixelTypeHalf
+		case PixelTypeFloat:
+			pixelType = compression.DwaPixelTypeFloat
+		}
+		out[i] = compression.DwaChannel{
+			Name:      ch.Name,
+			PixelType: pixelType,
+			XSampling: int(ch.XSampling),
+			YSampling: int(ch.YSampling),
+			PLinear:   ch.PLinear,
+		}
+	}
+	return out
+}
 
-	// Create output buffer
-	dst := make([]byte, expectedSize)
-
-	// Decompress using DWA
-	if err := compression.DecompressDWAA(data, dst, width, numLines); err != nil {
+// decompressDWA decompresses chunk data using DWAA or DWAB. startY is the
+// first scanline of the chunk in image coordinates; DWA needs it because a
+// channel with YSampling n stores only the rows where y is a multiple of n.
+func (r *ScanlineReader) decompressDWA(data []byte, startY, numLines int) ([]byte, error) {
+	dst := make([]byte, r.calculateChunkSize(numLines))
+	err := compression.DWADecompress(data, dwaChannels(r.channelList),
+		int(r.dataWindow.Min.X), int(r.dataWindow.Max.X),
+		startY, startY+numLines-1, dst)
+	if err != nil {
 		return nil, err
 	}
-
 	return dst, nil
 }
 
@@ -1465,17 +1483,16 @@ func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockSize int)
 	return compression.HTJ2KCompress(data, numLines, channels, blockSize)
 }
 
-// compressDWA compresses chunk data using DWAA or DWAB.
-func (w *ScanlineWriter) compressDWA(data []byte, numLines int, isDWAB bool) ([]byte, error) {
-	width := int(w.dataWindow.Width())
-
+// compressDWA compresses chunk data using DWAA or DWAB. DWAA and DWAB differ
+// only in how many scanlines a chunk holds, which the caller has already
+// decided, so the chunk format itself is the same.
+func (w *ScanlineWriter) compressDWA(data []byte, startY, numLines int) ([]byte, error) {
 	// Get compression level from header (defaults to 45.0 if not set)
 	level := w.header.DWACompressionLevel()
 
-	if isDWAB {
-		return compression.CompressDWAB(data, width, numLines, level)
-	}
-	return compression.CompressDWAA(data, width, numLines, level)
+	return compression.DWACompress(data, dwaChannels(w.channelList),
+		int(w.dataWindow.Min.X), int(w.dataWindow.Max.X),
+		startY, startY+numLines-1, level)
 }
 
 // Close finalizes the file.

@@ -290,7 +290,7 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 		uncompressed := buildScanlineData(p.frameBuffer, cl, width, chunkY, linesInChunk)
 
 		// Compress
-		compressed, err := compressChunkData(uncompressed, width, linesInChunk, cl, comp)
+		compressed, err := compressChunkData(uncompressed, int(dw.Min.X), chunkY, width, linesInChunk, cl, comp)
 		if err != nil {
 			return err
 		}
@@ -369,7 +369,7 @@ func (m *MultiPartOutputFile) WriteTileLevel(part, tileX, tileY, levelX, levelY 
 	uncompressed := buildTileData(p.frameBuffer, cl, startX, absStartY, actualW, actualH)
 
 	// Compress
-	compressed, err := compressChunkData(uncompressed, actualW, actualH, cl, comp)
+	compressed, err := compressChunkData(uncompressed, int(dw.Min.X)+startX, absStartY, actualW, actualH, cl, comp)
 	if err != nil {
 		return err
 	}
@@ -498,7 +498,9 @@ func buildTileData(fb *FrameBuffer, cl *ChannelList, startX, startY, width, heig
 }
 
 // compressChunkData compresses chunk data using the specified compression.
-func compressChunkData(data []byte, width, height int, cl *ChannelList, comp Compression) ([]byte, error) {
+// minX and minY are the chunk's top-left corner in image coordinates, which
+// DWA needs; the other codecs work from the chunk's size alone.
+func compressChunkData(data []byte, minX, minY, width, height int, cl *ChannelList, comp Compression) ([]byte, error) {
 	switch comp {
 	case CompressionNone:
 		return data, nil
@@ -573,11 +575,9 @@ func compressChunkData(data []byte, width, height int, cl *ChannelList, comp Com
 		}
 		return compression.B44Compress(data, channels, width, height, comp == CompressionB44A)
 
-	case CompressionDWAA:
-		return compression.CompressDWAA(data, width, height, 45.0)
-
-	case CompressionDWAB:
-		return compression.CompressDWAB(data, width, height, 45.0)
+	case CompressionDWAA, CompressionDWAB:
+		return compression.DWACompress(data, dwaChannels(cl),
+			minX, minX+width-1, minY, minY+height-1, DefaultDWACompressionLevel)
 
 	default:
 		return data, nil

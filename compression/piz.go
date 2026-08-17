@@ -870,33 +870,9 @@ func pizDecompressNoWavelet(data []byte, width, height, numSamplesPerPixel, tota
 	}
 
 	huffBlock := data[pos : pos+int(huffSize)]
-	if len(huffBlock) < 20 {
+	if len(huffBlock) < hufBlockHeaderSize {
 		return nil, 0, nil, ErrPIZCorrupted
 	}
-
-	im := binary.LittleEndian.Uint32(huffBlock[0:])
-	iM := binary.LittleEndian.Uint32(huffBlock[4:])
-	tableLength := binary.LittleEndian.Uint32(huffBlock[8:])
-	nBits := binary.LittleEndian.Uint32(huffBlock[12:])
-	_ = tableLength // used implicitly via unpack
-
-	if im >= hufEncSize || iM >= hufEncSize {
-		return nil, 0, nil, ErrPIZCorrupted
-	}
-
-	huffTableData := huffBlock[20:]
-	codeLengths, tableBytes, err := unpackHufTableRange(huffTableData, int(im), int(iM))
-	if err != nil {
-		return nil, 0, nil, err
-	}
-
-	decoder, err := GetFastHufDecoderWithBounds(codeLengths, int(im), int(iM))
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	defer PutFastHufDecoder(decoder)
-
-	huffmanData := huffTableData[tableBytes:]
 
 	if cap(decBuf.data) < totalValues {
 		decBuf.data = make([]uint16, totalValues)
@@ -905,7 +881,9 @@ func pizDecompressNoWavelet(data []byte, width, height, numSamplesPerPixel, tota
 	}
 	decoded := decBuf.data
 
-	if err := decoder.DecodeIntoWithBits(huffmanData, decoded, int(nBits), int(iM)); err != nil {
+	// The Huffman block itself is the same one DWA carries; see
+	// hufDecompressInto.
+	if err := hufDecompressInto(huffBlock, decoded); err != nil {
 		return nil, 0, nil, err
 	}
 
@@ -914,69 +892,4 @@ func pizDecompressNoWavelet(data []byte, width, height, numSamplesPerPixel, tota
 	copy(inverseLUT, work.inverse[:])
 
 	return decoded, maxValue, inverseLUT, nil
-}
-
-// unpackHufTableRange unpacks Huffman code lengths from 6-bit packed format.
-// The table contains code lengths from im to iM (inclusive).
-// Returns the code lengths (full hufEncSize array), number of bytes consumed, and any error.
-func unpackHufTableRange(data []byte, im, iM int) ([]int, int, error) {
-	codeLengths := make([]int, hufEncSize)
-
-	// Bit buffer for reading 6-bit values
-	var bitBuffer uint64
-	var bitsInBuffer int
-	dataPos := 0
-
-	readBits := func(nbits int) (uint64, error) {
-		// Refill buffer
-		for bitsInBuffer < nbits && dataPos < len(data) {
-			bitBuffer = (bitBuffer << 8) | uint64(data[dataPos])
-			dataPos++
-			bitsInBuffer += 8
-		}
-		if bitsInBuffer < nbits {
-			return 0, ErrPIZCorrupted
-		}
-		bitsInBuffer -= nbits
-		return (bitBuffer >> bitsInBuffer) & ((1 << nbits) - 1), nil
-	}
-
-	for symbol := im; symbol <= iM; symbol++ {
-		code, err := readBits(hufEncBits)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		if code == longZeroCodeRun {
-			// Long zero run: read 8-bit count
-			count, err := readBits(8)
-			if err != nil {
-				return nil, 0, err
-			}
-			runLen := int(count) + shortestLongRun
-			if symbol+runLen > iM+1 {
-				runLen = iM + 1 - symbol
-			}
-			// Zeros are already in codeLengths (default value)
-			symbol += runLen - 1 // -1 because loop increments
-		} else if code >= shortZeroCodeRun {
-			// Short zero run: 2-5 zeros
-			runLen := int(code) - shortZeroCodeRun + 2
-			if symbol+runLen > iM+1 {
-				runLen = iM + 1 - symbol
-			}
-			symbol += runLen - 1 // -1 because loop increments
-		} else {
-			// Regular code length (0-58)
-			codeLengths[symbol] = int(code)
-		}
-	}
-
-	// Calculate bytes consumed
-	bytesUsed := dataPos
-	if bitsInBuffer >= 8 {
-		bytesUsed -= bitsInBuffer / 8
-	}
-
-	return codeLengths, bytesUsed, nil
 }
