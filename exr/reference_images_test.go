@@ -223,6 +223,67 @@ func bindChannelsToFrameBuffer(t *testing.T, path string, cl *ChannelList, w, h 
 	return out, finish
 }
 
+// TestAllHalfValuesBitExact checks the one fixture whose correct contents are
+// knowable without consulting any implementation at all: AllHalfValues.exr is
+// defined to hold every 16-bit pattern, with pixel (x, y) carrying the half
+// whose bits are y*256 + x.
+//
+// This complements TestReferenceImagesDecodeExactly, which compares float32
+// samples and canonicalises NaN. That canonicalisation is deliberate — NaN
+// payload bits survive a half-to-float conversion differently in different
+// implementations — but it means the digest cannot see a signalling NaN turned
+// quiet. Comparing raw half bits here closes that gap, and covers all 2048 NaN
+// encodings and both infinities exactly.
+func TestAllHalfValuesBitExact(t *testing.T) {
+	path := filepath.Join(referenceCorpusDir, "AllHalfValues.exr")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Skip("AllHalfValues.exr not downloaded; run testdata/download.sh")
+	}
+
+	f, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer f.Close()
+
+	r, err := NewScanlineReader(f)
+	if err != nil {
+		t.Fatalf("NewScanlineReader: %v", err)
+	}
+	dw := r.DataWindow()
+	w := int(dw.Max.X-dw.Min.X) + 1
+	h := int(dw.Max.Y-dw.Min.Y) + 1
+	if w != 256 || h != 256 {
+		t.Fatalf("expected 256x256, got %dx%d", w, h)
+	}
+
+	buf := make([]half.Half, w*h)
+	fb := NewFrameBuffer()
+	fb.Set("R", NewSliceFromHalf(buf, w, h))
+	r.SetFrameBuffer(fb)
+	if err := r.ReadPixels(int(dw.Min.Y), int(dw.Max.Y)); err != nil {
+		t.Fatalf("ReadPixels: %v", err)
+	}
+
+	mismatches := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			want := uint16(y*256 + x)
+			got := uint16(buf[y*w+x])
+			if got == want {
+				continue
+			}
+			mismatches++
+			if mismatches <= 5 {
+				t.Errorf("pixel (%d,%d): got half bits 0x%04X, want 0x%04X", x, y, got, want)
+			}
+		}
+	}
+	if mismatches > 5 {
+		t.Errorf("%d of %d half bit patterns decoded incorrectly", mismatches, w*h)
+	}
+}
+
 // TestReferenceImagesDecodeExactly is the strongest true-value test in the
 // suite: real-world images, written by the reference implementation, at real
 // sizes, with the compressions the industry actually ships, compared sample by
