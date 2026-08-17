@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **DWAA/DWAB now read files written by the OpenEXR reference implementation,
+  and write files it reads.** The previous decoder was not a DWA decoder: its
+  Huffman stage was a zlib stub, the channel-classification rule length was
+  parsed as `uint32` where the format uses `uint16`, and the AC run-length
+  coding and block/CSC layouts did not match the specification. All four were
+  self-inverse, so round-trip tests passed while nothing OpenEXR produced could
+  be decoded. Both directions are now transcriptions of OpenEXR 3.4's
+  `internal_dwa_*.h`, verified across a 48-case read sweep and 96 write cases;
+  decoding a reference-written file reproduces the reference's own readback to
+  within one half-ULP.
+- The static Huffman block decoder shared by PIZ and DWA is now factored into
+  one implementation (`hufDecompressInto`) rather than duplicated.
+- DWA channels with `ySampling != 1` are rejected with a size-mismatch error
+  instead of decoding into a differently-shaped image.
+- `TestBufferPoolReuse` no longer asserts that `sync.Pool` preserves a buffer's
+  contents across `Put`/`Get`, which it is explicitly permitted not to do. The
+  test failed roughly one run in five under `-race`, and would have made the new
+  race job flaky; it now asserts reuse through the pool's own hit counter.
 - **B44/B44A now pass FLOAT and UINT channels through, as OpenEXR does.** These
   channels are stored uncompressed alongside the block-compressed HALF ones.
   Previously the compressor emitted zero bytes for them and the decompressor
