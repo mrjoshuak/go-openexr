@@ -22,13 +22,13 @@ go-openexr provides native Go support for reading and writing OpenEXR (.exr) fil
 
 **Full Read/Write Support** — Unlike read-only alternatives, go-openexr provides complete write capabilities for generating EXR files in your pipelines.
 
-**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and all eleven compression codecs including HTJ2K with progressive decode.
+**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and eleven compression codecs including HTJ2K with progressive decode.
 
 ### Features
 
 - **100% Pure Go**: No CGO dependencies, fully portable across platforms
 - **HDR Support**: Full high-dynamic-range imaging with half-float (float16) precision
-- **All Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K
+- **Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K — see the [support matrix](#compression-support) for per-codec status and current gaps
 - **Tiled Images**: Efficient random access with mipmap and ripmap support
 - **Multi-Part Files**: Multiple images in a single file
 - **Deep Data**: Variable samples per pixel for compositing workflows
@@ -43,7 +43,7 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 | Category                              | Status      |
 | ------------------------------------- | ----------- |
 | Storage types (scanline, tiled, deep) | ✅ Complete |
-| All compression codecs (11 types incl. HTJ2K) | ✅ Complete |
+| All compression codecs (12 types incl. HTJ2K) | See [support matrix](#compression-support) |
 | All pixel types (UINT, HALF, FLOAT)   | ✅ Complete |
 | Mipmap/Ripmap levels                  | ✅ Complete |
 | Multi-part files                      | ✅ Complete |
@@ -53,7 +53,7 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 | Luminance/Chroma (YC)                 | ✅ Complete |
 | Multi-view/Stereo                     | ✅ Complete |
 
-Files produced by go-openexr are validated against the OpenEXR project's tools (`exrinfo`, `exrcheck`) to ensure full interoperability with the broader OpenEXR ecosystem.
+Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records exactly which codecs that covers.
 
 ## What's New in v1.1.0
 
@@ -107,11 +107,59 @@ HTJ2K now fully supports FLOAT (32-bit) channels. Float values are encoded with 
 
 The HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000), which provides float encoding/decoding, progressive decode, and packet extraction APIs that go-openexr builds on.
 
+## Compression support
+
+The table records what is actually covered by the automated conformance suite,
+which compares against files written by the OpenEXR reference implementation
+(via OpenImageIO's `oiiotool`) sample for sample. "not covered" means exactly
+that — no claim either way, not a known failure:
+
+| Codec           | Reads reference files       | Output read by reference    |
+| --------------- | --------------------------- | --------------------------- |
+| None            | verified, every sample      | verified, every sample      |
+| RLE             | verified, every sample      | verified, every sample      |
+| ZIPS            | verified, every sample      | verified, every sample      |
+| ZIP             | verified, every sample      | verified, every sample      |
+| PIZ             | verified, every sample      | verified, every sample      |
+| PXR24           | verified, every sample      | not covered                 |
+| B44 / B44A      | spot-checked only           | not covered                 |
+| DWAA / DWAB     | **fails** (see below)       | not covered                 |
+| HTJ2K (FLOAT)   | no oracle available         | no oracle available         |
+| HTJ2K (HALF)    | **broken** (see below)      | **broken** (see below)      |
+
+None, RLE, ZIPS, ZIP and PIZ are covered in **both** directions by
+`exr/conformance_test.go` over `exr/testdata/conformance/`. The read side is
+additionally covered by `TestReferenceImagesDecodeExactly` against the official
+[openexr-images](https://github.com/AcademySoftwareFoundation/openexr-images)
+corpus, which contains 7 PXR24, 4 ZIP and 2 PIZ real-world images — every sample
+of all thirteen matches the reference implementation exactly.
+
+B44 is confirmed by hand to read reference-written files but has no automated
+coverage. No codec's *output* beyond the five above is checked against the
+reference; extending the corpus to the lossy codecs needs a tolerance model
+rather than exact comparison, and is outstanding work.
+
+**HTJ2K status.** FLOAT channels round-trip exactly. **HALF channels currently
+decode to all zeros**, with no error raised — do not use HTJ2K with half-float
+images. Neither case can be checked against the reference implementation:
+OpenImageIO 3.1.16 can neither write an HTJ2K EXR nor read one this library
+produces, so "no oracle available" above means exactly that, not "verified".
+
+**DWAA/DWAB read limitation.** DWA chunks that use OpenEXR's static Huffman
+coding are not decodable: `compression.huffmanDecode` falls back to zlib
+(`compression/dwa.go`). DWA files written by this library read back correctly,
+but DWA files written by OpenEXR or OpenImageIO return
+`dwa: corrupt compressed data`.
+
+See [docs/CONFORMANCE.md](docs/CONFORMANCE.md) for how conformance is tested and
+why round-trip tests alone are not sufficient.
+
 ## Status
 
-**Production Ready** — This project implements the complete OpenEXR specification:
+**Production Ready** — This project implements the OpenEXR specification, with
+the single known gap noted in [Compression support](#compression-support):
 
-- All 11 compression codecs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K)
+- 11 compression codecs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K)
 - Deep scanline and tiled images
 - Multi-part files with mixed storage types
 - Preview images and thumbnails
@@ -130,7 +178,7 @@ Security is a priority for go-openexr. Image parsers are a common attack vector,
 
 We use Go's built-in fuzzing framework to continuously test all parsing code paths:
 
-- **Compression codecs**: All decompressors are fuzz-tested (RLE, ZIP, PIZ, PXR24, B44, DWAA, HTJ2K, etc.)
+- **Compression codecs**: Decompressors are fuzz-tested (RLE, ZIP, PIZ, PXR24, B44, DWAA). HTJ2K has no fuzz target yet.
 - **File parsing**: Header parsing, attribute decoding, and offset table validation
 - **Reader APIs**: ScanlineReader and TiledReader with arbitrary input
 
@@ -203,17 +251,20 @@ func main() {
         fmt.Printf("Channel: %s (%v)\n", ch.Name, ch.Type)
     }
 
-    // Read pixels into RGBA buffer using the high-level API
+    // Read pixels using the high-level RGBA API
     rgbaFile, err := exr.OpenRGBAInputFile("image.exr")
     if err != nil {
         log.Fatal(err)
     }
     defer rgbaFile.Close()
 
-    pixels := make([]exr.RGBA, width*height)
-    if err := rgbaFile.ReadPixels(pixels); err != nil {
+    img, err := rgbaFile.ReadRGBA()
+    if err != nil {
         log.Fatal(err)
     }
+
+    r, g, b, a := img.RGBA(0, 0)
+    fmt.Printf("Top-left pixel: %v %v %v %v\n", r, g, b, a)
 }
 ```
 
@@ -223,6 +274,7 @@ func main() {
 package main
 
 import (
+    "image"
     "log"
 
     "github.com/mrjoshuak/go-openexr/exr"
@@ -231,24 +283,30 @@ import (
 func main() {
     width, height := 640, 480
 
-    // Create pixel data
-    pixels := make([]exr.RGBA, width*height)
+    // Create the output file and configure it through its header
+    out, err := exr.NewRGBAOutputFile("output.exr", width, height)
+    if err != nil {
+        log.Fatal(err)
+    }
+    out.Header().SetCompression(exr.CompressionPIZ)
+
+    // Fill an RGBA image; Pix is float32, four components per pixel
+    img := &exr.RGBAImage{
+        Pix:    make([]float32, width*height*4),
+        Stride: 4,
+        Rect:   image.Rect(0, 0, width, height),
+    }
     for y := 0; y < height; y++ {
         for x := 0; x < width; x++ {
-            pixels[y*width+x] = exr.RGBA{
-                R: exr.HalfFromFloat32(float32(x) / float32(width)),
-                G: exr.HalfFromFloat32(float32(y) / float32(height)),
-                B: exr.HalfFromFloat32(0.5),
-                A: exr.HalfFromFloat32(1.0),
-            }
+            i := (y*width + x) * 4
+            img.Pix[i+0] = float32(x) / float32(width)  // R
+            img.Pix[i+1] = float32(y) / float32(height) // G
+            img.Pix[i+2] = 0.5                          // B
+            img.Pix[i+3] = 1.0                          // A
         }
     }
 
-    // Write the file
-    err := exr.WriteRGBA("output.exr", width, height, pixels,
-        exr.WithCompression(exr.CompressionPIZ),
-    )
-    if err != nil {
+    if err := out.WriteRGBA(img); err != nil {
         log.Fatal(err)
     }
 }
@@ -261,6 +319,7 @@ package main
 
 import (
     "log"
+    "os"
 
     "github.com/mrjoshuak/go-openexr/exr"
     "github.com/mrjoshuak/go-openexr/half"
@@ -270,7 +329,7 @@ func main() {
     width, height := 1920, 1080
 
     // Create header
-    header := exr.NewHeader(width, height)
+    header := exr.NewScanlineHeader(width, height)
     header.SetCompression(exr.CompressionZIP)
 
     // Add channels (Name is required, XSampling/YSampling default to 1)
@@ -295,18 +354,43 @@ func main() {
     fb.Insert("Z", exr.NewSliceFromFloat32(zPixels, width, height))
 
     // Write file
-    writer, err := exr.NewWriter("output.exr", header)
+    f, err := os.Create("output.exr")
     if err != nil {
         log.Fatal(err)
     }
-    defer writer.Close()
+    defer f.Close()
+
+    writer, err := exr.NewScanlineWriter(f, header)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     writer.SetFrameBuffer(fb)
-    if err := writer.WritePixels(height); err != nil {
+    // WritePixels takes an inclusive scanline range, not a count.
+    if err := writer.WritePixels(0, height-1); err != nil {
+        log.Fatal(err)
+    }
+    if err := writer.Close(); err != nil {
         log.Fatal(err)
     }
 }
 ```
+
+> **Closing a writer is not optional, and its error matters.** The chunk offset
+> table records where each chunk landed, so it can only be written once every
+> chunk has been. `Close` is what writes it. A writer that is never closed — or
+> whose `Close` error is discarded by a bare `defer` — leaves a file whose pixel
+> data is intact but whose offset table is all zeroes.
+>
+> go-openexr rebuilds such a table when reading, so it will recover the file
+> (see [docs/CONFORMANCE.md](docs/CONFORMANCE.md)), and so will OpenEXR itself.
+> Not every tool is that forgiving. Prefer checking the error:
+>
+> ```go
+> if err := writer.Close(); err != nil {
+>     log.Fatal(err)
+> }
+> ```
 
 ## Package Structure
 
@@ -459,7 +543,8 @@ Supported compression methods (11 codecs):
 | `CompressionB44A`  | 7   | B44 with flat detection |
 | `CompressionDWAA`  | 8   | DCT, 32 scanlines       |
 | `CompressionDWAB`  | 9   | DCT, 256 scanlines      |
-| `CompressionHTJ2K` | 10  | HTJ2K wavelet (lossy), progressive decode support |
+| `CompressionHTJ2K256` | 10  | HTJ2K wavelet, 128x128 code blocks, progressive decode |
+| `CompressionHTJ2K32`  | 11  | HTJ2K wavelet, 32x32 code blocks, progressive decode   |
 
 DWA compression quality can be configured via the header:
 
@@ -535,18 +620,20 @@ func NewFrameBuffer() *FrameBuffer
 func (fb *FrameBuffer) Insert(name string, slice Slice) error
 ```
 
-### Options
+### Configuration
 
-Configure readers and writers with functional options:
+Per-file settings live on the header, and are applied before writing:
 
 ```go
-// Writing options
-exr.WithCompression(exr.CompressionPIZ)
-exr.WithLineOrder(exr.IncreasingY)
-exr.WithThreads(4)
+header := exr.NewScanlineHeader(width, height)
+header.SetCompression(exr.CompressionPIZ)
+header.SetLineOrder(exr.LineOrderIncreasing)
+```
 
-// Reading options
-exr.WithThreads(4)
+Parallelism is configured process-wide:
+
+```go
+exr.SetParallelConfig(exr.ParallelConfig{NumWorkers: 4})
 ```
 
 ## Performance
@@ -579,11 +666,15 @@ for y := dataWindow.Min.Y; y <= dataWindow.Max.Y; y++ {
 
 ## Compatibility
 
-This implementation is compatible with files created by:
+go-openexr reads and writes the OpenEXR 2.0 file format, so it interoperates
+with the OpenEXR C++ library and with applications built on it — Nuke, Maya,
+Houdini, Blender, Unity, Unreal Engine and others.
 
-- OpenEXR C++ library (all versions)
-- Nuke, Maya, Houdini, and other VFX software
-- Blender, Unity, Unreal Engine
+What is *automatically verified* is narrower than that list, and deliberately
+stated as such: see the [compression support matrix](#compression-support) for
+which codecs are checked against reference-written files, in which direction,
+and where the gaps are. Files using DWAA/DWAB written by other implementations
+currently fail to decode.
 
 ## Test Coverage
 

@@ -263,7 +263,7 @@ func (r *TiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error {
 	compression := r.header.Compression()
 	var decompressedData []byte
 
-	if compression != CompressionNone && !compression.IsLossy() &&
+	if compression != CompressionNone &&
 		len(data) >= r.calculateTileSize(tileWidth, tileHeight) {
 		return r.decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight, data)
 	}

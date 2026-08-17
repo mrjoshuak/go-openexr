@@ -113,12 +113,17 @@ var zlibWriterPool = sync.Pool{
 // ZIPCompress compresses data using OpenEXR's ZIP encoding at default level.
 //
 // The ZIP format in OpenEXR is:
-//  1. Apply horizontal differencing predictor
-//  2. Interleave bytes (reorder so similar bytes are grouped)
+//  1. Reorder bytes into even and odd halves
+//  2. Apply the horizontal differencing predictor to the reordered stream
 //  3. Compress with zlib
 //
-// Note: The predictor and interleaving are applied by the caller.
-// This function only performs the zlib compression step.
+// The order matters: the predictor runs over the reordered bytes, not the
+// original ones. Doing it the other way round is self-inverse, so it round-trips
+// against a matching decompressor while producing a stream no conforming
+// OpenEXR reader can decode.
+//
+// Note: the reorder and predictor steps are applied by the caller (see
+// predictor.DeconstructBytes). This function only performs the zlib step.
 func ZIPCompress(src []byte) ([]byte, error) {
 	return ZIPCompressLevel(src, CompressionLevelDefault)
 }

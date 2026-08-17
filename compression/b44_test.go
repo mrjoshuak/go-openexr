@@ -1,8 +1,12 @@
 package compression
 
 import (
+	"encoding/binary"
+	"errors"
 	"math"
 	"testing"
+
+	"github.com/mrjoshuak/go-openexr/half"
 )
 
 func TestPackUnpack14(t *testing.T) {
@@ -471,19 +475,58 @@ func TestB44NonHalfChannels(t *testing.T) {
 		data[i] = byte(i % 256)
 	}
 
+	// B44 must refuse a FLOAT or UINT channel rather than emit a file with
+	// those channels zeroed. This test previously compressed, decompressed and
+	// checked only that the byte COUNT matched, so it passed for years while
+	// every non-HALF channel was silently replaced with zeros.
+	_, err := B44Compress(data, channels, 4, 4, false)
+	if !errors.Is(err, ErrB44NonHalfChannel) {
+		t.Fatalf("B44Compress with mixed channels: got %v, want ErrB44NonHalfChannel", err)
+	}
+}
+
+// TestB44HalfOnlyPreservesValues is the assertion the test above was missing:
+// that the values themselves survive, not merely the byte count.
+func TestB44HalfOnlyPreservesValues(t *testing.T) {
+	channels := []B44ChannelInfo{
+		{Type: b44PixelTypeHalf, Width: 4, Height: 4},
+	}
+	data := make([]byte, 4*4*2)
+	for i := 0; i < len(data); i += 2 {
+		// A narrow ramp around 1.0. B44 quantises each 4x4 block to a shared
+		// exponent, so its absolute error scales with the block's dynamic
+		// range; keeping the range small lets this assert tightly.
+		binary.LittleEndian.PutUint16(data[i:], uint16(half.FromFloat32(1.0+float32(i/2)*0.01)))
+	}
+
 	compressed, err := B44Compress(data, channels, 4, 4, false)
 	if err != nil {
-		t.Fatalf("B44Compress with mixed channels failed: %v", err)
+		t.Fatalf("B44Compress: %v", err)
 	}
-
 	decompressed, err := B44Decompress(compressed, channels, 4, 4, len(data))
 	if err != nil {
-		t.Fatalf("B44Decompress with mixed channels failed: %v", err)
+		t.Fatalf("B44Decompress: %v", err)
 	}
-
-	// Verify size
 	if len(decompressed) != len(data) {
-		t.Errorf("Decompressed size: got %d, want %d", len(decompressed), len(data))
+		t.Fatalf("size: got %d, want %d", len(decompressed), len(data))
+	}
+	// B44 is a fixed-rate lossy codec, so the tolerance is generous. It is
+	// still far tighter than the failure this guards against: before B44
+	// refused non-HALF channels, whole channels came back as zeros.
+	const tolerance = 0.01
+	nonZero := 0
+	for i := 0; i < len(data); i += 2 {
+		want := half.Half(binary.LittleEndian.Uint16(data[i:])).Float32()
+		got := half.Half(binary.LittleEndian.Uint16(decompressed[i:])).Float32()
+		if got != 0 {
+			nonZero++
+		}
+		if diff := got - want; diff > tolerance || diff < -tolerance {
+			t.Fatalf("sample %d: got %v, want %v (tolerance %v)", i/2, got, want, tolerance)
+		}
+	}
+	if nonZero == 0 {
+		t.Fatal("every sample decoded to zero")
 	}
 }
 

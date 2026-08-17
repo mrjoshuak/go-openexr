@@ -1064,8 +1064,10 @@ func (d *FastHufDecoder) DecodeInto(data []byte, result []uint16) error {
 	return nil
 }
 
-// debugHuf enables debug output for Huffman decoding
-var debugHuf = false
+// debugHuf enables debug output for Huffman decoding. It is a constant so the
+// compiler eliminates the tracing entirely; flip it to true locally when
+// diagnosing a decode, never in a release.
+const debugHuf = false
 
 // DecodeIntoWithBits decodes Huffman-encoded data into a pre-allocated buffer.
 // Uses nBits to determine exact bit count and handles RLE with rleSymbol.

@@ -117,16 +117,27 @@ func NewScanlineReaderPart(f *File, part int) (*ScanlineReader, error) {
 	}
 	chunkHeaderBuf := make([]byte, chunkHeaderSize)
 
-	// Calculate max chunk size for buffer pre-allocation
+	// Calculate max chunk size for buffer pre-allocation.
+	//
+	// This is only a capacity hint, but width and the channel list come from
+	// the file, so the product can overflow or ask for an absurd allocation on
+	// a hostile header. Compute in int64 and clamp: a chunk can never be
+	// larger than the file that holds it.
 	compression := h.Compression()
 	linesPerChunk := compression.ScanlinesPerChunk()
-	bytesPerLine := 0
+	bytesPerLine := int64(0)
 	for i := 0; i < cl.Len(); i++ {
 		ch := cl.At(i)
-		pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
-		bytesPerLine += pixelsInChannel * ch.Type.Size()
+		pixelsInChannel := int64((width + int(ch.XSampling) - 1) / int(ch.XSampling))
+		bytesPerLine += pixelsInChannel * int64(ch.Type.Size())
 	}
-	maxChunkSize := bytesPerLine * linesPerChunk
+	chunkCap := bytesPerLine * int64(linesPerChunk)
+	if chunkCap < 0 || chunkCap > f.size {
+		chunkCap = f.size
+	}
+	if chunkCap < 0 {
+		chunkCap = 0
+	}
 
 	return &ScanlineReader{
 		file:           f,
@@ -137,7 +148,7 @@ func NewScanlineReaderPart(f *File, part int) (*ScanlineReader, error) {
 		sortedChannels: sortedChannels,
 		halfBuf:        halfBuf,
 		chunkHeaderBuf: chunkHeaderBuf,
-		chunkDataBuf:   make([]byte, 0, maxChunkSize),
+		chunkDataBuf:   make([]byte, 0, chunkCap),
 	}, nil
 }
 
@@ -219,6 +230,14 @@ func (r *ScanlineReader) readChunkReuse(chunkIndex int) (int32, []byte, error) {
 		int32(r.chunkHeaderBuf[headerStart+2])<<16 | int32(r.chunkHeaderBuf[headerStart+3])<<24
 	packedSize := int(r.chunkHeaderBuf[headerStart+4]) | int(r.chunkHeaderBuf[headerStart+5])<<8 |
 		int(r.chunkHeaderBuf[headerStart+6])<<16 | int(r.chunkHeaderBuf[headerStart+7])<<24
+
+	// Validate before allocating. File.ReadChunk has always bounded this field;
+	// this faster path is a duplicate that dropped the check, so a four-byte
+	// header value could demand a 2 GiB allocation from a file far too small to
+	// contain it.
+	if err := r.file.validatePackedSize(packedSize, offset+headerSize); err != nil {
+		return 0, nil, err
+	}
 
 	// Ensure chunkDataBuf has enough capacity
 	if cap(r.chunkDataBuf) < packedSize {
@@ -436,7 +455,7 @@ func (r *ScanlineReader) readPixelsParallel(firstChunk, lastChunk, minY, maxY in
 // the chunk's size: a reader must treat any chunk that is not smaller than the
 // uncompressed chunk size as raw pixel data. See storeUncompressed.
 func (r *ScanlineReader) chunkIsStoredRaw(data []byte, numLines int, comp Compression) bool {
-	if comp == CompressionNone || comp.IsLossy() {
+	if comp == CompressionNone {
 		return false
 	}
 	return len(data) >= r.calculateChunkSize(numLines)
@@ -887,13 +906,15 @@ func (w *ScanlineWriter) WritePixels(y1, y2 int) error {
 // by size, so a writer that emits an oversized compressed chunk produces a
 // file that conforming readers silently misinterpret as raw pixel data.
 //
-// It applies to every lossless codec. Lossy codecs are exempt because their
-// output is not interchangeable with the raw bytes.
+// The rule is unconditional in the reference — it applies to lossy codecs too,
+// and files written by OpenImageIO confirm it: a 4x4 float B44 or DWAA chunk is
+// stored raw because neither codec shrinks it. Exempting lossy codecs here
+// would make those files unreadable.
 //
 // Because go-openexr always builds chunks in little-endian XDR order, the raw
 // buffer can be written as-is; no native-to-Xdr conversion is needed.
 func storeUncompressed(compressed, raw []byte, comp Compression) []byte {
-	if comp.IsLossy() {
+	if comp == CompressionNone {
 		return compressed
 	}
 	if len(compressed) >= len(raw) {

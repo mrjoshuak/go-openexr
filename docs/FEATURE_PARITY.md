@@ -4,13 +4,27 @@
 
 This document provides a detailed comparison between go-openexr and the upstream C++ OpenEXR reference implementation.
 
+> **Caveat (2026-08-17).** The tables below count *implemented* features, not
+> features verified to interoperate with the reference implementation. Those are
+> different things, and conflating them is how a set of codec bugs shipped: ZIP,
+> ZIPS, RLE and PIZ were all marked complete here while being unreadable by any
+> conforming implementation, because the test suite only ever round-tripped them
+> against themselves.
+>
+> For what is actually verified against reference-written files, see the
+> compression support matrix in the [README](../README.md#compression-support)
+> and [CONFORMANCE.md](CONFORMANCE.md). Two known gaps as of this release:
+> DWAA/DWAB cannot read files written by other implementations (the static
+> Huffman decoder is a zlib stub), and HTJ2K has no interoperability coverage at
+> all.
+
 ---
 
 ## Executive Summary
 
 | Category            | C++ Features | Go Features | Parity  |
 | ------------------- | ------------ | ----------- | ------- |
-| Compression Methods | 12           | 12          | ✅ 100% |
+| Compression Methods | 12           | 12          | 12/12 implemented; 5 verified interoperable, 1 known read gap (DWA) |
 | File Formats        | 4            | 4           | ✅ 100% |
 | Pixel Types         | 3            | 3           | ✅ 100% |
 | Attribute Types     | 36+          | 36+         | ✅ 100% |
@@ -23,7 +37,8 @@ This document provides a detailed comparison between go-openexr and the upstream
 | ID Manifest         | Full         | Full        | ✅ 100% |
 | Cryptomatte         | Full         | Full        | ✅ 100% |
 
-**Overall Parity: 100% of core functionality**
+**Overall: 100% of core functionality implemented.** Verified interoperability
+is narrower — see the caveat above.
 
 ---
 
@@ -39,12 +54,13 @@ This document provides a detailed comparison between go-openexr and the upstream
 | PXR24 (5)     | Lossy    | ✅  | ✅  | 24-bit float              |
 | B44 (6)       | Lossy    | ✅  | ✅  | 4x4 block, fixed rate     |
 | B44A (7)      | Lossy    | ✅  | ✅  | 4x4 block, variable rate  |
-| DWAA (8)      | Lossy    | ✅  | ✅  | DCT, 32 scanlines         |
-| DWAB (9)      | Lossy    | ✅  | ✅  | DCT, 256 scanlines        |
-| HTJ2K256 (10) | Lossless | ✅  | ✅  | JPEG 2000, 128x128 blocks |
-| HTJ2K32 (11)  | Lossless | ✅  | ✅  | JPEG 2000, 32x32 blocks   |
+| DWAA (8)      | Lossy    | ✅  | ⚠️  | DCT, 32 scanlines; cannot read reference-written files |
+| DWAB (9)      | Lossy    | ✅  | ⚠️  | DCT, 256 scanlines; cannot read reference-written files |
+| HTJ2K256 (10) | Lossy    | ✅  | ✅  | JPEG 2000, 128x128 blocks; interop unverified |
+| HTJ2K32 (11)  | Lossy    | ✅  | ✅  | JPEG 2000, 32x32 blocks; interop unverified |
 
-**Status: ✅ Full Parity (12/12)**
+**Status: 12/12 implemented. Interoperability verified for None, RLE, ZIPS, ZIP
+and PIZ; DWAA/DWAB have a known read gap; the rest are uncovered.**
 
 ---
 

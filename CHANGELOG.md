@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-08-17
 
 ### Fixed
 - **ZIP/ZIPS: byte reordering and the predictor ran in the wrong order.** OpenEXR
@@ -34,7 +34,47 @@ Each of these was self-inverse, so the library round-tripped its own files
 correctly while being unable to read or write files any conforming OpenEXR
 implementation produces.
 
+- **Files whose chunk offset table was never written are now read.** The table is
+  written by `Close`, so an interrupted render — or a caller who never closed the
+  writer — leaves it zeroed on otherwise intact data. Such a file previously
+  decoded to silent zeroes; it is now recovered by rescanning the chunks, as the
+  reference implementation does. Scanline chunks are indexed by their own `y`
+  coordinate, which also tolerates chunks stored out of order. This is the
+  failure actually reported in #4.
+- **Out-of-bounds pointer arithmetic in the strided `Slice` row accessors.** The
+  seven non-contiguous read/write loops advanced a pointer one stride past the
+  end of the destination after the final element. Never dereferenced, but
+  undefined behaviour, and it made `go test -race ./...` abort with a `checkptr`
+  failure — so the race suite had never passed.
+
+### Security
+
+Hardening against malformed and hostile files. Each of these turned a value read
+straight from a file header into an unbounded allocation or a panic. Several
+were fast paths that had dropped a bound their slower twin still had.
+
+- **`ScanlineReader` allocated an unvalidated chunk size.** `readChunkReuse`
+  used the packed size from the chunk header directly, so a four-byte field in a
+  900-byte file could demand a 2 GiB allocation. `File.ReadChunk` had always
+  bounded this; the faster path did not. All such paths now share
+  `File.validatePackedSize`.
+- **Deep chunk readers allocated unvalidated sample and pixel sizes**, which
+  could panic outright on a negative or absurd value.
+- **The chunk offset table is bounded by the file size.** A header could declare
+  up to 16M chunks — 128 MB of offset table — regardless of how small the file
+  actually was. A file of n bytes cannot describe more than n/8 chunks.
+- **`AllocateChannels` no longer panics or allocates without limit.** It
+  previously divided by a zero sampling factor, indexed `buf[0]` on a zero-size
+  channel, and multiplied width by height by pixel size in `int` with no
+  overflow or total check. It now validates everything before allocating and
+  caps the total at `DefaultAllocationLimit`.
+- **`ScanlineReader`'s chunk buffer hint no longer overflows** on a header
+  declaring an enormous width and channel count.
+
 ### Added
+- `AllocateChannelsLimit`, an explicit-ceiling form of `AllocateChannels` that
+  reports why it refused rather than degrading silently.
+
 - `exr/testdata/conformance/`: EXR files written by the OpenEXR reference
   implementation with golden pixel values from that same implementation, plus
   `scripts/gen-conformance-testdata.sh` to regenerate them. The generator fails
@@ -47,11 +87,57 @@ implementation produces.
   asserting against independent transcriptions of the OpenEXR reference rather
   than against other implementations in this repository.
 
+### Documentation
+- **The three README code examples did not compile.** All of them referenced
+  symbols that do not exist (`exr.NewHeader(w, h)`, `exr.NewWriter(path, ...)`,
+  `exr.HalfFromFloat32`, `RGBAInputFile.ReadPixels`), and an entire "Options"
+  section documented a functional-options API that was never implemented. They
+  are rewritten against the real API and are now compile-checked by
+  `readme_example_test.go`, so the next drift breaks the build.
+- The compression support matrix now states what the conformance suite actually
+  covers, per codec and per direction, rather than implying everything is
+  verified. `docs/FEATURE_PARITY.md` no longer claims 100% parity without
+  distinguishing "implemented" from "verified interoperable".
+- New `docs/CONFORMANCE.md` records the compatibility rules this library follows
+  (correctness first, strict on output, lenient on input) and why round-trip
+  tests are not sufficient for a codec.
+
+### Known issues
+
+These are being closed in follow-up work; they are recorded here rather than
+implied away.
+
+- **HTJ2K encoding has a data race in the `go-jpeg2000` v1.2.1 dependency.** Its
+  parallel tile encoder shares one `*T1` across goroutines
+  (`entropy.(*T1).EncodeFast5` writes while `entropy.(*T1).TruncationPoints`
+  reads), so any HTJ2K encode can trip the race detector. No go-openexr code is
+  involved and every other package is race-clean; CI runs `-race` with HTJ2K
+  skipped until the dependency is fixed.
+- **DWAA/DWAB cannot read files written by other implementations.** The DWA
+  static-Huffman decoder is still a zlib fallback. See the support matrix in the
+  README.
+- **B44/B44A now refuse FLOAT and UINT channels** rather than writing them as
+  zeros. OpenEXR stores such channels uncompressed alongside the compressed HALF
+  ones; that is not implemented here, and silently zeroing them was worse than
+  refusing. Images whose channels are all HALF are unaffected.
+- **HTJ2K silently decodes HALF channels to all zeros.** FLOAT channels
+  round-trip exactly; HALF produces a black image with no error. Measured on a
+  64x40 three-channel gradient: 0 of 2560 samples non-zero. Neither case can be
+  verified against the reference implementation — OpenImageIO 3.1.16 can neither
+  write an HTJ2K EXR nor read one this library produces — so HTJ2K has no
+  interoperability coverage at all, and no fuzz target.
+
 ### Changed
 - Predictor and byte-reorder call sites across scanline, tiled, deep and
   multi-part now route through the shared `predictor.ReconstructBytes` /
   `DeconstructBytes` helpers instead of repeating the pipeline inline.
 - `RLEDecompress` delegates to `RLEDecompressTo`; the two copies had drifted.
+
+## [1.2.1] - 2026-02-28
+
+### Fixed
+- Removed a local `replace` directive that made the published module
+  unbuildable for consumers, and corrected gofmt in `compression/huffman.go`.
 
 ## [1.2.0] - 2026-02-28
 

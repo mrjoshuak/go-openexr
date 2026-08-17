@@ -174,14 +174,24 @@ func OpenReader(r io.ReaderAt, size int64) (*File, error) {
 		return nil, ErrInvalidHeader
 	}
 
-	// Read offset table(s)
-	// Limit to prevent allocation bombs from malicious files
+	// Read offset table(s).
+	//
+	// The chunk count is derived from header attributes an attacker controls,
+	// so it is bounded by what the file could actually contain rather than by
+	// a large fixed ceiling: every chunk costs 8 bytes in the offset table
+	// alone, so a file of n bytes cannot describe more than n/8 chunks. That
+	// keeps the allocation proportional to the input instead of letting a
+	// few-hundred-byte file demand hundreds of megabytes.
 	const maxChunksPerPart = 16 * 1024 * 1024 // 16M chunks max per part
+	maxChunksForSize := size / 8
 	f.offsets = make([][]int64, len(f.headers))
 	for i, h := range f.headers {
 		numChunks := h.ChunksInFile()
 		if numChunks < 0 || numChunks > maxChunksPerPart {
 			return nil, fmt.Errorf("invalid chunk count %d (max %d)", numChunks, maxChunksPerPart)
+		}
+		if int64(numChunks) > maxChunksForSize {
+			return nil, fmt.Errorf("chunk count %d exceeds what a %d-byte file can hold", numChunks, size)
 		}
 		offsets := make([]int64, numChunks)
 		for j := 0; j < numChunks; j++ {
@@ -193,6 +203,12 @@ func OpenReader(r io.ReaderAt, size int64) (*File, error) {
 		}
 		f.offsets[i] = offsets
 	}
+
+	// A writer that never completed leaves the offset table zeroed even though
+	// the chunk data is intact. Rebuild it by scanning the chunks, as the
+	// reference implementation does, rather than decoding to silent zeroes.
+	// This is a no-op for well-formed files.
+	f.reconstructOffsetTables(8 + int64(reader.Pos()))
 
 	return f, nil
 }
@@ -407,6 +423,11 @@ func (f *File) ReadDeepChunk(part int, chunkIndex int) (int32, []byte, []byte, e
 	packedSampleCountSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+4 : headerStart+12]))
 	packedPixelDataSize := int64(xdr.ByteOrder.Uint64(chunkHeader[headerStart+12 : headerStart+20]))
 
+	// These sizes come straight from the file, so validate before allocating.
+	if err := f.validateDeepChunkSizes(packedSampleCountSize, packedPixelDataSize, offset+headerSize); err != nil {
+		return 0, nil, nil, err
+	}
+
 	// Read sample count table
 	sampleCountTable := make([]byte, packedSampleCountSize)
 	if _, err := f.reader.ReadAt(sampleCountTable, offset+headerSize); err != nil {
@@ -466,6 +487,11 @@ func (f *File) ReadDeepTileChunk(part int, chunkIndex int) ([4]int32, []byte, []
 
 	coords := [4]int32{tileX, tileY, levelX, levelY}
 
+	// These sizes come straight from the file, so validate before allocating.
+	if err := f.validateDeepChunkSizes(packedSampleCountSize, packedPixelDataSize, offset+headerSize); err != nil {
+		return coords, nil, nil, err
+	}
+
 	// Read sample count table
 	sampleCountTable := make([]byte, packedSampleCountSize)
 	if _, err := f.reader.ReadAt(sampleCountTable, offset+headerSize); err != nil {
@@ -479,6 +505,43 @@ func (f *File) ReadDeepTileChunk(part int, chunkIndex int) ([4]int32, []byte, []
 	}
 
 	return coords, sampleCountTable, pixelData, nil
+}
+
+// validatePackedSize rejects a chunk payload size that the file cannot contain.
+// Every path that allocates from a file-supplied size must go through this;
+// several fast paths historically did not, which turned a four-byte header
+// field into an arbitrary allocation.
+func (f *File) validatePackedSize(packedSize int, dataStart int64) error {
+	if packedSize < 0 || int64(packedSize) > maxChunkSize {
+		return ErrInvalidChunkSize
+	}
+	if dataStart < 0 || dataStart > f.size {
+		return ErrInvalidChunkSize
+	}
+	if int64(packedSize) > f.size-dataStart {
+		return ErrInvalidChunkSize
+	}
+	return nil
+}
+
+// validateDeepChunkSizes rejects deep-chunk payload sizes that a file cannot
+// actually contain. The scanline path has always bounded its packed size this
+// way; the deep paths did not, so a corrupt or hostile header could drive
+// make([]byte, n) with a negative or absurd n and panic the caller.
+func (f *File) validateDeepChunkSizes(sampleCountSize, pixelDataSize, dataStart int64) error {
+	if sampleCountSize < 0 || pixelDataSize < 0 {
+		return ErrInvalidChunkSize
+	}
+	if sampleCountSize > maxChunkSize || pixelDataSize > maxChunkSize {
+		return ErrInvalidChunkSize
+	}
+	if dataStart < 0 || dataStart > f.size {
+		return ErrInvalidChunkSize
+	}
+	if sampleCountSize+pixelDataSize > f.size-dataStart {
+		return ErrInvalidChunkSize
+	}
+	return nil
 }
 
 // Writer represents an OpenEXR file being written.

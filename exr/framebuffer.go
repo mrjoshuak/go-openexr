@@ -233,10 +233,9 @@ func (s *Slice) WriteRowHalfBytes(y int, data []byte, xStart, width int) {
 			return
 		}
 		// Non-contiguous: strided write - copy 2 bytes at a time
-		ptr := unsafe.Add(base, xStart*stride)
 		for i := 0; i < width; i++ {
+			ptr := unsafe.Add(base, (xStart+i)*stride)
 			*(*[2]byte)(ptr) = *(*[2]byte)(unsafe.Pointer(&data[i*2]))
-			ptr = unsafe.Add(ptr, stride)
 		}
 		return
 	}
@@ -258,10 +257,9 @@ func (s *Slice) WriteRowHalf(y int, data []uint16, xStart, width int) {
 			copy(dst, data[:width])
 		} else {
 			// Non-contiguous: strided write
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				*(*uint16)(ptr) = data[i]
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -282,10 +280,9 @@ func (s *Slice) WriteRowFloat(y int, data []byte, xStart, width int) {
 			copy(unsafe.Slice((*byte)(dst), width*4), data[:width*4])
 		} else {
 			// Non-contiguous: strided write
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				*(*[4]byte)(ptr) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -307,10 +304,9 @@ func (s *Slice) WriteRowUint(y int, data []byte, xStart, width int) {
 			copy(unsafe.Slice((*byte)(dst), width*4), data[:width*4])
 		} else {
 			// Non-contiguous: strided write
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				*(*[4]byte)(ptr) = *(*[4]byte)(unsafe.Pointer(&data[i*4]))
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -332,10 +328,9 @@ func (s *Slice) ReadRowHalf(y int, data []uint16, xStart, width int) {
 			copy(data[:width], src)
 		} else {
 			// Non-contiguous: strided read
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				data[i] = *(*uint16)(ptr)
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -356,10 +351,9 @@ func (s *Slice) ReadRowFloat(y int, data []byte, xStart, width int) {
 			copy(data[:width*4], unsafe.Slice((*byte)(src), width*4))
 		} else {
 			// Non-contiguous: strided read
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(ptr)
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -381,10 +375,9 @@ func (s *Slice) ReadRowUint(y int, data []byte, xStart, width int) {
 			copy(data[:width*4], unsafe.Slice((*byte)(src), width*4))
 		} else {
 			// Non-contiguous: strided read
-			ptr := unsafe.Add(base, xStart*stride)
 			for i := 0; i < width; i++ {
+				ptr := unsafe.Add(base, (xStart+i)*stride)
 				*(*[4]byte)(unsafe.Pointer(&data[i*4])) = *(*[4]byte)(ptr)
-				ptr = unsafe.Add(ptr, stride)
 			}
 		}
 	} else {
@@ -456,28 +449,94 @@ func (fb *FrameBuffer) Len() int {
 	return len(fb.slices)
 }
 
+// DefaultAllocationLimit is the total number of bytes AllocateChannels will
+// allocate across all channels before refusing. A channel list and data window
+// both come straight from a file header, so their product is attacker-
+// controlled; 4 GiB is far beyond any legitimate single image this API is used
+// for while still bounding a hostile one.
+const DefaultAllocationLimit = 4 << 30
+
+// ErrAllocationTooLarge is returned when a channel list and data window would
+// require more memory than the caller permitted.
+var ErrAllocationTooLarge = errors.New("exr: channel allocation exceeds limit")
+
 // AllocateChannels creates slices for all channels in a channel list.
 // Returns a map of channel name to backing buffer.
 //
-//go:nocheckptr
+// The geometry comes from a file header, so it is validated before anything is
+// allocated: see AllocateChannelsLimit. If it cannot be honoured this returns
+// an empty (non-nil) frame buffer rather than allocating wildly or panicking.
+// Callers that need to know why should use AllocateChannelsLimit directly.
 func AllocateChannels(cl *ChannelList, dataWindow Box2i) (*FrameBuffer, map[string][]byte) {
-	fb := NewFrameBuffer()
-	buffers := make(map[string][]byte)
+	fb, buffers, err := AllocateChannelsLimit(cl, dataWindow, DefaultAllocationLimit)
+	if err != nil {
+		return NewFrameBuffer(), map[string][]byte{}
+	}
+	return fb, buffers
+}
+
+// AllocateChannelsLimit is AllocateChannels with an explicit ceiling on the
+// total bytes allocated across all channels, and an error explaining any
+// refusal.
+//
+// It rejects, rather than panics on, the things a malformed or hostile header
+// can produce: zero sampling factors (a division by zero), a degenerate data
+// window, a per-channel size that overflows int, and a total that exceeds
+// maxBytes. Pass 0 for maxBytes to use DefaultAllocationLimit.
+//
+//go:nocheckptr
+func AllocateChannelsLimit(cl *ChannelList, dataWindow Box2i, maxBytes int64) (*FrameBuffer, map[string][]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = DefaultAllocationLimit
+	}
+	if cl == nil {
+		return NewFrameBuffer(), map[string][]byte{}, nil
+	}
 
 	width := int(dataWindow.Width())
 	height := int(dataWindow.Height())
+	if width <= 0 || height <= 0 {
+		return nil, nil, errors.New("exr: invalid data window dimensions")
+	}
+
+	// Size everything in int64 first: nothing is allocated until the whole
+	// request is known to fit.
+	sizes := make([]int64, cl.Len())
+	var total int64
+	for i := 0; i < cl.Len(); i++ {
+		ch := cl.At(i)
+		if ch.XSampling <= 0 || ch.YSampling <= 0 {
+			return nil, nil, errors.New("exr: channel has invalid sampling")
+		}
+		pixelSize := int64(ch.Type.Size())
+		if pixelSize <= 0 {
+			return nil, nil, errors.New("exr: channel has unknown pixel type")
+		}
+		sampledWidth := (int64(width) + int64(ch.XSampling) - 1) / int64(ch.XSampling)
+		sampledHeight := (int64(height) + int64(ch.YSampling) - 1) / int64(ch.YSampling)
+		size := sampledWidth * sampledHeight * pixelSize
+		if size <= 0 || size > maxBytes {
+			return nil, nil, ErrAllocationTooLarge
+		}
+		total += size
+		if total > maxBytes {
+			return nil, nil, ErrAllocationTooLarge
+		}
+		sizes[i] = size
+	}
+
+	fb := NewFrameBuffer()
+	buffers := make(map[string][]byte)
 
 	for i := 0; i < cl.Len(); i++ {
 		ch := cl.At(i)
 
 		// Account for subsampling
 		sampledWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
-		sampledHeight := (height + int(ch.YSampling) - 1) / int(ch.YSampling)
 
 		// Allocate buffer
 		pixelSize := ch.Type.Size()
-		bufSize := sampledWidth * sampledHeight * pixelSize
-		buf := make([]byte, bufSize)
+		buf := make([]byte, sizes[i])
 		buffers[ch.Name] = buf
 
 		// Create slice
@@ -503,7 +562,7 @@ func AllocateChannels(cl *ChannelList, dataWindow Box2i) (*FrameBuffer, map[stri
 		fb.Set(ch.Name, slice)
 	}
 
-	return fb, buffers
+	return fb, buffers, nil
 }
 
 // RGBAFrameBuffer is a convenience wrapper for RGBA images.

@@ -29,6 +29,22 @@ Verified: all 15 pixel-type x compression combinations now pass
 `oiiotool --diff`, and go-openexr decodes the official ASWF `openexr-images`
 corpus bit-exactly.
 
+### Fuzzing
+
+`go test -race ./...` had never passed (a `checkptr` violation in the strided
+`Slice` accessors), and the fuzz targets bounded their own input rather than
+letting the library's bounds be the thing under test. Both are fixed: the
+harness now allocates through `AllocateChannelsLimit` and applies no geometry
+guard of its own, so a hostile header reaches the same code a real caller would.
+
+Doing that immediately surfaced a genuine allocation bomb in
+`ScanlineReader.readChunkReuse` (2 GB peak from a 900-byte input, now 120 MB).
+CI now runs `-race`, which also enables `checkptr`.
+
+Known: `go test -fuzz` at the default 16 workers can still be OOM-killed on a
+machine under load, because each worker loads the ~39 MB corpus. That is worker
+count times corpus size, not a library allocation; `-parallel=4` runs clean.
+
 ### Test integrity work
 
 - [x] Conformance corpus with external ground truth (`exr/testdata/conformance/`)

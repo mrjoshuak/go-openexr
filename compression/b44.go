@@ -9,6 +9,12 @@ import (
 // B44 errors
 var (
 	ErrB44ImageTooLarge = errors.New("compression: B44 image too large")
+
+	// ErrB44NonHalfChannel reports that a B44/B44A image contains a FLOAT or
+	// UINT channel. OpenEXR stores those channels uncompressed alongside the
+	// compressed HALF ones; this implementation does not yet do that, and
+	// refuses rather than writing a file with those channels zeroed.
+	ErrB44NonHalfChannel = errors.New("compression: B44 supports HALF channels only")
 )
 
 // b44BufferPool provides reusable scratch buffers for B44 compression/decompression
@@ -454,16 +460,13 @@ func B44Compress(data []byte, channels []B44ChannelInfo, width, height int, flat
 		chHeight := ch.Height
 
 		if ch.Type != b44PixelTypeHalf {
-			// Non-HALF data: copy uncompressed
-			bytesPerPixel := 4
-			if ch.Type == b44PixelTypeHalf {
-				bytesPerPixel = 2
-			}
-			nBytes := chWidth * chHeight * bytesPerPixel
-			// For non-half, we need to copy from original data
-			// This is simplified - in practice we'd need to track position properly
-			result = append(result, make([]byte, nBytes)...)
-			continue
+			// OpenEXR's B44 passes non-HALF channels through uncompressed. This
+			// implementation does not track their source offsets, and the
+			// previous behaviour here was to emit a run of zero bytes — which
+			// silently discarded every FLOAT and UINT channel in the image.
+			// Refusing is strictly better than corrupting: a caller that asks
+			// for something this codec cannot do now finds out.
+			return nil, ErrB44NonHalfChannel
 		}
 
 		// HALF data: compress 4x4 blocks

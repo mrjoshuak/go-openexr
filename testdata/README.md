@@ -70,15 +70,44 @@ testdata/
 ├── README.md           # This file
 ├── download.sh         # Download script
 ├── .gitignore          # Prevents committing test data
-└── cryptomatte/        # Cryptomatte sample files
-    ├── bunny_CryptoObject.exr
-    ├── bunny_CryptoMaterial.exr
+├── cryptomatte/        # Cryptomatte sample files
+│   ├── bunny_CryptoObject.exr
+│   ├── bunny_CryptoMaterial.exr
+│   └── ...
+└── openexr-images/     # Official ASWF conformance images
+    ├── AllHalfValues.exr
+    ├── stripes.exr
     └── ...
 ```
+
+## openexr-images (ASWF conformance corpus)
+
+Source: [AcademySoftwareFoundation/openexr-images](https://github.com/AcademySoftwareFoundation/openexr-images)
+
+These are the images the OpenEXR project itself uses to exercise decoders: every
+half value, the full float range, ramps, NaN/Inf handling, and a tiled image.
+`download.sh` fetches the `TestImages/` set plus one scanline and one tiled
+image.
+
+They are the ground truth for `exr.TestReferenceImagesDecodeExactly`, which
+compares every decoded sample against a digest of what the OpenEXR reference
+implementation reads from the same file. The digests live in
+`exr/testdata/openexr_images.golden` and are committed; the images themselves
+are not. Regenerate the digests with:
+
+```bash
+python3 scripts/gen-reference-goldens.py   # needs the OpenImageIO Python module
+```
+
+The tests skip when the corpus is absent, so a clean checkout still runs the
+committed conformance fixtures in `exr/testdata/conformance/`.
 
 ## License
 
 The Cryptomatte sample files are from the [Psyop/Cryptomatte](https://github.com/Psyop/Cryptomatte) repository and are subject to their license terms.
+
+The openexr-images files are from the Academy Software Foundation and are
+distributed under the terms in that repository's `LICENSE`.
 
 ## Adding New Test Data Sources
 

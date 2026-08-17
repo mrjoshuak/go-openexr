@@ -122,21 +122,20 @@ func FuzzScanlineReader(f *testing.F) {
 		width := int(dw.Width())
 		height := int(dw.Height())
 
-		// Limit size to prevent OOM
-		if width <= 0 || height <= 0 || width > 10000 || height > 10000 {
-			return
-		}
-		if width*height > 10_000_000 {
-			return
-		}
+		// No geometry guard here on purpose. Bounding the input in the harness
+		// would stop the fuzzer ever reaching the allocation path with hostile
+		// dimensions, which is the path that has to be safe. The ceiling below
+		// is enforced by the library.
+		_ = width
+		_ = height
 
-		fb := NewFrameBuffer()
-		channels := h.Channels()
-		for i := 0; i < channels.Len(); i++ {
-			ch := channels.At(i)
-			pixelData := make([]byte, width*height*ch.Type.Size())
-			slice := NewSlice(ch.Type, pixelData, width, height)
-			fb.Insert(ch.Name, slice)
+		// Allocate through the library's own API rather than hand-rolling it.
+		// The bound belongs in the implementation, where a real caller handed a
+		// hostile header gets it too; a limit applied only here would stop the
+		// fuzzer exercising the very code that needs to be safe.
+		fb, _, err := AllocateChannelsLimit(h.Channels(), dw, 64<<20)
+		if err != nil {
+			return
 		}
 
 		sr.SetFrameBuffer(fb)
@@ -202,19 +201,17 @@ func FuzzTiledReader(f *testing.F) {
 		width := int(dw.Width())
 		height := int(dw.Height())
 
-		// Limit size
-		if width <= 0 || height <= 0 || width > 10000 || height > 10000 {
-			return
-		}
+		// No geometry guard here on purpose; see FuzzScanlineReader.
+		_ = width
+		_ = height
 
-		// Create framebuffer
-		fb := NewFrameBuffer()
-		channels := h.Channels()
-		for i := 0; i < channels.Len(); i++ {
-			ch := channels.At(i)
-			pixelData := make([]byte, width*height*ch.Type.Size())
-			slice := NewSlice(ch.Type, pixelData, width, height)
-			fb.Insert(ch.Name, slice)
+		// Allocate through the library's own API rather than hand-rolling it.
+		// The bound belongs in the implementation, where a real caller handed a
+		// hostile header gets it too; a limit applied only here would stop the
+		// fuzzer exercising the very code that needs to be safe.
+		fb, _, err := AllocateChannelsLimit(h.Channels(), dw, 64<<20)
+		if err != nil {
+			return
 		}
 
 		tr.SetFrameBuffer(fb)
