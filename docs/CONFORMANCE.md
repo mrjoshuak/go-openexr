@@ -51,12 +51,13 @@ would be stored raw and the codec under test would never run.
 
 ## Why the tests are shaped the way they are
 
-Every codec defect found in August 2026 — a missing predictor bias, an inverted
-byte-reorder order, a flipped RLE control-byte convention, a mispositioned
-wavelet pivot, a truncated Huffman symbol — shared one property: **it was
-self-inverse.** Encode and decode deviated from the specification in exactly
-the same way, so the library round-tripped its own files perfectly while being
-unable to read or write anything produced by a conforming implementation.
+Codec bugs in a format library share a characteristic shape: **they are
+self-inverse.** When an encoder and its decoder deviate from the specification
+in the same way, the pair round-trips perfectly while agreeing with nobody else.
+A missing predictor bias, an inverted byte-reorder order, a flipped RLE
+control-byte convention, a mispositioned wavelet pivot, a truncated Huffman
+symbol — every one of these is invisible to a test that only compares the
+library against itself.
 
 A test of the form `assert decode(encode(x)) == x` cannot detect that class of
 bug. Neither can a test comparing two implementations from this repository
@@ -79,8 +80,8 @@ So, when adding or changing a codec:
   cheaply — but they must never be the only assertion for a codec.
 - **A test that reads a file and asserts nothing about the pixels is not a
   correctness test.** Do not downgrade a decode failure to `t.Logf`, and do not
-  `t.Skip` a codec because it "may have compatibility issues". That comment was
-  in this repository, it was correct, and it is why PIZ stayed broken.
+  `t.Skip` a codec because it "may have compatibility issues" — a skip like that
+  is a bug report worth acting on, not a workaround.
 
 ## Regenerating the corpora
 

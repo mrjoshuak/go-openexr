@@ -123,8 +123,8 @@ Fixes #123
 
 **For anything touching a codec or the file format, read
 [docs/CONFORMANCE.md](docs/CONFORMANCE.md) first.** A round-trip test cannot
-detect a defect applied symmetrically to both the encoder and the decoder, and
-that is how every codec bug in this library has arrived so far. Codec tests
+detect a defect applied symmetrically to both the encoder and the decoder, which
+is the most common way codec bugs hide. Codec tests
 must assert against something outside this repository — a file written by the
 OpenEXR reference implementation, golden values it produced, or a literal
 transcription of the reference algorithm — and not only against another

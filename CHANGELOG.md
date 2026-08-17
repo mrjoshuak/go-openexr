@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2026-08-17
 
+**Full codec interoperability with the OpenEXR reference implementation.**
+None, RLE, ZIPS, ZIP and PIZ now match `oiiotool` sample for sample in both
+directions, verified automatically against reference-written fixtures and the
+official ASWF `openexr-images` corpus. This covers the compressions real-world
+EXRs actually use — Nuke writes ZIPS by default, OpenImageIO writes ZIP.
+
+Also in this release: a substantially hardened reader, a conformance test suite
+built on external ground truth rather than self-comparison, and README examples
+that are now compile-checked.
+
+### Upgrading
+
+Files written by earlier versions using ZIP, ZIPS, RLE or PIZ are not readable
+by other OpenEXR implementations, and files from other implementations were not
+read correctly. Rewriting any affected assets with v1.3.0 produces conforming
+output; no API changes are needed to do so.
+
+One behaviour change: **B44/B44A now return an error for FLOAT and UINT
+channels** instead of writing them as zeros. Images whose channels are all HALF
+are unaffected. Full non-HALF passthrough is landing shortly.
+
 ### Fixed
 - **ZIP/ZIPS: byte reordering and the predictor ran in the wrong order.** OpenEXR
   reorders bytes into even/odd halves and *then* applies the predictor; the
