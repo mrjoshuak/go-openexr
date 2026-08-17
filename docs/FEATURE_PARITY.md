@@ -56,8 +56,8 @@ is narrower — see the caveat above.
 | B44A (7)      | Lossy    | ✅  | ✅  | 4x4 block, variable rate  |
 | DWAA (8)      | Lossy    | ✅  | ⚠️  | DCT, 32 scanlines; cannot read reference-written files |
 | DWAB (9)      | Lossy    | ✅  | ⚠️  | DCT, 256 scanlines; cannot read reference-written files |
-| HTJ2K256 (10) | Lossy    | ✅  | ✅  | JPEG 2000, 128x128 blocks; interop unverified |
-| HTJ2K32 (11)  | Lossy    | ✅  | ✅  | JPEG 2000, 32x32 blocks; interop unverified |
+| HTJ2K256 (10) | Lossless | ✅  | ⚠️  | JPEG 2000, 128x128 blocks; FLOAT exact, HALF broken; no oracle |
+| HTJ2K32 (11)  | Lossless | ✅  | ⚠️  | JPEG 2000, 32x32 blocks; FLOAT exact, HALF broken; no oracle |
 
 **Status: 12/12 implemented. Interoperability verified for None, RLE, ZIPS, ZIP
 and PIZ; DWAA/DWAB have a known read gap; the rest are uncovered.**
