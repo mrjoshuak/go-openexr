@@ -474,21 +474,19 @@ func (r *DeepScanlineReader) decompressSampleCountTable(data []byte, expectedSiz
 		if err != nil {
 			return nil, err
 		}
-		predictor.DecodeSIMD(decompressed)
-		return decompressed, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionZIPS, CompressionZIP:
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
 		if err != nil {
 			return nil, err
 		}
-		var deinterleaved []byte
-		if len(decompressed) >= 32 {
-			deinterleaved = compression.DeinterleaveFast(decompressed)
-		} else {
-			deinterleaved = compression.Deinterleave(decompressed)
-		}
-		predictor.DecodeSIMD(deinterleaved)
-		return deinterleaved, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	default:
 		// For unsupported compression, try zlib as fallback
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
@@ -513,21 +511,19 @@ func (r *DeepScanlineReader) decompressPixelData(data []byte, expectedSize int, 
 		if err != nil {
 			return nil, err
 		}
-		predictor.DecodeSIMD(decompressed)
-		return decompressed, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionZIPS, CompressionZIP:
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
 		if err != nil {
 			return nil, err
 		}
-		var deinterleaved []byte
-		if len(decompressed) >= 32 {
-			deinterleaved = compression.DeinterleaveFast(decompressed)
-		} else {
-			deinterleaved = compression.Deinterleave(decompressed)
-		}
-		predictor.DecodeSIMD(deinterleaved)
-		return deinterleaved, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionPIZ:
 		// PIZ for deep data - decompress and convert
 		width := int(r.header.DataWindow().Width())
@@ -885,37 +881,22 @@ func (dsw *DeepScanlineWriter) compressData(data []byte, comp Compression) ([]by
 	case CompressionNone:
 		return data, nil
 	case CompressionRLE:
-		// Apply predictor, then RLE compress
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		return compression.RLECompress(encoded), nil
+		// Reorder bytes, apply the predictor, then RLE compress
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
+		return compression.RLECompress(scratch), nil
 	case CompressionZIPS, CompressionZIP:
-		// Apply predictor, interleave, then zlib compress
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		var interleaved []byte
-		if len(encoded) >= 32 {
-			interleaved = compression.InterleaveFast(encoded)
-		} else {
-			interleaved = compression.Interleave(encoded)
-		}
+		// Reorder bytes, apply the predictor, then zlib compress
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
 		level := dsw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(interleaved, level)
+		return compression.ZIPCompressLevel(scratch, level)
 	default:
 		// Fallback to ZIP
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		var interleaved []byte
-		if len(encoded) >= 32 {
-			interleaved = compression.InterleaveFast(encoded)
-		} else {
-			interleaved = compression.Interleave(encoded)
-		}
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
 		level := dsw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(interleaved, level)
+		return compression.ZIPCompressLevel(scratch, level)
 	}
 }
 
@@ -1355,21 +1336,19 @@ func (r *DeepTiledReader) decompressSampleCountTable(data []byte, expectedSize i
 		if err != nil {
 			return nil, err
 		}
-		predictor.DecodeSIMD(decompressed)
-		return decompressed, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionZIPS, CompressionZIP:
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
 		if err != nil {
 			return nil, err
 		}
-		var deinterleaved []byte
-		if len(decompressed) >= 32 {
-			deinterleaved = compression.DeinterleaveFast(decompressed)
-		} else {
-			deinterleaved = compression.Deinterleave(decompressed)
-		}
-		predictor.DecodeSIMD(deinterleaved)
-		return deinterleaved, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	default:
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
 		if err != nil {
@@ -1393,21 +1372,19 @@ func (r *DeepTiledReader) decompressPixelData(data []byte, expectedSize int, com
 		if err != nil {
 			return nil, err
 		}
-		predictor.DecodeSIMD(decompressed)
-		return decompressed, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionZIPS, CompressionZIP:
 		decompressed, err := compression.ZIPDecompress(data, expectedSize)
 		if err != nil {
 			return nil, err
 		}
-		var deinterleaved []byte
-		if len(decompressed) >= 32 {
-			deinterleaved = compression.DeinterleaveFast(decompressed)
-		} else {
-			deinterleaved = compression.Deinterleave(decompressed)
-		}
-		predictor.DecodeSIMD(deinterleaved)
-		return deinterleaved, nil
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	case CompressionPIZ:
 		width := int(r.tileDesc.XSize)
 		numChannels := r.channels.Len()
@@ -1714,34 +1691,22 @@ func (dtw *DeepTiledWriter) compressData(data []byte, comp Compression) ([]byte,
 	case CompressionNone:
 		return data, nil
 	case CompressionRLE:
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		return compression.RLECompress(encoded), nil
+		// Reorder bytes, apply the predictor, then RLE compress
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
+		return compression.RLECompress(scratch), nil
 	case CompressionZIPS, CompressionZIP:
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		var interleaved []byte
-		if len(encoded) >= 32 {
-			interleaved = compression.InterleaveFast(encoded)
-		} else {
-			interleaved = compression.Interleave(encoded)
-		}
+		// Reorder bytes, apply the predictor, then zlib compress
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
 		level := dtw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(interleaved, level)
+		return compression.ZIPCompressLevel(scratch, level)
 	default:
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		var interleaved []byte
-		if len(encoded) >= 32 {
-			interleaved = compression.InterleaveFast(encoded)
-		} else {
-			interleaved = compression.Interleave(encoded)
-		}
+		// Fallback to ZIP
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
 		level := dtw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(interleaved, level)
+		return compression.ZIPCompressLevel(scratch, level)
 	}
 }
 

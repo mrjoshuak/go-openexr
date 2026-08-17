@@ -1,5 +1,49 @@
 # go-openexr Progress Tracker
 
+## Codec Interoperability: issue #4 and the defects it uncovered
+
+### Date: August 17, 2026
+
+Branch: `fix/zip-rle-spec-conformance` (open)
+
+Issue #4 reported that float32 scanline reads returned zeros or garbage. The
+uncompressed part of the report turned out to be a missing `ScanlineWriter.Close`
+in the reporter's code, but chasing it surfaced a much larger problem: **ZIP,
+ZIPS, RLE and PIZ were all non-interoperable in both directions**, and the test
+suite could not see it because every codec test was symmetric — round-trip, or
+one in-repo implementation against another, or a fixture this library generated.
+
+Fixed (details in CHANGELOG):
+
+- [x] ZIP/ZIPS reorder-then-predictor ordering
+- [x] Predictor +128/-128 bias (all variants, including the SIMD paths)
+- [x] RLE control-byte convention (non-negative = repeat, negative = literal)
+- [x] RLE missing reorder + predictor pre-passes
+- [x] "Store the chunk raw when it does not shrink" rule, read and write, for
+      scanline, tiled and multi-part
+- [x] PIZ Huffman run-length pseudo-symbol truncated by a `uint16` table
+- [x] PIZ wavelet left-over column/row pivot
+- [x] PIZ `wdec14_4` intermediate truncation
+
+Verified: all 15 pixel-type x compression combinations now pass
+`oiiotool --diff`, and go-openexr decodes the official ASWF `openexr-images`
+corpus bit-exactly.
+
+### Test integrity work
+
+- [x] Conformance corpus with external ground truth (`exr/testdata/conformance/`)
+- [x] Exact-value tests against the ASWF `openexr-images` corpus
+- [x] Spec-anchored predictor, byte-reorder and wavelet tests
+- [ ] Remaining backlog: an audit found 125 candidate false-assurance tests, of
+      which 21 were proven unable to fail by mutation testing. The ZIP, PIZ,
+      B44, DWA, HTJ2K, huffman and half test files still rest largely on
+      round-trip or self-referential assertions and need spec anchors.
+- [ ] `TiledWriter`/`MultiPartOutputFile` `PIZChannel` construction omits the
+      XSampling/YSampling divides that the scanline path performs (latent;
+      only bites subsampled channels).
+- [ ] `ScanlineWriter` produces a truncated file if `Close` is never called,
+      silently. This is what made issue #4 look like a read bug.
+
 ## OSS Release: v0.1.0 Preparation
 
 ### Date: January 10, 2026

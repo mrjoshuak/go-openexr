@@ -21,59 +21,53 @@ const (
 
 // RLECompress compresses data using OpenEXR's RLE encoding.
 //
-// The RLE format uses signed bytes to indicate run types:
-//   - Negative count (-n): The next byte is repeated (n+1) times (run)
-//   - Positive count (+n): The next (n+1) bytes are copied literally
+// The control byte is a *signed* count, and its sign convention is the
+// opposite of what is intuitive:
+//   - Non-negative count n: the following single byte is repeated (n+1) times
+//   - Negative count -n:    the following n bytes are copied literally
 //
 // For example:
 //
-//	[A, A, A, A, B, C, D] -> [-3, A, 2, B, C, D]
+//	[A, A, A, A, B, C, D] -> [3, A, -3, B, C, D]
 //	(4 copies of A, then 3 literal bytes B, C, D)
+//
+// This mirrors rleCompress in OpenEXR's ImfRle.cpp. Inverting the two cases
+// still round-trips against a matching decompressor, but produces a stream
+// that no conforming OpenEXR reader can decode.
 func RLECompress(src []byte) []byte {
 	if len(src) == 0 {
 		return nil
 	}
 
-	// Worst case: each byte becomes 2 bytes (literal byte + count)
-	dst := make([]byte, 0, len(src)+len(src)/2)
+	// Worst case: each literal byte costs itself plus a control byte.
+	dst := make([]byte, 0, len(src)+len(src)/2+1)
 
-	i := 0
-	for i < len(src) {
-		// Look for a run of identical bytes
-		val := src[i]
-		runEnd := i + 1
-		for runEnd < len(src) && src[runEnd] == val && runEnd-i < rleMaxRunLength {
+	runStart, runEnd, inEnd := 0, 1, len(src)
+	for runStart < inEnd {
+		for runEnd < inEnd && src[runStart] == src[runEnd] && runEnd-runStart-1 < rleMaxRunLength {
 			runEnd++
 		}
-		runLength := runEnd - i
 
-		if runLength >= rleMinRunLength {
-			// Encode as a run: negative count, then the byte value
-			dst = append(dst, byte(-(runLength - 1)), val)
-			i = runEnd
-			continue
-		}
-
-		// Start a literal sequence
-		literalStart := i
-
-		for i < len(src) && i-literalStart < rleMaxRunLength {
-			// Check if a run starts here (only if we have enough bytes left)
-			if i+rleMinRunLength <= len(src) {
-				val := src[i]
-				if src[i+1] == val && src[i+2] == val {
-					break // Found start of a run
-				}
+		if runEnd-runStart >= rleMinRunLength {
+			// Compressible run: non-negative count, then the repeated byte.
+			dst = append(dst, byte(runEnd-runStart-1), src[runStart])
+			runStart = runEnd
+		} else {
+			// Incompressible run: extend until a run of 3 begins, then emit
+			// the negated literal length followed by the literal bytes.
+			for runEnd < inEnd &&
+				((runEnd+1 >= inEnd || src[runEnd] != src[runEnd+1]) ||
+					(runEnd+2 >= inEnd || src[runEnd+1] != src[runEnd+2])) &&
+				runEnd-runStart < rleMaxRunLength {
+				runEnd++
 			}
-			i++
+
+			dst = append(dst, byte(runStart-runEnd))
+			dst = append(dst, src[runStart:runEnd]...)
+			runStart = runEnd
 		}
 
-		literalLength := i - literalStart
-		if literalLength > 0 {
-			// Encode as literals: positive count, then the bytes
-			dst = append(dst, byte(literalLength-1))
-			dst = append(dst, src[literalStart:i]...)
-		}
+		runEnd++
 	}
 
 	return dst
@@ -95,8 +89,20 @@ func RLEDecompressTo(src []byte, dst []byte) error {
 		i++
 
 		if count < 0 {
-			// Run: repeat the next byte (-count + 1) times
-			runLength := -count + 1
+			// Literal: copy the next (-count) bytes verbatim.
+			literalLength := -count
+			if i+literalLength > len(src) {
+				return ErrRLECorrupted
+			}
+			if dstPos+literalLength > expectedSize {
+				return ErrRLEOverflow
+			}
+			copy(dst[dstPos:], src[i:i+literalLength])
+			dstPos += literalLength
+			i += literalLength
+		} else {
+			// Run: repeat the next byte (count + 1) times.
+			runLength := count + 1
 			if i >= len(src) {
 				return ErrRLECorrupted
 			}
@@ -108,18 +114,6 @@ func RLEDecompressTo(src []byte, dst []byte) error {
 			for end := dstPos + runLength; dstPos < end; dstPos++ {
 				dst[dstPos] = val
 			}
-		} else {
-			// Literal: copy the next (count + 1) bytes
-			literalLength := count + 1
-			if i+literalLength > len(src) {
-				return ErrRLECorrupted
-			}
-			if dstPos+literalLength > expectedSize {
-				return ErrRLEOverflow
-			}
-			copy(dst[dstPos:], src[i:i+literalLength])
-			dstPos += literalLength
-			i += literalLength
 		}
 	}
 
@@ -141,47 +135,13 @@ func RLEDecompress(src []byte, expectedSize int) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Pre-allocate exact size and write directly
+	// Pre-allocate exact size and decode in place. This delegates to
+	// RLEDecompressTo rather than repeating the loop: the two copies of this
+	// decoder previously drifted apart, which is how an inverted control-byte
+	// convention survived in one of them.
 	dst := make([]byte, expectedSize)
-	dstPos := 0
-
-	i := 0
-	for i < len(src) {
-		count := int(int8(src[i]))
-		i++
-
-		if count < 0 {
-			// Run: repeat the next byte (-count + 1) times
-			runLength := -count + 1
-			if i >= len(src) {
-				return nil, ErrRLECorrupted
-			}
-			if dstPos+runLength > expectedSize {
-				return nil, ErrRLEOverflow
-			}
-			val := src[i]
-			i++
-			// Fill using direct indexing (faster than append)
-			for end := dstPos + runLength; dstPos < end; dstPos++ {
-				dst[dstPos] = val
-			}
-		} else {
-			// Literal: copy the next (count + 1) bytes
-			literalLength := count + 1
-			if i+literalLength > len(src) {
-				return nil, ErrRLECorrupted
-			}
-			if dstPos+literalLength > expectedSize {
-				return nil, ErrRLEOverflow
-			}
-			copy(dst[dstPos:], src[i:i+literalLength])
-			dstPos += literalLength
-			i += literalLength
-		}
-	}
-
-	if dstPos != expectedSize {
-		return nil, ErrRLECorrupted
+	if err := RLEDecompressTo(src, dst); err != nil {
+		return nil, err
 	}
 
 	return dst, nil

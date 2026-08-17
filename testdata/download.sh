@@ -25,6 +25,30 @@ CRYPTOMATTE_FILES=(
     "testGrid_CryptoObject.exr"
 )
 
+# The official ASWF conformance images. TestImages/ is the subset written
+# specifically to exercise decoders -- every half value, the full float range,
+# ramps, and NaN/Inf handling -- and it is small enough to fetch quickly.
+#
+# These carry checked-in golden digests (openexr_images.golden), so the
+# conformance test asserts exact pixel values against the reference
+# implementation rather than merely "it decoded without crashing".
+OPENEXR_IMAGES_BASE_URL="https://raw.githubusercontent.com/AcademySoftwareFoundation/openexr-images/main"
+OPENEXR_IMAGES_FILES=(
+    "TestImages/AllHalfValues.exr"
+    "TestImages/BrightRings.exr"
+    "TestImages/BrightRingsNanInf.exr"
+    "TestImages/GammaChart.exr"
+    "TestImages/GrayRampsDiagonal.exr"
+    "TestImages/GrayRampsHorizontal.exr"
+    "TestImages/RgbRampsDiagonal.exr"
+    "TestImages/SquaresSwirls.exr"
+    "TestImages/WideColorGamut.exr"
+    "TestImages/WideFloatRange.exr"
+    "TestImages/stripes.exr"
+    "ScanLines/Carrots.exr"
+    "Tiles/Spirals.exr"
+)
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -89,6 +113,44 @@ download_cryptomatte() {
     return $failed
 }
 
+download_openexr_images() {
+    info "Downloading official ASWF openexr-images conformance files..."
+    mkdir -p openexr-images
+
+    local success=0
+    local failed=0
+
+    for file in "${OPENEXR_IMAGES_FILES[@]}"; do
+        local url="${OPENEXR_IMAGES_BASE_URL}/${file}"
+        local dest="openexr-images/$(basename "$file")"
+
+        if [[ -f "$dest" ]]; then
+            info "  $(basename "$file") (already exists, skipping)"
+            ((success++))
+            continue
+        fi
+
+        echo -n "  Downloading $(basename "$file")... "
+        if curl -sL "$url" -o "$dest" 2>/dev/null; then
+            if head -c 4 "$dest" | xxd -p | grep -q "762f3101"; then
+                echo "OK"
+                ((success++))
+            else
+                echo "FAILED (invalid EXR)"
+                rm -f "$dest"
+                ((failed++))
+            fi
+        else
+            echo "FAILED"
+            rm -f "$dest"
+            ((failed++))
+        fi
+    done
+
+    info "openexr-images: $success downloaded, $failed failed"
+    return $failed
+}
+
 check_files() {
     local missing=0
 
@@ -101,6 +163,17 @@ check_files() {
             echo -e "  ${GREEN}✓${NC} $file"
         else
             echo -e "  ${RED}✗${NC} $file (missing)"
+            ((missing++))
+        fi
+    done
+
+    echo "openexr-images files:"
+    for file in "${OPENEXR_IMAGES_FILES[@]}"; do
+        local dest="openexr-images/$(basename "$file")"
+        if [[ -f "$dest" ]]; then
+            echo -e "  ${GREEN}✓${NC} $(basename "$file")"
+        else
+            echo -e "  ${RED}✗${NC} $(basename "$file") (missing)"
             ((missing++))
         fi
     done
@@ -118,6 +191,7 @@ clean_files() {
     info "Removing downloaded test data..."
 
     rm -rf cryptomatte/*.exr
+    rm -rf openexr-images/*.exr
 
     info "Done"
 }
@@ -133,7 +207,9 @@ Usage:
   ./download.sh --help    Show this help message
 
 Test data sources:
-  - Cryptomatte: https://github.com/Psyop/Cryptomatte/tree/master/sample_images
+  - Cryptomatte:     https://github.com/Psyop/Cryptomatte/tree/master/sample_images
+  - openexr-images:  https://github.com/AcademySoftwareFoundation/openexr-images
+                     (the official ASWF conformance image set)
 
 Downloaded files are excluded from git via .gitignore.
 EOF
@@ -153,6 +229,8 @@ case "${1:-}" in
     "")
         check_dependencies
         download_cryptomatte
+        echo ""
+        download_openexr_images
         echo ""
         check_files
         ;;

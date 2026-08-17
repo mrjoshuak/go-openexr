@@ -28,8 +28,8 @@ func TestRLECompressRun(t *testing.T) {
 	data := []byte{42, 42, 42, 42, 42}
 	compressed := RLECompress(data)
 
-	// Should encode as [-4, 42] (5 copies of 42)
-	expected := []byte{signedByte(-4), 42}
+	// A repeat run uses a NON-NEGATIVE count: [4, 42] means 4+1 copies of 42.
+	expected := []byte{4, 42}
 	if !bytes.Equal(compressed, expected) {
 		t.Errorf("Compress run: got %v, want %v", compressed, expected)
 	}
@@ -40,8 +40,8 @@ func TestRLECompressLiterals(t *testing.T) {
 	data := []byte{1, 2, 3, 4}
 	compressed := RLECompress(data)
 
-	// Should encode as [3, 1, 2, 3, 4] (4 literal bytes)
-	expected := []byte{3, 1, 2, 3, 4}
+	// A literal run uses a NEGATIVE count: [-4, ...] means 4 literal bytes.
+	expected := []byte{signedByte(-4), 1, 2, 3, 4}
 	if !bytes.Equal(compressed, expected) {
 		t.Errorf("Compress literals: got %v, want %v", compressed, expected)
 	}
@@ -52,7 +52,7 @@ func TestRLECompressMixed(t *testing.T) {
 	data := []byte{1, 2, 3, 100, 100, 100, 100, 4, 5}
 	compressed := RLECompress(data)
 
-	// [2, 1, 2, 3] + [-3, 100] + [1, 4, 5] = [2, 1, 2, 3, -3, 100, 1, 4, 5]
+	// [-3, 1, 2, 3] + [3, 100] + [-2, 4, 5]
 	if len(compressed) > len(data) {
 		t.Logf("Compression expanded data (normal for short mixed data): %d -> %d", len(data), len(compressed))
 	}
@@ -80,8 +80,8 @@ func TestRLEDecompressEmpty(t *testing.T) {
 }
 
 func TestRLEDecompressRun(t *testing.T) {
-	// [-4, 42] = 5 copies of 42
-	compressed := []byte{signedByte(-4), 42}
+	// [4, 42] = 4+1 copies of 42
+	compressed := []byte{4, 42}
 	decompressed, err := RLEDecompress(compressed, 5)
 	if err != nil {
 		t.Fatalf("Decompress error: %v", err)
@@ -94,8 +94,8 @@ func TestRLEDecompressRun(t *testing.T) {
 }
 
 func TestRLEDecompressLiterals(t *testing.T) {
-	// [3, 1, 2, 3, 4] = 4 literal bytes
-	compressed := []byte{3, 1, 2, 3, 4}
+	// [-4, 1, 2, 3, 4] = 4 literal bytes
+	compressed := []byte{signedByte(-4), 1, 2, 3, 4}
 	decompressed, err := RLEDecompress(compressed, 4)
 	if err != nil {
 		t.Fatalf("Decompress error: %v", err)
@@ -171,14 +171,14 @@ func TestRLEDecompressErrors(t *testing.T) {
 	}
 
 	// Truncated literals
-	compressed = []byte{3, 1, 2} // claims 4 bytes, only has 2
+	compressed = []byte{signedByte(-4), 1, 2} // claims 4 bytes, only has 2
 	_, err = RLEDecompress(compressed, 4)
 	if err != ErrRLECorrupted {
 		t.Errorf("Truncated literals error = %v, want ErrRLECorrupted", err)
 	}
 
 	// Overflow
-	compressed = []byte{signedByte(-126), 42} // 127 bytes
+	compressed = []byte{126, 42} // 126+1 = 127 bytes
 	_, err = RLEDecompress(compressed, 10)
 	if err != ErrRLEOverflow {
 		t.Errorf("Overflow error = %v, want ErrRLEOverflow", err)
@@ -284,16 +284,16 @@ func TestRLEDecompressToEmpty(t *testing.T) {
 // TestRLEDecompressToErrors tests error cases
 func TestRLEDecompressToErrors(t *testing.T) {
 	// Buffer too small for run
-	compressed := []byte{signedByte(-4), 42} // 5 bytes
-	dst := make([]byte, 3)                   // Too small
+	compressed := []byte{4, 42} // 4+1 = 5 bytes
+	dst := make([]byte, 3)      // Too small
 	err := RLEDecompressTo(compressed, dst)
 	if err != ErrRLEOverflow {
 		t.Errorf("Expected ErrRLEOverflow, got %v", err)
 	}
 
 	// Buffer too small for literals
-	compressed = []byte{3, 1, 2, 3, 4} // 4 literal bytes
-	dst = make([]byte, 2)              // Too small
+	compressed = []byte{signedByte(-4), 1, 2, 3, 4} // 4 literal bytes
+	dst = make([]byte, 2)                           // Too small
 	err = RLEDecompressTo(compressed, dst)
 	if err != ErrRLEOverflow {
 		t.Errorf("Expected ErrRLEOverflow for literals, got %v", err)

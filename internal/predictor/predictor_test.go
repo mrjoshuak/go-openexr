@@ -35,10 +35,11 @@ func TestDecodeEmpty(t *testing.T) {
 }
 
 func TestEncodeSimple(t *testing.T) {
-	// Constant values should encode to first value + zeros
+	// Constant values encode to the first value followed by the bias, since
+	// each delta is 0 and OpenEXR stores deltas biased by +128.
 	data := []byte{5, 5, 5, 5}
 	Encode(data)
-	expected := []byte{5, 0, 0, 0}
+	expected := []byte{5, 128, 128, 128}
 	if !bytes.Equal(data, expected) {
 		t.Errorf("Encode constant = %v, want %v", data, expected)
 	}
@@ -46,7 +47,7 @@ func TestEncodeSimple(t *testing.T) {
 
 func TestDecodeSimple(t *testing.T) {
 	// Reverse of encode
-	data := []byte{5, 0, 0, 0}
+	data := []byte{5, 128, 128, 128}
 	Decode(data)
 	expected := []byte{5, 5, 5, 5}
 	if !bytes.Equal(data, expected) {
@@ -55,17 +56,18 @@ func TestDecodeSimple(t *testing.T) {
 }
 
 func TestEncodeIncreasing(t *testing.T) {
-	// Increasing by 1 each time should encode to [first, 1, 1, 1, ...]
+	// Increasing by 1 each time encodes to [first, 129, 129, ...]: a delta of
+	// 1 plus the +128 bias.
 	data := []byte{10, 11, 12, 13, 14}
 	Encode(data)
-	expected := []byte{10, 1, 1, 1, 1}
+	expected := []byte{10, 129, 129, 129, 129}
 	if !bytes.Equal(data, expected) {
 		t.Errorf("Encode increasing = %v, want %v", data, expected)
 	}
 }
 
 func TestDecodeIncreasing(t *testing.T) {
-	data := []byte{10, 1, 1, 1, 1}
+	data := []byte{10, 129, 129, 129, 129}
 	Decode(data)
 	expected := []byte{10, 11, 12, 13, 14}
 	if !bytes.Equal(data, expected) {
@@ -160,10 +162,10 @@ func TestEncodeUnderflow(t *testing.T) {
 	// Test that underflow wraps correctly (using unsigned byte arithmetic)
 	data := []byte{10, 5, 2}
 	Encode(data)
-	// 10 - 0 = 10 (first byte unchanged)
-	// 5 - 10 = -5 = 251 in unsigned
-	// 2 - 5 = -3 = 253 in unsigned
-	expected := []byte{10, 251, 253}
+	// 10 stays as-is (first byte unchanged)
+	// 5 - 10 + 128 = 123
+	// 2 - 5 + 128 = 125
+	expected := []byte{10, 123, 125}
 	if !bytes.Equal(data, expected) {
 		t.Errorf("Encode underflow = %v, want %v", data, expected)
 	}

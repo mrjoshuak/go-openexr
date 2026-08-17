@@ -304,42 +304,46 @@ func (r *ScanlineReader) readPixelsSequential(y1, y2 int) error {
 		}
 		numLinesInChunk := chunkEndY - chunkStartY + 1
 
-		// Decompress the chunk data
+		// Decompress the chunk data. A chunk that is not smaller than its
+		// uncompressed size was stored raw by the writer (see
+		// storeUncompressed); the size is the only signal for this.
 		var decompressedData []byte
-		switch comp {
-		case CompressionNone:
+		switch {
+		case comp == CompressionNone:
 			decompressedData = data
-		case CompressionRLE:
+		case r.chunkIsStoredRaw(data, numLinesInChunk, comp):
+			decompressedData = data
+		case comp == CompressionRLE:
 			decompressedData, err = r.decompressRLE(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionZIPS, CompressionZIP:
+		case comp == CompressionZIPS || comp == CompressionZIP:
 			decompressedData, err = r.decompressZIP(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionPIZ:
+		case comp == CompressionPIZ:
 			decompressedData, err = r.decompressPIZ(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionPXR24:
+		case comp == CompressionPXR24:
 			decompressedData, err = r.decompressPXR24(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionB44, CompressionB44A:
+		case comp == CompressionB44 || comp == CompressionB44A:
 			decompressedData, err = r.decompressB44(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionDWAA, CompressionDWAB:
+		case comp == CompressionDWAA || comp == CompressionDWAB:
 			decompressedData, err = r.decompressDWA(data, numLinesInChunk)
 			if err != nil {
 				return err
 			}
-		case CompressionHTJ2K256, CompressionHTJ2K32:
+		case comp == CompressionHTJ2K256 || comp == CompressionHTJ2K32:
 			decompressedData, err = r.decompressHTJ2K(data, numLinesInChunk)
 			if err != nil {
 				return err
@@ -427,9 +431,26 @@ func (r *ScanlineReader) readPixelsParallel(firstChunk, lastChunk, minY, maxY in
 	return firstErr
 }
 
+// chunkIsStoredRaw reports whether a chunk was written uncompressed because
+// compressing it would not have made it smaller. OpenEXR signals this only by
+// the chunk's size: a reader must treat any chunk that is not smaller than the
+// uncompressed chunk size as raw pixel data. See storeUncompressed.
+func (r *ScanlineReader) chunkIsStoredRaw(data []byte, numLines int, comp Compression) bool {
+	if comp == CompressionNone || comp.IsLossy() {
+		return false
+	}
+	return len(data) >= r.calculateChunkSize(numLines)
+}
+
 // decompressChunk decompresses a chunk based on compression type.
 // This is a thread-safe version that doesn't use shared reader buffers.
 func (r *ScanlineReader) decompressChunk(data []byte, numLines int, comp Compression) ([]byte, error) {
+	if r.chunkIsStoredRaw(data, numLines, comp) {
+		result := make([]byte, len(data))
+		copy(result, data)
+		return result, nil
+	}
+
 	switch comp {
 	case CompressionNone:
 		// Make a copy since caller might modify
@@ -587,8 +608,8 @@ func (r *ScanlineReader) calculateChunkSize(numLines int) int {
 }
 
 // decompressRLE decompresses RLE-compressed chunk data.
-// The OpenEXR RLE pipeline is: RLE decompress -> reverse predictor
-// (interleaving is NOT used for RLE, only for ZIP/PIZ)
+// The OpenEXR RLE pipeline is: RLE decompress -> reverse predictor ->
+// undo byte reordering, mirroring compressRLE.
 func (r *ScanlineReader) decompressRLE(data []byte, numLines int) ([]byte, error) {
 	expectedSize := r.calculateChunkSize(numLines)
 
@@ -598,10 +619,11 @@ func (r *ScanlineReader) decompressRLE(data []byte, numLines int) ([]byte, error
 		return nil, err
 	}
 
-	// Reverse predictor (in place)
-	predictor.DecodeSIMD(decompressed)
+	// Reverse the predictor, then undo the byte reordering.
+	output := make([]byte, expectedSize)
+	predictor.ReconstructBytes(output, decompressed)
 
-	return decompressed, nil
+	return output, nil
 }
 
 // decompressZIP decompresses ZIP/ZIPS-compressed chunk data.
@@ -859,6 +881,27 @@ func (w *ScanlineWriter) WritePixels(y1, y2 int) error {
 	return w.writePixelsParallel(y1, y2, minY, maxY, comp, linesPerChunk, numChunks)
 }
 
+// storeUncompressed implements OpenEXR's rule that a chunk whose compressed
+// form is not smaller than its raw form is written uncompressed instead
+// (ImfOutputFile.cpp: "if (compSize < dataSize)"). Readers detect this purely
+// by size, so a writer that emits an oversized compressed chunk produces a
+// file that conforming readers silently misinterpret as raw pixel data.
+//
+// It applies to every lossless codec. Lossy codecs are exempt because their
+// output is not interchangeable with the raw bytes.
+//
+// Because go-openexr always builds chunks in little-endian XDR order, the raw
+// buffer can be written as-is; no native-to-Xdr conversion is needed.
+func storeUncompressed(compressed, raw []byte, comp Compression) []byte {
+	if comp.IsLossy() {
+		return compressed
+	}
+	if len(compressed) >= len(raw) {
+		return raw
+	}
+	return compressed
+}
+
 // writePixelsSequential is the original sequential implementation.
 func (w *ScanlineWriter) writePixelsSequential(y1, y2 int) error {
 	maxY := int(w.dataWindow.Max.Y)
@@ -950,6 +993,8 @@ func (w *ScanlineWriter) writePixelsSequential(y1, y2 int) error {
 			return err
 		}
 
+		data = storeUncompressed(data, rawData, comp)
+
 		if err := w.writer.WriteChunk(int32(chunkStart), data); err != nil {
 			return err
 		}
@@ -1035,7 +1080,7 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 			chunk.err = compErr
 			return compErr
 		}
-		chunk.compressed = compressed
+		chunk.compressed = storeUncompressed(compressed, chunk.rawData, comp)
 		return nil
 	})
 	if err != nil {
@@ -1126,42 +1171,28 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 }
 
 // compressRLE compresses chunk data using RLE.
-// The OpenEXR RLE pipeline is: apply predictor -> RLE compress
-// (interleaving is NOT used for RLE, only for ZIP/PIZ)
+// The OpenEXR RLE pipeline is: reorder bytes -> apply predictor -> RLE compress.
+// ImfRleCompressor applies the same two pre-passes as ImfZipCompressor; only
+// the entropy coder differs.
 func (w *ScanlineWriter) compressRLE(data []byte) []byte {
-	// Make a copy since predictor modifies in place
-	encoded := make([]byte, len(data))
-	copy(encoded, data)
+	scratch := make([]byte, len(data))
+	predictor.DeconstructBytes(scratch, data)
 
-	// Apply predictor (in place, using optimized version)
-	predictor.EncodeSIMD(encoded)
-
-	// RLE compress
-	return compression.RLECompress(encoded)
+	return compression.RLECompress(scratch)
 }
 
 // compressZIP compresses chunk data using ZIP.
-// The OpenEXR ZIP pipeline is: apply predictor -> interleave -> zlib compress
+// The OpenEXR ZIP pipeline is: reorder bytes -> apply predictor -> zlib compress.
 // Uses the compression level from the header for deterministic round-trip.
 func (w *ScanlineWriter) compressZIP(data []byte) ([]byte, error) {
-	// Make a copy since predictor modifies in place
-	encoded := make([]byte, len(data))
-	copy(encoded, data)
-
-	// Apply predictor (in place, using optimized version)
-	predictor.EncodeSIMD(encoded)
-
-	// Interleave (use fast version for larger data)
-	var interleaved []byte
-	if len(encoded) >= 32 {
-		interleaved = compression.InterleaveFast(encoded)
-	} else {
-		interleaved = compression.Interleave(encoded)
-	}
+	// Reorder into [even | odd] halves, then predict over the reordered
+	// stream (see predictor.DeconstructBytes for why the order matters).
+	scratch := make([]byte, len(data))
+	predictor.DeconstructBytes(scratch, data)
 
 	// zlib compress with configured level
 	level := w.header.ZIPLevel()
-	return compression.ZIPCompressLevel(interleaved, level)
+	return compression.ZIPCompressLevel(scratch, level)
 }
 
 // compressPIZ compresses chunk data using PIZ.

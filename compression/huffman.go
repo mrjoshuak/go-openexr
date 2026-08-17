@@ -295,7 +295,16 @@ const huffmanTableBits = 12 // Direct lookup for codes up to 12 bits (16KB table
 // - Two-level lookup: 14-bit primary table + sorted binary search for longer codes
 type FastHufDecoder struct {
 	// Separate tables for symbols and lengths (cache-friendly)
-	tableSymbol  []uint16 // 32KB at 14 bits
+	// tableSymbol is uint32, not uint16, because PIZ's Huffman alphabet has
+	// HUF_ENCSIZE = 65537 symbols: the last, 65536, is the run-length
+	// pseudo-symbol. Storing it in a uint16 truncates it to 0, so whenever the
+	// reference encoder gives that symbol a short enough code to land in the
+	// fast table, the decoder emits a literal 0, never consumes the run's
+	// 8-bit length, and desynchronises the bitstream from the first run on.
+	// go-openexr's own encoder never emits run-length codes, so its files
+	// round-trip perfectly while every reference-written PIZ image decodes to
+	// noise.
+	tableSymbol  []uint32 // 64KB at 14 bits
 	tableCodeLen []uint8  // 16KB at 14 bits
 	tableBits    int
 	tableSize    int
@@ -332,7 +341,7 @@ const (
 var fastHufDecoderPool = sync.Pool{
 	New: func() any {
 		return &FastHufDecoder{
-			tableSymbol:  make([]uint16, fastHufTableSize),
+			tableSymbol:  make([]uint32, fastHufTableSize),
 			tableCodeLen: make([]uint8, fastHufTableSize),
 			tableBits:    fastHufTableBits,
 			tableSize:    fastHufTableSize,
@@ -436,7 +445,7 @@ func (d *FastHufDecoder) Reset(codeLengths []int) error {
 
 			for i := 0; i < count; i++ {
 				idx := base + i
-				d.tableSymbol[idx] = uint16(symbol)
+				d.tableSymbol[idx] = uint32(symbol)
 				d.tableCodeLen[idx] = uint8(c.length)
 			}
 
@@ -560,7 +569,7 @@ func (d *FastHufDecoder) ResetWithBounds(codeLengths []int, minIdx, maxIdx int) 
 
 			for i := 0; i < count; i++ {
 				idx := base + i
-				d.tableSymbol[idx] = uint16(symbol)
+				d.tableSymbol[idx] = uint32(symbol)
 				d.tableCodeLen[idx] = uint8(length)
 			}
 
@@ -807,7 +816,7 @@ func NewFastHufDecoder(codeLengths []int) *FastHufDecoder {
 
 	if maxLen == 0 {
 		return &FastHufDecoder{
-			tableSymbol:  make([]uint16, fastHufTableSize),
+			tableSymbol:  make([]uint32, fastHufTableSize),
 			tableCodeLen: make([]uint8, fastHufTableSize),
 			tableBits:    fastHufTableBits,
 			tableSize:    fastHufTableSize,
@@ -823,7 +832,7 @@ func NewFastHufDecoder(codeLengths []int) *FastHufDecoder {
 		tableMin:  ^uint64(0), // Will find minimum valid code
 	}
 
-	d.tableSymbol = make([]uint16, fastHufTableSize)
+	d.tableSymbol = make([]uint32, fastHufTableSize)
 	d.tableCodeLen = make([]uint8, fastHufTableSize)
 
 	// Build separate symbol and length tables
@@ -844,7 +853,7 @@ func NewFastHufDecoder(codeLengths []int) *FastHufDecoder {
 
 			for i := 0; i < count; i++ {
 				idx := base + i
-				d.tableSymbol[idx] = uint16(symbol)
+				d.tableSymbol[idx] = uint32(symbol)
 				d.tableCodeLen[idx] = uint8(c.length)
 			}
 
@@ -966,7 +975,7 @@ func (d *FastHufDecoder) DecodeInto(data []byte, result []uint16) error {
 			idx := buffer >> fastHufIndexShift
 			codeLen := int(tableCodeLen[idx])
 			if codeLen > 0 && codeLen <= bitsInBuffer {
-				result[resultIdx] = tableSymbol[idx]
+				result[resultIdx] = uint16(tableSymbol[idx])
 				resultIdx++
 				buffer <<= codeLen
 				bitsInBuffer -= codeLen
@@ -1041,7 +1050,7 @@ func (d *FastHufDecoder) DecodeInto(data []byte, result []uint16) error {
 				idx := buffer >> fastHufIndexShift
 				codeLen := int(tableCodeLen[idx])
 				if codeLen > 0 && codeLen <= bitsInBuffer {
-					result[resultIdx] = tableSymbol[idx]
+					result[resultIdx] = uint16(tableSymbol[idx])
 					resultIdx++
 					buffer <<= codeLen
 					bitsInBuffer -= codeLen
@@ -1159,7 +1168,7 @@ func (d *FastHufDecoder) DecodeIntoWithBits(data []byte, result []uint16, nBits 
 			idx := buffer >> fastHufIndexShift
 			codeLen = int(tableCodeLen[idx])
 			if codeLen > 0 && codeLen <= bitsInBuffer && codeLen <= bitsRemaining {
-				symbol = uint32(tableSymbol[idx])
+				symbol = tableSymbol[idx]
 				buffer <<= codeLen
 				bitsInBuffer -= codeLen
 				bitsRemaining -= codeLen
@@ -1238,7 +1247,7 @@ func (d *FastHufDecoder) DecodeIntoWithBits(data []byte, result []uint16, nBits 
 				idx := buffer >> fastHufIndexShift
 				codeLen = int(tableCodeLen[idx])
 				if codeLen > 0 && codeLen <= bitsInBuffer && codeLen <= bitsRemaining {
-					symbol = uint32(tableSymbol[idx])
+					symbol = tableSymbol[idx]
 					buffer <<= codeLen
 					bitsInBuffer -= codeLen
 					bitsRemaining -= codeLen

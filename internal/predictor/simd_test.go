@@ -114,10 +114,37 @@ func TestEncodeSIMD(t *testing.T) {
 	}
 }
 
+// refReconstruct is an independent transcription of
+// ImfZipCompressor::uncompress: undo the predictor over the still-reordered
+// stream, then undo the reordering. Asserting against this rather than against
+// a copy of ReconstructBytes's own steps is deliberate — the previous version
+// of this test reimplemented the wrong order and so agreed with the bug.
+func refReconstruct(source []byte) []byte {
+	n := len(source)
+	tmp := append([]byte(nil), source...)
+	for i := 1; i < n; i++ {
+		tmp[i] = byte(int(tmp[i-1]) + int(tmp[i]) - 128)
+	}
+
+	out := make([]byte, n)
+	half := (n + 1) / 2
+	t1, t2, s := 0, half, 0
+	for s < n {
+		out[s] = tmp[t1]
+		t1++
+		s++
+		if s >= n {
+			break
+		}
+		out[s] = tmp[t2]
+		t2++
+		s++
+	}
+	return out
+}
+
 func TestReconstructBytes(t *testing.T) {
-	// Test that ReconstructBytes produces same result as deinterleave + Decode
-	// This matches the OpenEXR ZIP pipeline order: deinterleave first, then predictor decode
-	sizes := []int{8, 16, 32, 64, 100, 256}
+	sizes := []int{0, 1, 2, 3, 7, 8, 15, 16, 17, 32, 64, 100, 255, 256}
 
 	for _, size := range sizes {
 		t.Run("", func(t *testing.T) {
@@ -125,38 +152,79 @@ func TestReconstructBytes(t *testing.T) {
 			original := make([]byte, size)
 			r.Read(original)
 
-			// Method 1: separate steps (deinterleave first, then decode)
-			source1 := make([]byte, size)
-			copy(source1, original)
-			half := (size + 1) / 2
-			out1 := make([]byte, size)
-			// Deinterleave: source is [even bytes | odd bytes]
-			for i := 0; i < half; i++ {
-				out1[i*2] = source1[i]
-				if half+i < size {
-					out1[i*2+1] = source1[half+i]
-				}
-			}
-			// Predictor decode on deinterleaved data
-			Decode(out1)
+			want := refReconstruct(original)
 
-			// Method 2: combined ReconstructBytes
-			source2 := make([]byte, size)
-			copy(source2, original)
-			out2 := make([]byte, size)
-			ReconstructBytes(out2, source2)
+			source := append([]byte(nil), original...)
+			got := make([]byte, size)
+			ReconstructBytes(got, source)
 
-			if !bytes.Equal(out1, out2) {
+			if !bytes.Equal(got, want) {
 				t.Errorf("ReconstructBytes mismatch for size %d:\nwant: %v\ngot:  %v",
-					size, out1[:min(32, len(out1))], out2[:min(32, len(out2))])
+					size, want[:min(32, len(want))], got[:min(32, len(got))])
 			}
 		})
 	}
 }
 
+// TestReconstructInvertsDeconstruct pins the two combined helpers as exact
+// inverses. Together with TestReconstructBytes (which anchors one of them to
+// the specification) this makes both spec-correct, which neither check
+// establishes on its own.
+func TestReconstructInvertsDeconstruct(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 7, 8, 15, 16, 17, 32, 64, 100, 255, 256, 1000} {
+		r := rand.New(rand.NewSource(int64(size) + 7))
+		original := make([]byte, size)
+		r.Read(original)
+
+		scratch := make([]byte, size)
+		DeconstructBytes(scratch, original)
+
+		got := make([]byte, size)
+		ReconstructBytes(got, scratch)
+
+		if !bytes.Equal(got, original) {
+			t.Errorf("size %d: Reconstruct(Deconstruct(x)) != x", size)
+		}
+	}
+}
+
+// refDeconstruct is an independent transcription of
+// ImfZipCompressor::compress: split the stream into even and odd halves, then
+// apply the biased predictor to the reordered result.
+func refDeconstruct(source []byte) []byte {
+	n := len(source)
+	out := make([]byte, n)
+	half := (n + 1) / 2
+	t1, t2, s := 0, half, 0
+	for s < n {
+		out[t1] = source[s]
+		t1++
+		s++
+		if s >= n {
+			break
+		}
+		out[t2] = source[s]
+		t2++
+		s++
+	}
+
+	if n >= 2 {
+		p := int(out[0])
+		for i := 1; i < n; i++ {
+			d := int(out[i]) - p + (128 + 256)
+			p = int(out[i])
+			out[i] = byte(d)
+		}
+	}
+	return out
+}
+
 func TestDeconstructBytes(t *testing.T) {
-	// Test that DeconstructBytes produces same result as Encode + manual interleave
-	sizes := []int{8, 16, 32, 64, 100, 256}
+	// Asserted against an independent transcription of the reference rather
+	// than against a copy of DeconstructBytes's own steps: the previous version
+	// reimplemented the same pipeline inline, so any misconception shared by
+	// both passed.
+	sizes := []int{0, 1, 2, 3, 7, 8, 15, 16, 17, 32, 64, 100, 255, 256}
 
 	for _, size := range sizes {
 		t.Run("", func(t *testing.T) {
@@ -164,26 +232,14 @@ func TestDeconstructBytes(t *testing.T) {
 			original := make([]byte, size)
 			r.Read(original)
 
-			// Method 1: separate steps
-			half := (size + 1) / 2
-			scratch1 := make([]byte, size)
-			// Interleave (split even/odd)
-			for i := 0; i < size; i++ {
-				if i%2 == 0 {
-					scratch1[i/2] = original[i]
-				} else {
-					scratch1[half+i/2] = original[i]
-				}
-			}
-			Encode(scratch1)
+			want := refDeconstruct(original)
 
-			// Method 2: combined DeconstructBytes
-			scratch2 := make([]byte, size)
-			DeconstructBytes(scratch2, original)
+			got := make([]byte, size)
+			DeconstructBytes(got, original)
 
-			if !bytes.Equal(scratch1, scratch2) {
+			if !bytes.Equal(got, want) {
 				t.Errorf("DeconstructBytes mismatch for size %d:\nwant: %v\ngot:  %v",
-					size, scratch1[:min(32, len(scratch1))], scratch2[:min(32, len(scratch2))])
+					size, want[:min(32, len(want))], got[:min(32, len(got))])
 			}
 		})
 	}

@@ -295,6 +295,9 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 			return err
 		}
 
+		// A chunk that did not shrink must be stored raw; see storeUncompressed.
+		compressed = storeUncompressed(compressed, uncompressed, comp)
+
 		if err := m.writer.WriteChunkPart(part, int32(chunkY), compressed); err != nil {
 			return err
 		}
@@ -370,6 +373,9 @@ func (m *MultiPartOutputFile) WriteTileLevel(part, tileX, tileY, levelX, levelY 
 	if err != nil {
 		return err
 	}
+
+	// A chunk that did not shrink must be stored raw; see storeUncompressed.
+	compressed = storeUncompressed(compressed, uncompressed, comp)
 
 	return m.writer.WriteTileChunkPart(part, tileX, tileY, levelX, levelY, compressed)
 }
@@ -498,22 +504,15 @@ func compressChunkData(data []byte, width, height int, cl *ChannelList, comp Com
 		return data, nil
 
 	case CompressionRLE:
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		return compression.RLECompress(encoded), nil
+		// Reorder bytes, then predict over the reordered stream.
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
+		return compression.RLECompress(scratch), nil
 
 	case CompressionZIPS, CompressionZIP:
-		encoded := make([]byte, len(data))
-		copy(encoded, data)
-		predictor.EncodeSIMD(encoded)
-		var interleaved []byte
-		if len(encoded) >= 32 {
-			interleaved = compression.InterleaveFast(encoded)
-		} else {
-			interleaved = compression.Interleave(encoded)
-		}
-		return compression.ZIPCompress(interleaved)
+		scratch := make([]byte, len(data))
+		predictor.DeconstructBytes(scratch, data)
+		return compression.ZIPCompress(scratch)
 
 	case CompressionPIZ:
 		sortedChs := cl.SortedByName()

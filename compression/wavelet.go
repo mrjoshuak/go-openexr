@@ -218,23 +218,31 @@ func wdec14_4(data []uint16, px, p01, p10, p11 int) {
 	c := int(int16(data[p01]))
 	d := int(int16(data[p11]))
 
-	// First level inverse transform
-	i00 := a + (b & 1) + (b >> 1)
-	i10 := i00 - b
-	i01 := c + (d & 1) + (d >> 1)
-	i11 := i01 - d
+	// First level inverse transform.
+	//
+	// The intermediates must be truncated back to 16 bits before feeding the
+	// second level. In ImfWav.cpp they are `unsigned short` locals, so every
+	// stage wraps; carrying full-width ints through instead changes the result
+	// whenever a coefficient overflows int16. That is invisible to a
+	// round-trip test — the matching encoder wraps the same way — but produces
+	// different pixels from every conforming decoder.
+	ai := a + (b & 1) + (b >> 1)
+	i00 := int(int16(ai))
+	i10 := int(int16(ai - b))
+
+	ci := c + (d & 1) + (d >> 1)
+	i01 := int(int16(ci))
+	i11 := int(int16(ci - d))
 
 	// Second level inverse transform
-	a = i00 + (i01 & 1) + (i01 >> 1)
-	b = a - i01
-	c = i10 + (i11 & 1) + (i11 >> 1)
-	d = c - i11
+	a2 := i00 + (i01 & 1) + (i01 >> 1)
+	c2 := i10 + (i11 & 1) + (i11 >> 1)
 
 	// Store results
-	data[px] = uint16(int16(a))
-	data[p01] = uint16(int16(b))
-	data[p10] = uint16(int16(c))
-	data[p11] = uint16(int16(d))
+	data[px] = uint16(int16(a2))
+	data[p01] = uint16(int16(a2 - i01))
+	data[p10] = uint16(int16(c2))
+	data[p11] = uint16(int16(c2 - i11))
 }
 
 // wdec16_4 decodes a 2x2 block of wavelet coefficients using modulo arithmetic.
@@ -301,10 +309,19 @@ func Wav2DEncodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 		ox1 := ox * p
 		ox2 := ox * p2
 
-		// Y loop
-		for py := 0; py <= oy*(ny-p2); py += oy2 {
-			// X loop - process 2x2 blocks
-			for px := py; px <= py+ox*(nx-p2); px += ox2 {
+		// Y loop. py must survive the loop: the left-over row is handled at
+		// the position the loop stopped at, exactly as in ImfWav.cpp. That
+		// position is not oy*(ny-p) in general -- it is the first multiple of
+		// p2 past the last full pair -- and recomputing it from ny silently
+		// transforms the wrong samples whenever ny has bits set below p.
+		ey := oy * (ny - p2)
+		py := 0
+		for ; py <= ey; py += oy2 {
+			ex := py + ox*(nx-p2)
+
+			// X loop - process 2x2 blocks. px likewise survives the loop.
+			px := py
+			for ; px <= ex; px += ox2 {
 				p01 := px + ox1
 				p10 := px + oy1
 				p11 := p10 + ox1
@@ -323,9 +340,8 @@ func Wav2DEncodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 				}
 			}
 
-			// Encode odd column (1D)
+			// Encode left-over column (1D)
 			if nx&p != 0 {
-				px := py + ox*(nx-p)
 				p10 := px + oy1
 				if w14 {
 					data[px], data[p10] = wenc14(data[px], data[p10])
@@ -335,10 +351,10 @@ func Wav2DEncodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 			}
 		}
 
-		// Encode odd line (1D)
+		// Encode left-over row (1D), at the position the y loop stopped at.
 		if ny&p != 0 {
-			py := oy * (ny - p)
-			for px := py; px <= py+ox*(nx-p2); px += ox2 {
+			ex := py + ox*(nx-p2)
+			for px := py; px <= ex; px += ox2 {
 				p01 := px + ox1
 				if w14 {
 					data[px], data[p01] = wenc14(data[px], data[p01])
@@ -395,10 +411,17 @@ func Wav2DDecodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 		ox1 := ox * p
 		ox2 := ox * p2
 
-		// Y loop
-		for py := 0; py <= oy*(ny-p2); py += oy2 {
+		// Y loop. See Wav2DEncodeStrided: py and px must survive their loops
+		// so the left-over row and column are handled at the positions the
+		// loops stopped at, as in ImfWav.cpp.
+		ey := oy * (ny - p2)
+		py := 0
+		for ; py <= ey; py += oy2 {
+			ex := py + ox*(nx-p2)
+
 			// X loop - process 2x2 blocks with optimized decoder
-			for px := py; px <= py+ox*(nx-p2); px += ox2 {
+			px := py
+			for ; px <= ex; px += ox2 {
 				p01 := px + ox1
 				p10 := px + oy1
 				p11 := p10 + ox1
@@ -410,9 +433,8 @@ func Wav2DDecodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 				}
 			}
 
-			// Decode odd column (1D)
+			// Decode left-over column (1D)
 			if nx&p != 0 {
-				px := py + ox*(nx-p)
 				p10 := px + oy1
 				var a, b uint16
 				if w14 {
@@ -425,10 +447,10 @@ func Wav2DDecodeStrided(data []uint16, nx, ox, ny, oy int, maxValue uint16) {
 			}
 		}
 
-		// Decode odd line (1D)
+		// Decode left-over row (1D), at the position the y loop stopped at.
 		if ny&p != 0 {
-			py := oy * (ny - p)
-			for px := py; px <= py+ox*(nx-p2); px += ox2 {
+			ex := py + ox*(nx-p2)
+			for px := py; px <= ex; px += ox2 {
 				p01 := px + ox1
 				var a, b uint16
 				if w14 {

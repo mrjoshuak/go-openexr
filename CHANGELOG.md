@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **ZIP/ZIPS: byte reordering and the predictor ran in the wrong order.** OpenEXR
+  reorders bytes into even/odd halves and *then* applies the predictor; the
+  inverse order was used on both sides. (#4)
+- **ZIP/ZIPS/RLE: the predictor omitted OpenEXR's +128/-128 bias.** (#4)
+- **RLE: the control-byte convention was inverted.** A non-negative count is a
+  repeat run and a negative count a literal run; the two were swapped. (#4)
+- **RLE: the byte-reorder and predictor pre-passes were missing entirely.**
+  `ImfRleCompressor` applies the same two pre-passes as `ImfZipCompressor`. (#4)
+- **Chunks that do not shrink are now stored uncompressed**, as
+  `ImfOutputFile` requires, and readers now detect them by size. Without this a
+  small or incompressible chunk produced a file conforming readers silently
+  misread as raw pixel data. Applies to scanline, tiled and multi-part writers.
+- **PIZ: the Huffman fast-decode table truncated the run-length pseudo-symbol.**
+  `HUF_ENCSIZE` is 65537 and the run-length symbol is 65536, which does not fit
+  the `uint16` symbol table; it decoded as a literal 0 and desynchronised the
+  bitstream at the first run.
+- **PIZ: the wavelet mispositioned the left-over column and row.** The pivot was
+  recomputed as `nx-p` instead of the reference's post-loop position, which
+  differs whenever the dimension has bits set below the current level.
+- **PIZ: `wdec14_4` kept full-width intermediates** where the reference truncates
+  to 16 bits between stages.
+
+Each of these was self-inverse, so the library round-tripped its own files
+correctly while being unable to read or write files any conforming OpenEXR
+implementation produces.
+
+### Added
+- `exr/testdata/conformance/`: EXR files written by the OpenEXR reference
+  implementation with golden pixel values from that same implementation, plus
+  `scripts/gen-conformance-testdata.sh` to regenerate them. The generator fails
+  if a codec's fixture did not actually compress, so a fixture cannot silently
+  degrade into an untested store-raw case.
+- Exact-value tests against the official ASWF `openexr-images` corpus, fetched by
+  `testdata/download.sh` with digests in `exr/testdata/openexr_images.golden`
+  (`scripts/gen-reference-goldens.py`).
+- Spec-anchored tests for the predictor, the byte reorder and the wavelet,
+  asserting against independent transcriptions of the OpenEXR reference rather
+  than against other implementations in this repository.
+
+### Changed
+- Predictor and byte-reorder call sites across scanline, tiled, deep and
+  multi-part now route through the shared `predictor.ReconstructBytes` /
+  `DeconstructBytes` helpers instead of repeating the pipeline inline.
+- `RLEDecompress` delegates to `RLEDecompressTo`; the two copies had drifted.
+
 ## [1.2.0] - 2026-02-28
 
 ### Added

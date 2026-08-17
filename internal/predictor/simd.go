@@ -7,12 +7,37 @@ import (
 // DecodeSIMD performs predictor decode using SIMD assembly when available.
 // On amd64 and arm64, this uses SSE2/NEON instructions for parallel prefix sum.
 // On other platforms, it falls back to loop-unrolled pure Go.
+//
+// The assembly kernels compute an unbiased prefix sum, so the OpenEXR -128
+// predictor bias is folded in afterwards by applyDecodeBias. See that function
+// for why this is exact.
 func DecodeSIMD(data []byte) {
 	if len(data) < 2 {
 		return
 	}
 	// Use assembly implementation (falls back to pure Go on unsupported platforms)
 	decodeASM(data)
+	applyDecodeBias(data)
+}
+
+// applyDecodeBias converts an unbiased prefix sum into OpenEXR's biased
+// predictor decode, in place.
+//
+// The reference decoder is d[i] = d[i-1] + e[i] - 128. Expanding the
+// recurrence gives
+//
+//	d[i] = d[0] + sum(e[1..i]) - 128*i = prefixSum[i] - 128*i
+//
+// so the only difference from a plain prefix sum is a per-index offset of
+// -128*i. Modulo 256 that offset is 0 for even i and 128 for odd i, and
+// adding or subtracting 128 modulo 256 is a flip of the high bit. Correcting
+// a plain prefix sum therefore reduces to XOR-ing 0x80 into every
+// odd-indexed byte, which is exact for all inputs and lets the hand-written
+// SSE2/NEON prefix-sum kernels stay untouched.
+func applyDecodeBias(data []byte) {
+	for i := 1; i < len(data); i += 2 {
+		data[i] ^= bias
+	}
 }
 
 // DecodeSIMDWithOffset performs predictor decode starting from an offset value.
@@ -28,10 +53,20 @@ func DecodeSIMDWithOffset(data []byte, offset byte) {
 	DecodeSIMD(data)
 }
 
-// ReconstructBytes combines deinterleave and predictor decode for ZIP decompression.
-// This matches the OpenEXR ZIP pipeline: deinterleave first, then predictor decode.
-// The source buffer contains interleaved data [even bytes | odd bytes].
-// The output buffer receives the deinterleaved and predictor-decoded data.
+// ReconstructBytes combines predictor decode and deinterleave for ZIP
+// decompression. It is the exact inverse of DeconstructBytes.
+//
+// The OpenEXR pipeline (ImfZipCompressor::uncompress) is: inflate, then undo
+// the predictor, then undo the byte reordering. The order matters — the
+// predictor runs over the *reordered* stream, so undoing the reordering first
+// would apply the differencing across the wrong byte pairs. Doing both steps
+// in the wrong order is self-consistent with a matching compressor and so
+// still round-trips, but produces and expects a byte stream no conforming
+// OpenEXR implementation agrees with.
+//
+// source contains the inflated data as [even bytes | odd bytes] and IS
+// MODIFIED IN PLACE by the predictor pass. out receives the reconstructed
+// bytes [e0, o0, e1, o1, ...].
 func ReconstructBytes(out, source []byte) {
 	n := len(source)
 	if n == 0 {
@@ -41,7 +76,10 @@ func ReconstructBytes(out, source []byte) {
 		panic("output buffer too small")
 	}
 
-	// Step 1: Deinterleave source to output
+	// Step 1: Undo the predictor, in place, on the still-reordered stream.
+	DecodeSIMD(source)
+
+	// Step 2: Undo the byte reordering from source into output
 	// Source format: [even bytes | odd bytes] -> Output format: [e0, o0, e1, o1, ...]
 	half := (n + 1) / 2
 
@@ -69,9 +107,6 @@ func ReconstructBytes(out, source []byte) {
 			out[i*2+1] = source[half+i]
 		}
 	}
-
-	// Step 2: Predictor decode in place on the deinterleaved output
-	DecodeSIMD(out[:n])
 }
 
 // interleaveBytes takes two uint64 values and interleaves their bytes.
@@ -94,8 +129,11 @@ func interleaveBytes(a, b uint64) (lo, hi uint64) {
 }
 
 // DeconstructBytes performs the inverse of ReconstructBytes.
-// Interleaves the source bytes and applies predictor encoding.
-// This matches the C++ internal_zip_deconstruct_bytes function.
+// It reorders the source bytes into [even | odd] halves and then applies the
+// predictor to the reordered stream, matching ImfZipCompressor::compress and
+// the C++ internal_zip_deconstruct_bytes function.
+//
+// The reorder must happen before the predictor; see ReconstructBytes.
 func DeconstructBytes(scratch, source []byte) {
 	n := len(source)
 	if n == 0 {
@@ -174,17 +212,17 @@ func EncodeSIMD(data []byte) {
 	// Encode works backwards to avoid overwriting values we need
 	i := n - 1
 	for ; i >= 8; i -= 8 {
-		data[i] = data[i] - data[i-1]
-		data[i-1] = data[i-1] - data[i-2]
-		data[i-2] = data[i-2] - data[i-3]
-		data[i-3] = data[i-3] - data[i-4]
-		data[i-4] = data[i-4] - data[i-5]
-		data[i-5] = data[i-5] - data[i-6]
-		data[i-6] = data[i-6] - data[i-7]
-		data[i-7] = data[i-7] - data[i-8]
+		data[i] = data[i] - data[i-1] + bias
+		data[i-1] = data[i-1] - data[i-2] + bias
+		data[i-2] = data[i-2] - data[i-3] + bias
+		data[i-3] = data[i-3] - data[i-4] + bias
+		data[i-4] = data[i-4] - data[i-5] + bias
+		data[i-5] = data[i-5] - data[i-6] + bias
+		data[i-6] = data[i-6] - data[i-7] + bias
+		data[i-7] = data[i-7] - data[i-8] + bias
 	}
 
 	for ; i >= 1; i-- {
-		data[i] = data[i] - data[i-1]
+		data[i] = data[i] - data[i-1] + bias
 	}
 }

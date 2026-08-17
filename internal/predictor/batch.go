@@ -21,42 +21,42 @@ func EncodeBatch(data []byte) {
 	for ; i+batchSize <= n; i += batchSize {
 		// Unrolled loop - each iteration depends on the previous
 		curr0 := data[i]
-		data[i] = curr0 - prev
+		data[i] = curr0 - prev + bias
 		prev = curr0
 
 		curr1 := data[i+1]
-		data[i+1] = curr1 - prev
+		data[i+1] = curr1 - prev + bias
 		prev = curr1
 
 		curr2 := data[i+2]
-		data[i+2] = curr2 - prev
+		data[i+2] = curr2 - prev + bias
 		prev = curr2
 
 		curr3 := data[i+3]
-		data[i+3] = curr3 - prev
+		data[i+3] = curr3 - prev + bias
 		prev = curr3
 
 		curr4 := data[i+4]
-		data[i+4] = curr4 - prev
+		data[i+4] = curr4 - prev + bias
 		prev = curr4
 
 		curr5 := data[i+5]
-		data[i+5] = curr5 - prev
+		data[i+5] = curr5 - prev + bias
 		prev = curr5
 
 		curr6 := data[i+6]
-		data[i+6] = curr6 - prev
+		data[i+6] = curr6 - prev + bias
 		prev = curr6
 
 		curr7 := data[i+7]
-		data[i+7] = curr7 - prev
+		data[i+7] = curr7 - prev + bias
 		prev = curr7
 	}
 
 	// Handle remainder
 	for ; i < n; i++ {
 		curr := data[i]
-		data[i] = curr - prev
+		data[i] = curr - prev + bias
 		prev = curr
 	}
 }
@@ -75,19 +75,19 @@ func DecodeBatch(data []byte) {
 
 	// Process in batches of 8 with running sum
 	for ; i+batchSize <= n; i += batchSize {
-		data[i] += data[i-1]
-		data[i+1] += data[i]
-		data[i+2] += data[i+1]
-		data[i+3] += data[i+2]
-		data[i+4] += data[i+3]
-		data[i+5] += data[i+4]
-		data[i+6] += data[i+5]
-		data[i+7] += data[i+6]
+		data[i] = data[i] + data[i-1] - bias
+		data[i+1] = data[i+1] + data[i] - bias
+		data[i+2] = data[i+2] + data[i+1] - bias
+		data[i+3] = data[i+3] + data[i+2] - bias
+		data[i+4] = data[i+4] + data[i+3] - bias
+		data[i+5] = data[i+5] + data[i+4] - bias
+		data[i+6] = data[i+6] + data[i+5] - bias
+		data[i+7] = data[i+7] + data[i+6] - bias
 	}
 
 	// Handle remainder
 	for ; i < n; i++ {
-		data[i] += data[i-1]
+		data[i] = data[i] + data[i-1] - bias
 	}
 }
 

@@ -256,9 +256,17 @@ func (r *TiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error {
 	tileWidth := min(int(r.tileDesc.XSize), levelWidth-tileX*int(r.tileDesc.XSize))
 	tileHeight := min(int(r.tileDesc.YSize), levelHeight-tileY*int(r.tileDesc.YSize))
 
-	// Decompress the tile data
+	// Decompress the tile data. A tile that is not smaller than its
+	// uncompressed size was stored raw by the writer (see storeUncompressed);
+	// the size is the only signal for this. Small mipmap levels hit this
+	// constantly, since a 2x2 tile never compresses.
 	compression := r.header.Compression()
 	var decompressedData []byte
+
+	if compression != CompressionNone && !compression.IsLossy() &&
+		len(data) >= r.calculateTileSize(tileWidth, tileHeight) {
+		return r.decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight, data)
+	}
 
 	switch compression {
 	case CompressionNone:
@@ -342,8 +350,10 @@ func (r *TiledReader) decompressTileRLE(data []byte, tileWidth, tileHeight int) 
 		return nil, err
 	}
 
-	predictor.DecodeSIMD(decompressed)
-	return decompressed, nil
+	// Reverse the predictor, then undo the byte reordering.
+	output := make([]byte, expectedSize)
+	predictor.ReconstructBytes(output, decompressed)
+	return output, nil
 }
 
 // decompressTileZIP decompresses ZIP-compressed tile data.
@@ -715,6 +725,9 @@ func (w *TiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) error {
 		return errors.New("exr: compression not yet implemented: " + compression.String())
 	}
 
+	// A chunk that did not shrink must be stored raw; see storeUncompressed.
+	data = storeUncompressed(data, rawData, compression)
+
 	// Write tile chunk with level coordinates
 	return w.writer.WriteTileChunk(tileX, tileY, levelX, levelY, data)
 }
@@ -803,27 +816,21 @@ func (w *TiledWriter) encodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, t
 }
 
 // compressTileRLE compresses tile data using RLE.
+// The pipeline is reorder bytes -> apply predictor -> RLE compress.
 func (w *TiledWriter) compressTileRLE(data []byte) []byte {
-	encoded := make([]byte, len(data))
-	copy(encoded, data)
-	predictor.EncodeSIMD(encoded)
-	return compression.RLECompress(encoded)
+	scratch := make([]byte, len(data))
+	predictor.DeconstructBytes(scratch, data)
+	return compression.RLECompress(scratch)
 }
 
 // compressTileZIP compresses tile data using ZIP.
+// The pipeline is reorder bytes -> apply predictor -> zlib compress.
 // Uses the compression level from the header for deterministic round-trip.
 func (w *TiledWriter) compressTileZIP(data []byte) ([]byte, error) {
-	encoded := make([]byte, len(data))
-	copy(encoded, data)
-	predictor.EncodeSIMD(encoded)
-	var interleaved []byte
-	if len(encoded) >= 32 {
-		interleaved = compression.InterleaveFast(encoded)
-	} else {
-		interleaved = compression.Interleave(encoded)
-	}
+	scratch := make([]byte, len(data))
+	predictor.DeconstructBytes(scratch, data)
 	level := w.header.ZIPLevel()
-	return compression.ZIPCompressLevel(interleaved, level)
+	return compression.ZIPCompressLevel(scratch, level)
 }
 
 // compressTilePIZ compresses tile data using PIZ.
