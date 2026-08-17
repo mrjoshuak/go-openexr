@@ -1324,3 +1324,119 @@ func (d *FastHufDecoder) DecodeIntoWithBits(data []byte, result []uint16, nBits 
 
 	return nil
 }
+
+// unpackHufTableRange unpacks Huffman code lengths from 6-bit packed format.
+// The table contains code lengths from im to iM (inclusive).
+// Returns the code lengths (full hufEncSize array), number of bytes consumed, and any error.
+func unpackHufTableRange(data []byte, im, iM int) ([]int, int, error) {
+	codeLengths := make([]int, hufEncSize)
+
+	// Bit buffer for reading 6-bit values
+	var bitBuffer uint64
+	var bitsInBuffer int
+	dataPos := 0
+
+	readBits := func(nbits int) (uint64, error) {
+		// Refill buffer
+		for bitsInBuffer < nbits && dataPos < len(data) {
+			bitBuffer = (bitBuffer << 8) | uint64(data[dataPos])
+			dataPos++
+			bitsInBuffer += 8
+		}
+		if bitsInBuffer < nbits {
+			return 0, ErrPIZCorrupted
+		}
+		bitsInBuffer -= nbits
+		return (bitBuffer >> bitsInBuffer) & ((1 << nbits) - 1), nil
+	}
+
+	for symbol := im; symbol <= iM; symbol++ {
+		code, err := readBits(hufEncBits)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if code == longZeroCodeRun {
+			// Long zero run: read 8-bit count
+			count, err := readBits(8)
+			if err != nil {
+				return nil, 0, err
+			}
+			runLen := int(count) + shortestLongRun
+			if symbol+runLen > iM+1 {
+				runLen = iM + 1 - symbol
+			}
+			// Zeros are already in codeLengths (default value)
+			symbol += runLen - 1 // -1 because loop increments
+		} else if code >= shortZeroCodeRun {
+			// Short zero run: 2-5 zeros
+			runLen := int(code) - shortZeroCodeRun + 2
+			if symbol+runLen > iM+1 {
+				runLen = iM + 1 - symbol
+			}
+			symbol += runLen - 1 // -1 because loop increments
+		} else {
+			// Regular code length (0-58)
+			codeLengths[symbol] = int(code)
+		}
+	}
+
+	// Calculate bytes consumed
+	bytesUsed := dataPos
+	if bitsInBuffer >= 8 {
+		bytesUsed -= bitsInBuffer / 8
+	}
+
+	return codeLengths, bytesUsed, nil
+}
+
+// hufBlockHeaderSize is the size of the header hufCompress writes in front of
+// every Huffman block: minimum symbol, maximum symbol, packed-table length,
+// coded bit count, and a reserved word, each a little-endian uint32.
+const hufBlockHeaderSize = 5 * 4
+
+// hufDecompressInto decodes one OpenEXR static-Huffman block, as produced by
+// hufCompress in ImfHuf.cpp, filling dst completely.
+//
+// The block is a header, then the code-length table packed six bits per symbol
+// over the range the header names, then the coded bit stream. PIZ and DWA both
+// carry exactly this block: PIZ writes its length in a four-byte prefix of its
+// own and DWA records it in the chunk header, but the block itself is
+// identical, which is why decoding it lives here rather than in either codec.
+func hufDecompressInto(compressed []byte, dst []uint16) error {
+	if len(compressed) < hufBlockHeaderSize {
+		// The reference treats a block too short to hold a header as an empty
+		// one, which is only consistent if nothing was expected from it.
+		if len(dst) != 0 {
+			return ErrHuffmanCorrupted
+		}
+		return nil
+	}
+
+	im := binary.LittleEndian.Uint32(compressed[0:])
+	iM := binary.LittleEndian.Uint32(compressed[4:])
+	nBits := binary.LittleEndian.Uint32(compressed[12:])
+	if im >= hufEncSize || iM >= hufEncSize || im > iM {
+		return ErrHuffmanCorrupted
+	}
+
+	table := compressed[hufBlockHeaderSize:]
+	codeLengths, tableBytes, err := unpackHufTableRange(table, int(im), int(iM))
+	if err != nil {
+		return err
+	}
+	// The coded stream must actually be present; a truncated block has to be
+	// an error rather than a buffer of zeros.
+	nBytes := (uint64(nBits) + 7) / 8
+	if uint64(tableBytes)+nBytes > uint64(len(table)) {
+		return ErrHuffmanCorrupted
+	}
+
+	decoder, err := GetFastHufDecoderWithBounds(codeLengths, int(im), int(iM))
+	if err != nil {
+		return err
+	}
+	defer PutFastHufDecoder(decoder)
+
+	return decoder.DecodeIntoWithBits(table[tableBytes:], dst, int(nBits), int(iM))
+}

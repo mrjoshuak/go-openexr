@@ -192,5 +192,57 @@ mv "$OUT/flat_none.tmp" "$OUT/flat.golden"
 rm -f "$OUT/flat_b44a.tmp"
 echo "  flat (13x9 constant half + float/uint)"
 
+# emit_lossy writes one DWA fixture and its own golden.
+#
+# DWA cannot share a group's golden the way the lossless codecs do: the values
+# the reference implementation reads back out of a DWA file are not the values
+# it read out of the uncompressed one. So each fixture carries the reference's
+# own view of itself, and the test asserts against that rather than against the
+# original pattern. Anything else would be measuring DWA's loss instead of this
+# library's agreement with the reference.
+emit_lossy() {
+	local name=$1 pattern=$2 depth=$3 dims=$4 comp=$5 chnames=$6
+	local none_size this_size
+
+	oiiotool --pattern "$pattern" "$dims" 4 \
+		-d "$depth" --chnames "$chnames" --compression "$comp" \
+		-o "$OUT/$name.exr"
+
+	{
+		oiiotool --info -v "$OUT/$name.exr" | grep "channel list:"
+		oiiotool --dumpdata "$OUT/$name.exr" | tail -n +2
+	} >"$OUT/$name.golden"
+
+	# Same trap as above: a fixture that did not shrink was stored raw and the
+	# codec under test would never run.
+	oiiotool --pattern "$pattern" "$dims" 4 \
+		-d "$depth" --chnames "$chnames" --compression none \
+		-o "$OUT/$name.none.tmp.exr"
+	none_size=$(wc -c <"$OUT/$name.none.tmp.exr")
+	this_size=$(wc -c <"$OUT/$name.exr")
+	rm -f "$OUT/$name.none.tmp.exr"
+	if [ "$this_size" -ge "$none_size" ]; then
+		echo "FATAL: $name.exr ($this_size b) did not shrink below uncompressed" \
+			"($none_size b); the chunk was stored raw and DWA would never run." >&2
+		exit 1
+	fi
+	echo "  $name ($dims $depth $comp $chnames)"
+}
+
+# 35x40 keeps the goldens small while still being awkward for DWA: 35 columns
+# leave a partial 8x8 block on the right, 40 rows are five full block rows, and
+# 40 scanlines span two DWAA chunks (32 + 8) but only one DWAB chunk.
+#
+# The channel sets cover all three of DWA's schemes. R,G,B,A puts R, G and B
+# through the colour space conversion and A through the lossless RLE path;
+# R,G,B,Z leaves Z to the lossless deflate path, since no rule names it.
+echo "generating DWA fixtures (lossy: each carries its own golden)"
+emit_lossy grad_half_dwaa "$GRADIENT" half 35x40 dwaa R,G,B,A
+emit_lossy grad_half_dwab "$GRADIENT" half 35x40 dwab R,G,B,A
+emit_lossy grad_float_dwaa "$GRADIENT" float 35x40 dwaa R,G,B,A
+emit_lossy grad_float_dwab "$GRADIENT" float 35x40 dwab R,G,B,A
+emit_lossy gradz_half_dwaa "$GRADIENT" half 35x40 dwaa R,G,B,Z
+emit_lossy noise_half_dwaa "$NOISE" half 35x40 dwaa R,G,B,A
+
 echo "done: $OUT"
 du -sh "$OUT"

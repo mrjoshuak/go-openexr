@@ -117,31 +117,6 @@ func TestDCT8x8RoundTrip(t *testing.T) {
 	}
 }
 
-func TestDCT8x8MatchesOriginal(t *testing.T) {
-	var data1 [64]float32
-	var data2 [64]float32
-
-	// Initialize with test data
-	for i := 0; i < 64; i++ {
-		data1[i] = float32(i) / 64.0
-		data2[i] = data1[i]
-	}
-
-	// Use original implementation
-	dctForward8x8(&data1)
-
-	// Use optimized implementation
-	DCT8x8Forward(&data2)
-
-	// Both should produce similar results (within floating point tolerance)
-	const epsilon = 1e-5
-	for i := 0; i < 64; i++ {
-		if math.Abs(float64(data1[i]-data2[i])) > epsilon {
-			t.Errorf("index %d: original=%f, optimized=%f", i, data1[i], data2[i])
-		}
-	}
-}
-
 func TestTranspose8x8(t *testing.T) {
 	var src, dst [64]float32
 
@@ -382,18 +357,6 @@ func BenchmarkDCT8x8Forward(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		DCT8x8Forward(&data)
-	}
-}
-
-func BenchmarkDCT8x8ForwardOriginal(b *testing.B) {
-	var data [64]float32
-	for i := range data {
-		data[i] = float32(i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dctForward8x8(&data)
 	}
 }
 

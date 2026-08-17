@@ -31,22 +31,26 @@ func TestBufferPoolGet(t *testing.T) {
 func TestBufferPoolReuse(t *testing.T) {
 	pool := NewBufferPool()
 
-	// Get a buffer, write a sentinel, and put it back
-	buf1 := pool.Get(1024)
-	buf1[0] = 0xAB
-	cap1 := cap(buf1)
-	pool.Put(buf1)
+	// Assert reuse through the pool's own counters, not by writing a sentinel
+	// and expecting to read it back. sync.Pool is explicitly permitted to drop
+	// any item at any time — a GC between Put and Get returns a fresh buffer —
+	// so a sentinel check fails intermittently. It did: roughly one run in five
+	// under -race, which enables enough extra GC pressure to evict the entry.
+	pool.ResetStats()
 
-	// Get another buffer of the same size — pool should reuse it
-	buf2 := pool.Get(1024)
-	if cap(buf2) != cap1 {
-		t.Errorf("Expected reused buffer with cap %d, got cap %d", cap1, cap(buf2))
-	}
-	if buf2[0] != 0xAB {
-		t.Errorf("Expected sentinel 0xAB in reused buffer, got 0x%02X", buf2[0])
+	const size = 1024
+	for i := 0; i < 64; i++ {
+		buf := pool.Get(size)
+		if len(buf) != size {
+			t.Fatalf("Get(%d) returned len %d", size, len(buf))
+		}
+		pool.Put(buf)
 	}
 
-	pool.Put(buf2)
+	_, hits, _ := pool.Stats()
+	if hits == 0 {
+		t.Error("64 Get/Put cycles produced no pool hits; buffers are never being reused")
+	}
 }
 
 func TestGlobalBufferPool(t *testing.T) {

@@ -233,17 +233,16 @@ func FuzzDWADecompress(f *testing.F) {
 		width := 64
 		height := 64
 
-		decompressor := NewDwaDecompressor(width, height)
-
-		channels := []DwaChannelData{
-			{Name: "R", PixelType: 1, XSampling: 1, YSampling: 1},
-			{Name: "G", PixelType: 1, XSampling: 1, YSampling: 1},
-			{Name: "B", PixelType: 1, XSampling: 1, YSampling: 1},
+		channels := []DwaChannel{
+			{Name: "A", PixelType: DwaPixelTypeHalf, XSampling: 1, YSampling: 1},
+			{Name: "B", PixelType: DwaPixelTypeHalf, XSampling: 1, YSampling: 1},
+			{Name: "G", PixelType: DwaPixelTypeHalf, XSampling: 1, YSampling: 1},
+			{Name: "R", PixelType: DwaPixelTypeHalf, XSampling: 1, YSampling: 1},
+			{Name: "Z", PixelType: DwaPixelTypeFloat, XSampling: 1, YSampling: 1},
 		}
-		decompressor.SetChannels(channels)
 
-		dst := make([]byte, width*height*6) // RGB half-float
-		_ = decompressor.Decompress(data, dst)
+		dst := make([]byte, width*height*(4*2+4))
+		_ = DWADecompress(data, channels, 0, width-1, 0, height-1, dst)
 	})
 }
 

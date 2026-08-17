@@ -4,6 +4,8 @@
 // transforms for improved performance on large data sets.
 package compression
 
+import "math"
+
 // batchSize is the number of elements processed per unrolled iteration.
 const batchSize = 8
 
@@ -260,6 +262,33 @@ func copyBatch16(dst, src []uint16) {
 	// Handle remainder
 	for ; i < n; i++ {
 		dst[i] = src[i]
+	}
+}
+
+// dctCoeff is the orthonormal DCT-II basis:
+//
+//	C[k][n] = alpha(k) * cos((2n+1) * k * pi / 16),  alpha(0) = 1/sqrt(8),
+//	                                                 alpha(k) = sqrt(2/8)
+//
+// It backs DCT8x8Forward and DCT8x8Inverse below, which are a general-purpose
+// pair with exact round-trip properties. No codec in this package uses them:
+// DWA's transform is a different one, built from the factored butterfly and
+// truncated-pi constants the OpenEXR reference uses, and lives in dwa_dct.go.
+// Do not substitute one for the other.
+var dctCoeff [8][8]float32
+
+func init() {
+	sqrt8 := float32(math.Sqrt(8))
+	sqrt2_8 := float32(math.Sqrt(2.0 / 8.0))
+	for k := 0; k < 8; k++ {
+		for n := 0; n < 8; n++ {
+			c := float32(math.Cos(float64(2*n+1) * float64(k) * math.Pi / 16.0))
+			if k == 0 {
+				dctCoeff[k][n] = c / sqrt8
+			} else {
+				dctCoeff[k][n] = c * sqrt2_8
+			}
+		}
 	}
 }
 

@@ -297,7 +297,7 @@ func (r *TiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error {
 			return err
 		}
 	case CompressionDWAA, CompressionDWAB:
-		decompressedData, err = r.decompressTileDWA(data, tileWidth, tileHeight)
+		decompressedData, err = r.decompressTileDWA(data, tileX, tileY, tileWidth, tileHeight)
 		if err != nil {
 			return err
 		}
@@ -711,13 +711,8 @@ func (w *TiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) error {
 		if err != nil {
 			return err
 		}
-	case CompressionDWAA:
-		data, err = w.compressTileDWA(rawData, tileWidth, tileHeight, false)
-		if err != nil {
-			return err
-		}
-	case CompressionDWAB:
-		data, err = w.compressTileDWA(rawData, tileWidth, tileHeight, true)
+	case CompressionDWAA, CompressionDWAB:
+		data, err = w.compressTileDWA(rawData, tileX, tileY, tileWidth, tileHeight)
 		if err != nil {
 			return err
 		}
@@ -937,30 +932,35 @@ func (w *TiledWriter) compressTileB44(data []byte, tileWidth, tileHeight int, fl
 	return compression.B44Compress(data, channels, tileWidth, tileHeight, flatfields)
 }
 
+// tileOrigin returns a tile's top-left corner in image coordinates. DWA
+// classifies and lays out its data by absolute position, so a tile has to say
+// where it sits rather than just how big it is.
+func tileOrigin(dw Box2i, td *TileDescription, tileX, tileY int) (int, int) {
+	return int(dw.Min.X) + tileX*int(td.XSize), int(dw.Min.Y) + tileY*int(td.YSize)
+}
+
 // decompressTileDWA decompresses tile data using DWAA or DWAB.
-func (r *TiledReader) decompressTileDWA(data []byte, tileWidth, tileHeight int) ([]byte, error) {
-	expectedSize := r.calculateTileSize(tileWidth, tileHeight)
-
-	// Create output buffer
-	dst := make([]byte, expectedSize)
-
-	// Decompress using DWA
-	if err := compression.DecompressDWAA(data, dst, tileWidth, tileHeight); err != nil {
+func (r *TiledReader) decompressTileDWA(data []byte, tileX, tileY, tileWidth, tileHeight int) ([]byte, error) {
+	dst := make([]byte, r.calculateTileSize(tileWidth, tileHeight))
+	minX, minY := tileOrigin(r.dataWindow, r.tileDesc, tileX, tileY)
+	err := compression.DWADecompress(data, dwaChannels(r.channelList),
+		minX, minX+tileWidth-1, minY, minY+tileHeight-1, dst)
+	if err != nil {
 		return nil, err
 	}
-
 	return dst, nil
 }
 
-// compressTileDWA compresses tile data using DWAA or DWAB.
-func (w *TiledWriter) compressTileDWA(data []byte, tileWidth, tileHeight int, isDWAB bool) ([]byte, error) {
+// compressTileDWA compresses tile data using DWAA or DWAB. The two differ only
+// in scanline chunk height, which does not apply to tiles, so the chunk format
+// is identical.
+func (w *TiledWriter) compressTileDWA(data []byte, tileX, tileY, tileWidth, tileHeight int) ([]byte, error) {
 	// Get compression level from header (defaults to 45.0 if not set)
 	level := w.header.DWACompressionLevel()
 
-	if isDWAB {
-		return compression.CompressDWAB(data, tileWidth, tileHeight, level)
-	}
-	return compression.CompressDWAA(data, tileWidth, tileHeight, level)
+	minX, minY := tileOrigin(w.dataWindow, w.tileDesc, tileX, tileY)
+	return compression.DWACompress(data, dwaChannels(w.channelList),
+		minX, minX+tileWidth-1, minY, minY+tileHeight-1, level)
 }
 
 // Close finalizes the file.
