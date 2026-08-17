@@ -1,6 +1,7 @@
 package compression
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -460,28 +461,177 @@ func TestB44WithLinearChannel(t *testing.T) {
 	}
 }
 
+// b44MixedChunk builds one chunk of interleaved pixel data for a
+// UINT + FLOAT + HALF image, and returns the per-channel sample values it was
+// built from. Dimensions are deliberately not multiples of 4 so the HALF blocks
+// have to pad at both edges.
+func b44MixedChunk(w, h int) (data []byte, uintVals []uint32, floatVals []float32, halfVals []uint16) {
+	n := w * h
+	uintVals = make([]uint32, n)
+	floatVals = make([]float32, n)
+	halfVals = make([]uint16, n)
+
+	for i := 0; i < n; i++ {
+		// Values chosen to be distinguishable from zero, from each other, and
+		// from any plausible mis-shifted neighbour.
+		uintVals[i] = 0xDEAD0000 | uint32(i*7919)
+		floatVals[i] = float32(i)*math.Pi - 1e-4
+		halfVals[i] = uint16(half.FromFloat32(1.0 + float32(i)*0.01))
+	}
+	// A few payloads that a lossy or float-quieting path would not survive.
+	floatVals[0] = float32(math.Inf(-1))
+	floatVals[1] = math.Float32frombits(0x7fc00001) // NaN with a payload
+	floatVals[2] = math.Float32frombits(0x80000000) // negative zero
+	uintVals[3] = 0xFFFFFFFF
+
+	// Interleave: scanline by scanline, one row per channel in channel order.
+	data = make([]byte, n*(4+4+2))
+	off := 0
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			binary.LittleEndian.PutUint32(data[off:], uintVals[y*w+x])
+			off += 4
+		}
+		for x := 0; x < w; x++ {
+			binary.LittleEndian.PutUint32(data[off:], math.Float32bits(floatVals[y*w+x]))
+			off += 4
+		}
+		for x := 0; x < w; x++ {
+			binary.LittleEndian.PutUint16(data[off:], halfVals[y*w+x])
+			off += 2
+		}
+	}
+	return data, uintVals, floatVals, halfVals
+}
+
+// TestB44NonHalfChannels covers B44's passthrough of UINT and FLOAT channels.
+//
+// OpenEXR's B44 compresses HALF channels in 4x4 blocks and stores UINT and
+// FLOAT channels uncompressed, one contiguous run per channel in channel order
+// (ImfB44Compressor.cpp). Those channels are never quantised, so they must come
+// back bit-identical.
+//
+// This test used to compress, decompress, and check only that the byte COUNT
+// matched. That is why it passed for years while the codec emitted a run of
+// zero bytes for every non-HALF channel and the decoder skipped over them.
 func TestB44NonHalfChannels(t *testing.T) {
-	// Test B44 with non-HALF channels (uint and float)
+	const w, h = 9, 10
 	channels := []B44ChannelInfo{
-		{Type: b44PixelTypeUint, Width: 4, Height: 4},
-		{Type: b44PixelTypeFloat, Width: 4, Height: 4},
-		{Type: b44PixelTypeHalf, Width: 4, Height: 4},
+		{Type: b44PixelTypeUint, Width: w, Height: h},
+		{Type: b44PixelTypeFloat, Width: w, Height: h},
+		{Type: b44PixelTypeHalf, Width: w, Height: h},
+	}
+	data, uintVals, floatVals, halfVals := b44MixedChunk(w, h)
+
+	compressed, err := B44Compress(data, channels, w, h, false)
+	if err != nil {
+		t.Fatalf("B44Compress: %v", err)
+	}
+	if len(compressed) >= len(data) {
+		t.Fatalf("compressed to %d bytes from %d: the chunk would be stored raw and this test would not exercise the codec",
+			len(compressed), len(data))
 	}
 
-	// Create data: 4 bytes per uint pixel, 4 bytes per float pixel, 2 bytes per half pixel
-	dataSize := 4*4*4 + 4*4*4 + 4*4*2
-	data := make([]byte, dataSize)
-	for i := range data {
-		data[i] = byte(i % 256)
+	// Assert the stream layout directly, not just what our own decoder makes of
+	// it: the reference implementation writes each UINT/FLOAT channel as a plain
+	// copy of its rows, in channel order, ahead of the HALF blocks.
+	plane := w * h * 4
+	wantUint := make([]byte, plane)
+	wantFloat := make([]byte, plane)
+	for i := 0; i < w*h; i++ {
+		binary.LittleEndian.PutUint32(wantUint[i*4:], uintVals[i])
+		binary.LittleEndian.PutUint32(wantFloat[i*4:], math.Float32bits(floatVals[i]))
+	}
+	if got := compressed[:plane]; !bytes.Equal(got, wantUint) {
+		t.Errorf("UINT plane in compressed stream differs from the source rows")
+	}
+	if got := compressed[plane : 2*plane]; !bytes.Equal(got, wantFloat) {
+		t.Errorf("FLOAT plane in compressed stream differs from the source rows")
+	}
+	// The HALF remainder must be whole 4x4 blocks: 14 bytes each here, since
+	// flatfields is off.
+	blocks := ((w + 3) / 4) * ((h + 3) / 4)
+	if got, want := len(compressed)-2*plane, blocks*14; got != want {
+		t.Errorf("HALF block run is %d bytes, want %d (%d blocks x 14)", got, want, blocks)
 	}
 
-	// B44 must refuse a FLOAT or UINT channel rather than emit a file with
-	// those channels zeroed. This test previously compressed, decompressed and
-	// checked only that the byte COUNT matched, so it passed for years while
-	// every non-HALF channel was silently replaced with zeros.
-	_, err := B44Compress(data, channels, 4, 4, false)
-	if !errors.Is(err, ErrB44NonHalfChannel) {
-		t.Fatalf("B44Compress with mixed channels: got %v, want ErrB44NonHalfChannel", err)
+	decompressed, err := B44Decompress(compressed, channels, w, h, len(data))
+	if err != nil {
+		t.Fatalf("B44Decompress: %v", err)
+	}
+	if len(decompressed) != len(data) {
+		t.Fatalf("size: got %d, want %d", len(decompressed), len(data))
+	}
+
+	// UINT and FLOAT are passed through untouched: compare exactly, by bits, so
+	// a quieted NaN or a flipped sign of zero fails.
+	off := 0
+	const tolerance = 0.02
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := y*w + x
+			if got := binary.LittleEndian.Uint32(decompressed[off:]); got != uintVals[i] {
+				t.Fatalf("UINT sample (%d,%d): got %#08x, want %#08x", x, y, got, uintVals[i])
+			}
+			off += 4
+		}
+		for x := 0; x < w; x++ {
+			i := y*w + x
+			got := binary.LittleEndian.Uint32(decompressed[off:])
+			if want := math.Float32bits(floatVals[i]); got != want {
+				t.Fatalf("FLOAT sample (%d,%d): got bits %#08x (%v), want %#08x (%v)",
+					x, y, got, math.Float32frombits(got), want, floatVals[i])
+			}
+			off += 4
+		}
+		for x := 0; x < w; x++ {
+			i := y*w + x
+			want := half.Half(halfVals[i]).Float32()
+			got := half.Half(binary.LittleEndian.Uint16(decompressed[off:])).Float32()
+			if diff := got - want; diff > tolerance || diff < -tolerance {
+				t.Fatalf("HALF sample (%d,%d): got %v, want %v (tolerance %v)", x, y, got, want, tolerance)
+			}
+			off += 2
+		}
+	}
+}
+
+// TestB44MixedChannelsTruncatedStream pins the failure mode B44 must not have:
+// a stream that ends early is an error, never a silently zero-filled channel.
+func TestB44MixedChannelsTruncatedStream(t *testing.T) {
+	const w, h = 9, 10
+	channels := []B44ChannelInfo{
+		{Type: b44PixelTypeUint, Width: w, Height: h},
+		{Type: b44PixelTypeFloat, Width: w, Height: h},
+		{Type: b44PixelTypeHalf, Width: w, Height: h},
+	}
+	data, _, _, _ := b44MixedChunk(w, h)
+	compressed, err := B44Compress(data, channels, w, h, false)
+	if err != nil {
+		t.Fatalf("B44Compress: %v", err)
+	}
+
+	for _, cut := range []int{0, w * h * 4, w*h*8 + 14, len(compressed) - 1} {
+		if _, err := B44Decompress(compressed[:cut], channels, w, h, len(data)); !errors.Is(err, ErrB44Truncated) {
+			t.Errorf("B44Decompress of %d of %d bytes: got %v, want ErrB44Truncated", cut, len(compressed), err)
+		}
+	}
+}
+
+// TestB44RejectsMismatchedBufferSize checks that a pixel buffer which does not
+// match the channel list is refused rather than silently mis-sliced.
+func TestB44RejectsMismatchedBufferSize(t *testing.T) {
+	channels := []B44ChannelInfo{
+		{Type: b44PixelTypeHalf, Width: 8, Height: 8},
+		{Type: b44PixelTypeFloat, Width: 8, Height: 8},
+	}
+	// Short by one scanline of the FLOAT channel.
+	data := make([]byte, 8*8*2+8*7*4)
+	if _, err := B44Compress(data, channels, 8, 8, false); !errors.Is(err, ErrB44DataSize) {
+		t.Errorf("B44Compress with a short buffer: got %v, want ErrB44DataSize", err)
+	}
+	if _, err := B44Decompress(nil, channels, 8, 8, len(data)); !errors.Is(err, ErrB44DataSize) {
+		t.Errorf("B44Decompress with a mismatched expectedSize: got %v, want ErrB44DataSize", err)
 	}
 }
 

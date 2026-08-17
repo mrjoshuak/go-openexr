@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"sync"
 	"testing"
+
+	"github.com/mrjoshuak/go-openexr/half"
 )
 
 func TestNewTiledHeader(t *testing.T) {
@@ -796,13 +798,12 @@ func TestTiledWriteAndReadB44(t *testing.T) {
 	}
 
 	tw.SetFrameBuffer(writeFB.ToFrameBuffer())
-	err = tw.WriteTiles(0, 0, 1, 1)
-	if err != nil {
-		t.Logf("B44 WriteTiles warning (may have issues): %v", err)
+	if err := tw.WriteTiles(0, 0, 1, 1); err != nil {
+		t.Fatalf("WriteTiles: %v", err)
 	}
 
 	if err := tw.Close(); err != nil {
-		t.Logf("B44 Close warning (may have issues): %v", err)
+		t.Fatalf("Close: %v", err)
 	}
 
 	data := ws.Bytes()
@@ -831,12 +832,99 @@ func TestTiledWriteAndReadB44(t *testing.T) {
 	readFB, _ := AllocateChannels(tr.Header().Channels(), tr.DataWindow())
 	tr.SetFrameBuffer(readFB)
 
-	err = tr.ReadTiles(0, 0, 1, 1)
-	if err != nil {
-		t.Logf("B44 ReadTiles warning (may have issues): %v", err)
+	if err := tr.ReadTiles(0, 0, 1, 1); err != nil {
+		t.Fatalf("ReadTiles: %v", err)
 	}
 
-	t.Log("B44 tiled compression round-trip completed")
+	checkB44Gradient(t, readFB, 64, 64)
+}
+
+// TestTiledB44MixedPixelTypes covers the tiled path's share of B44's
+// UINT/FLOAT passthrough: the codec is the same, but the tile geometry is
+// computed by a different caller. The FLOAT and UINT channels are not touched
+// by the codec, so they must survive a tile round trip bit for bit.
+func TestTiledB44MixedPixelTypes(t *testing.T) {
+	const w, h = 40, 40
+
+	for _, comp := range []Compression{CompressionB44, CompressionB44A} {
+		t.Run(comp.String(), func(t *testing.T) {
+			header := NewTiledHeader(w, h, 16, 16)
+			header.SetCompression(comp)
+			cl := NewChannelList()
+			cl.Add(Channel{Name: "B", Type: PixelTypeHalf, XSampling: 1, YSampling: 1})
+			cl.Add(Channel{Name: "G", Type: PixelTypeHalf, XSampling: 1, YSampling: 1})
+			cl.Add(Channel{Name: "R", Type: PixelTypeHalf, XSampling: 1, YSampling: 1})
+			cl.Add(Channel{Name: "Z", Type: PixelTypeFloat, XSampling: 1, YSampling: 1})
+			cl.Add(Channel{Name: "id", Type: PixelTypeUint, XSampling: 1, YSampling: 1})
+			header.SetChannels(cl)
+
+			rBuf := make([]half.Half, w*h)
+			gBuf := make([]half.Half, w*h)
+			bBuf := make([]half.Half, w*h)
+			zBuf := make([]float32, w*h)
+			idBuf := make([]uint32, w*h)
+			for i := range zBuf {
+				x, y := i%w, i/w
+				rBuf[i] = half.FromFloat32(float32(x) / float32(w-1))
+				gBuf[i] = half.FromFloat32(float32(y) / float32(h-1))
+				bBuf[i] = half.FromFloat32(float32(x+y) / float32(2*(w-1)))
+				zBuf[i] = float32(i)*1.7320508 - 12345.678
+				idBuf[i] = 0xC0FFEE00 ^ uint32(i*2654435761)
+			}
+
+			ws := newMockWriteSeeker()
+			tw, err := NewTiledWriter(ws, header)
+			if err != nil {
+				t.Fatalf("NewTiledWriter: %v", err)
+			}
+			fb := NewFrameBuffer()
+			fb.Set("R", NewSliceFromHalf(rBuf, w, h))
+			fb.Set("G", NewSliceFromHalf(gBuf, w, h))
+			fb.Set("B", NewSliceFromHalf(bBuf, w, h))
+			fb.Set("Z", NewSliceFromFloat32(zBuf, w, h))
+			fb.Set("id", NewSliceFromUint32(idBuf, w, h))
+			tw.SetFrameBuffer(fb)
+			if err := tw.WriteTiles(0, 0, tw.NumTilesX()-1, tw.NumTilesY()-1); err != nil {
+				t.Fatalf("WriteTiles: %v", err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			data := ws.Bytes()
+			f, err := OpenReader(&readerAtWrapper{bytes.NewReader(data)}, int64(len(data)))
+			if err != nil {
+				t.Fatalf("OpenReader: %v", err)
+			}
+			tr, err := NewTiledReader(f)
+			if err != nil {
+				t.Fatalf("NewTiledReader: %v", err)
+			}
+			readFB, _ := AllocateChannels(tr.Header().Channels(), tr.DataWindow())
+			tr.SetFrameBuffer(readFB)
+			if err := tr.ReadTiles(0, 0, tr.NumTilesX()-1, tr.NumTilesY()-1); err != nil {
+				t.Fatalf("ReadTiles: %v", err)
+			}
+
+			z := readFB.Get("Z")
+			id := readFB.Get("id")
+			if z == nil || id == nil {
+				t.Fatal("Z or id missing from frame buffer")
+			}
+			for i := range zBuf {
+				x, y := i%w, i/w
+				if got := z.GetFloat32(x, y); got != zBuf[i] {
+					t.Fatalf("Z pixel (%d,%d) = %v, want %v: B44 must pass FLOAT channels through untouched",
+						x, y, got, zBuf[i])
+				}
+				if got := id.GetUint32(x, y); got != idBuf[i] {
+					t.Fatalf("id pixel (%d,%d) = %#08x, want %#08x: B44 must pass UINT channels through untouched",
+						x, y, got, idBuf[i])
+				}
+			}
+			checkB44Gradient(t, readFB, w, h)
+		})
+	}
 }
 
 func TestTiledWriteAndReadB44A(t *testing.T) {

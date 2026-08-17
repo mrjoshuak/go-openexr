@@ -2,6 +2,7 @@ package exr
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"sync"
@@ -14,7 +15,28 @@ import (
 var (
 	ErrNoFrameBuffer      = errors.New("exr: no frame buffer set")
 	ErrScanlineOutOfRange = errors.New("exr: scanline out of range")
+
+	// ErrSubsampledChannels reports a channel with ySampling > 1. Such a
+	// channel occupies only every n-th scanline of a chunk, which changes the
+	// chunk's whole interleave layout; this library lays every chunk out as one
+	// row per channel per scanline, so it cannot place those rows. Decoding
+	// anyway would misattribute one channel's bytes to another and leave the
+	// tail of the chunk zeroed, which is why this is an error and not a
+	// best-effort read. (OpenImageIO refuses these files outright.)
+	ErrSubsampledChannels = errors.New("exr: subsampled channels (ySampling > 1) are not supported")
 )
+
+// checkNoYSubsampling rejects channel lists this library's chunk layout cannot
+// represent. XSampling is fine: it only narrows each row. YSampling > 1 removes
+// rows from some scanlines entirely.
+func checkNoYSubsampling(channels []Channel) error {
+	for _, ch := range channels {
+		if ch.YSampling > 1 {
+			return fmt.Errorf("%w: channel %q has ySampling %d", ErrSubsampledChannels, ch.Name, ch.YSampling)
+		}
+	}
+	return nil
+}
 
 // zipDecompressBufPool provides reusable buffers for ZIP decompression.
 // This is needed because decompressZIP is called from multiple goroutines
@@ -1330,6 +1352,9 @@ func (r *ScanlineReader) decompressB44(data []byte, numLines int) ([]byte, error
 
 	// Build channel info - channels are sorted by name in the file
 	sortedChannels := r.channelList.SortedByName()
+	if err := checkNoYSubsampling(sortedChannels); err != nil {
+		return nil, err
+	}
 
 	channels := make([]compression.B44ChannelInfo, len(sortedChannels))
 	for i, ch := range sortedChannels {
@@ -1359,6 +1384,9 @@ func (w *ScanlineWriter) compressB44(data []byte, numLines int, flatfields bool)
 
 	// Build channel info - channels are sorted by name in the file
 	sortedChannels := w.channelList.SortedByName()
+	if err := checkNoYSubsampling(sortedChannels); err != nil {
+		return nil, err
+	}
 
 	channels := make([]compression.B44ChannelInfo, len(sortedChannels))
 	for i, ch := range sortedChannels {

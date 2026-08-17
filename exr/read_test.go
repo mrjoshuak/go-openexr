@@ -1,6 +1,7 @@
 package exr
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -146,8 +147,19 @@ func TestReadTiledFile(t *testing.T) {
 	}
 }
 
+// TestReadFlowersFile covers the one file in the corpus with subsampled
+// chroma: Flowers.exr is B44 with Y at full resolution and RY/BY at ySampling 2.
+//
+// Such a channel appears on only every second scanline of a chunk, so the chunk
+// is not "one row per channel per scanline" the way the rest of this library
+// assumes. Reading it as if it were shifts every channel's bytes and leaves the
+// tail of each chunk zeroed. This test used to assert only that ReadPixels
+// returned no error, which it did — while returning that silently wrong image.
+//
+// Until the layout is implemented, the honest answer is a refusal, and this
+// test pins it. The reference implementation refuses too: oiiotool reports
+// `Subsampled channels are not supported (channel "BY" has sampling 2,2)`.
 func TestReadFlowersFile(t *testing.T) {
-	// Flowers.exr is a more complex real-world file
 	f, cleanup := openTestFile(t, "Flowers.exr")
 	defer cleanup()
 	if f == nil {
@@ -180,15 +192,28 @@ func TestReadFlowersFile(t *testing.T) {
 	height := int(dw.Height())
 
 	fb := NewFrameBuffer()
+	bufs := make(map[string][]byte)
 	for i := 0; i < header.Channels().Len(); i++ {
 		ch := header.Channels().At(i)
-		fb.Set(ch.Name, NewSlice(PixelTypeFloat, make([]byte, width*height*4), width, height))
+		buf := make([]byte, width*height*4)
+		bufs[ch.Name] = buf
+		fb.Set(ch.Name, NewSlice(PixelTypeFloat, buf, width, height))
 	}
 
 	reader.SetFrameBuffer(fb)
 	err = reader.ReadPixels(int(dw.Min.Y), int(dw.Max.Y))
-	if err != nil {
-		t.Errorf("ReadPixels error: %v", err)
+	if !errors.Is(err, ErrSubsampledChannels) {
+		t.Fatalf("ReadPixels of a ySampling=2 file: got %v, want ErrSubsampledChannels", err)
+	}
+
+	// And no half-decoded image may be left behind under the guise of a
+	// successful read.
+	for name, buf := range bufs {
+		for _, b := range buf {
+			if b != 0 {
+				t.Fatalf("channel %s: frame buffer was written by a failed read", name)
+			}
+		}
 	}
 }
 

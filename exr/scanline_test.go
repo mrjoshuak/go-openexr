@@ -1071,13 +1071,12 @@ func TestScanlineWriteAndReadB44(t *testing.T) {
 	}
 
 	sw.SetFrameBuffer(writeFB.ToFrameBuffer())
-	err = sw.WritePixels(0, 31)
-	if err != nil {
-		t.Logf("B44 WritePixels warning (may have issues): %v", err)
+	if err := sw.WritePixels(0, 31); err != nil {
+		t.Fatalf("WritePixels: %v", err)
 	}
 
 	if err := sw.Close(); err != nil {
-		t.Logf("B44 Close warning (may have issues): %v", err)
+		t.Fatalf("Close: %v", err)
 	}
 
 	data := ws.Bytes()
@@ -1106,12 +1105,46 @@ func TestScanlineWriteAndReadB44(t *testing.T) {
 	readFB, _ := AllocateChannels(sr.Header().Channels(), sr.DataWindow())
 	sr.SetFrameBuffer(readFB)
 
-	err = sr.ReadPixels(0, 31)
-	if err != nil {
-		t.Logf("B44 ReadPixels warning (may have issues): %v", err)
+	if err := sr.ReadPixels(0, 31); err != nil {
+		t.Fatalf("ReadPixels: %v", err)
 	}
 
-	t.Log("B44 scanline compression round-trip completed")
+	// Assert the pixels, not merely that the calls returned. B44 quantises a
+	// 4x4 block to a shared exponent, so the tolerance is generous, but a
+	// dropped channel or a shifted row is nowhere near it.
+	checkB44Gradient(t, readFB, 32, 32)
+}
+
+// checkB44Gradient asserts the gradient written by the B44 scanline tests
+// survived the round trip in every channel.
+func checkB44Gradient(t *testing.T, fb *FrameBuffer, w, h int) {
+	t.Helper()
+
+	const tolerance = 0.02
+	for _, name := range []string{"R", "G", "B"} {
+		s := fb.Get(name)
+		if s == nil {
+			t.Fatalf("channel %s missing from frame buffer", name)
+		}
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				var want float32
+				switch name {
+				case "R":
+					want = float32(x) / float32(w-1)
+				case "G":
+					want = float32(y) / float32(h-1)
+				case "B":
+					want = float32(x+y) / float32(2*(w-1))
+				}
+				got := s.GetHalf(x, y).Float32()
+				if diff := got - want; diff > tolerance || diff < -tolerance {
+					t.Fatalf("channel %s pixel (%d,%d) = %v, want %v (tolerance %v)",
+						name, x, y, got, want, tolerance)
+				}
+			}
+		}
+	}
 }
 
 func TestScanlineWriteAndReadB44A(t *testing.T) {
@@ -1135,13 +1168,12 @@ func TestScanlineWriteAndReadB44A(t *testing.T) {
 	}
 
 	sw.SetFrameBuffer(writeFB.ToFrameBuffer())
-	err = sw.WritePixels(0, 31)
-	if err != nil {
-		t.Logf("B44A WritePixels warning (may have issues): %v", err)
+	if err := sw.WritePixels(0, 31); err != nil {
+		t.Fatalf("WritePixels: %v", err)
 	}
 
 	if err := sw.Close(); err != nil {
-		t.Logf("B44A Close warning (may have issues): %v", err)
+		t.Fatalf("Close: %v", err)
 	}
 
 	data := ws.Bytes()
@@ -1170,12 +1202,26 @@ func TestScanlineWriteAndReadB44A(t *testing.T) {
 	readFB, _ := AllocateChannels(sr.Header().Channels(), sr.DataWindow())
 	sr.SetFrameBuffer(readFB)
 
-	err = sr.ReadPixels(0, 31)
-	if err != nil {
-		t.Logf("B44A ReadPixels warning (may have issues): %v", err)
+	if err := sr.ReadPixels(0, 31); err != nil {
+		t.Fatalf("ReadPixels: %v", err)
 	}
 
-	t.Log("B44A scanline compression round-trip completed")
+	// Every 4x4 block of this image is flat, so B44A encodes each one as three
+	// bytes holding a single half value: the round trip is exact here, not
+	// merely close.
+	for _, name := range []string{"R", "G", "B"} {
+		s := readFB.Get(name)
+		if s == nil {
+			t.Fatalf("channel %s missing from frame buffer", name)
+		}
+		for y := 0; y < 32; y++ {
+			for x := 0; x < 32; x++ {
+				if got := s.GetHalf(x, y).Float32(); got != 0.5 {
+					t.Fatalf("channel %s pixel (%d,%d) = %v, want 0.5 exactly", name, x, y, got)
+				}
+			}
+		}
+	}
 }
 
 func TestScanlineWriteAndReadDWAA(t *testing.T) {

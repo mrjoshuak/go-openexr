@@ -1,7 +1,9 @@
 package compression
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 )
@@ -10,11 +12,19 @@ import (
 var (
 	ErrB44ImageTooLarge = errors.New("compression: B44 image too large")
 
-	// ErrB44NonHalfChannel reports that a B44/B44A image contains a FLOAT or
-	// UINT channel. OpenEXR stores those channels uncompressed alongside the
-	// compressed HALF ones; this implementation does not yet do that, and
-	// refuses rather than writing a file with those channels zeroed.
-	ErrB44NonHalfChannel = errors.New("compression: B44 supports HALF channels only")
+	// ErrB44BadGeometry reports a channel description this codec cannot make
+	// sense of, such as a negative width or height.
+	ErrB44BadGeometry = errors.New("compression: B44 invalid channel geometry")
+
+	// ErrB44DataSize reports that the pixel buffer handed to the codec does not
+	// match the size the channel descriptions imply. Guessing at the intended
+	// layout would silently misplace whole channels, so this is an error.
+	ErrB44DataSize = errors.New("compression: B44 pixel buffer size does not match the channel list")
+
+	// ErrB44Truncated reports that the compressed stream ended before every
+	// channel had been decoded. The remaining pixels are unknown, and returning
+	// the zero-filled remainder would be indistinguishable from a correct read.
+	ErrB44Truncated = errors.New("compression: B44 compressed data ended prematurely")
 )
 
 // b44BufferPool provides reusable scratch buffers for B44 compression/decompression
@@ -388,91 +398,171 @@ func convertToLinear(x uint16) uint16 {
 	return float32ToHalf(f)
 }
 
+// b44Channel is the codec's view of one channel inside a chunk.
+//
+// OpenEXR's B44 compressor treats a chunk as a set of channel planes: HALF
+// channels are compressed in 4x4 blocks, and UINT and FLOAT channels are copied
+// through uncompressed. Both kinds appear in the compressed stream as one
+// contiguous run per channel, in channel order; only the *uncompressed* pixel
+// buffer is interleaved scanline by scanline. See ImfB44Compressor.cpp.
+type b44Channel struct {
+	nx     int  // samples per row
+	ny     int  // rows of this channel present in the chunk
+	isHalf bool // HALF channels are block-compressed, the rest pass through
+
+	// rowBytes is what one row of this channel contributes to the interleaved
+	// pixel buffer: 2 bytes per sample for HALF, 4 for UINT and FLOAT.
+	rowBytes int
+
+	// off is the channel's start in the scratch plane: an index into the HALF
+	// sample scratch for HALF channels, a byte offset into the passthrough
+	// scratch for the others.
+	off int
+}
+
+// b44Plan is the geometry of a whole chunk, derived from the channel list.
+type b44Plan struct {
+	channels []b44Channel
+	// halfSamples is the total number of HALF samples across all channels.
+	halfSamples int
+	// rawBytes is the total number of UINT/FLOAT bytes across all channels,
+	// which B44 stores uncompressed.
+	rawBytes int
+	// interleaved is the size of the uncompressed, scanline-interleaved pixel
+	// buffer that the codec consumes and produces.
+	interleaved int
+}
+
+// b44MaxScratchBytes bounds the scratch buffers a single chunk may allocate, so
+// a hostile header cannot turn a small file into a huge allocation.
+const b44MaxScratchBytes = 256 * 1024 * 1024
+
+// makeB44Plan validates a channel list and computes the scratch layout for it.
+func makeB44Plan(channels []B44ChannelInfo) (*b44Plan, error) {
+	p := &b44Plan{channels: make([]b44Channel, len(channels))}
+	var halfSamples, rawBytes, interleaved int64
+
+	for i := range channels {
+		info := &channels[i]
+		if info.Width < 0 || info.Height < 0 {
+			return nil, fmt.Errorf("%w: channel %d is %dx%d", ErrB44BadGeometry, i, info.Width, info.Height)
+		}
+		c := b44Channel{
+			nx:     info.Width,
+			ny:     info.Height,
+			isHalf: info.Type == b44PixelTypeHalf,
+		}
+		bytesPerSample := int64(4)
+		if c.isHalf {
+			bytesPerSample = 2
+		}
+		rowBytes := int64(c.nx) * bytesPerSample
+		samples := int64(c.nx) * int64(c.ny)
+		// Bound the row before it is narrowed to int, so a hostile width cannot
+		// wrap on a 32-bit build.
+		if rowBytes > b44MaxScratchBytes || samples*bytesPerSample > b44MaxScratchBytes {
+			return nil, ErrB44ImageTooLarge
+		}
+		c.rowBytes = int(rowBytes)
+
+		if c.isHalf {
+			c.off = int(halfSamples)
+			halfSamples += samples
+		} else {
+			c.off = int(rawBytes)
+			rawBytes += samples * 4
+		}
+		interleaved += samples * bytesPerSample
+
+		if halfSamples*2 > b44MaxScratchBytes || rawBytes > b44MaxScratchBytes || interleaved > b44MaxScratchBytes {
+			return nil, ErrB44ImageTooLarge
+		}
+		p.channels[i] = c
+	}
+
+	p.halfSamples = int(halfSamples)
+	p.rawBytes = int(rawBytes)
+	p.interleaved = int(interleaved)
+	return p, nil
+}
+
 // B44Compress compresses pixel data using B44 compression.
-// data is the raw pixel data.
-// channels describes the pixel type for each channel.
-// flatfields enables the 3-byte flat field encoding (B44A mode).
-// Returns the compressed data.
+//
+// data is one chunk of pixel data in OpenEXR's uncompressed layout: scanline by
+// scanline, and within each scanline one row per channel in channel order.
+// channels describes the geometry and pixel type of each channel, in that same
+// order. flatfields enables the 3-byte flat field encoding (B44A mode).
+//
+// HALF channels are compressed in 4x4 blocks. UINT and FLOAT channels are, as
+// in the reference implementation, copied through uncompressed; each channel
+// occupies one contiguous run of the output, in channel order.
 func B44Compress(data []byte, channels []B44ChannelInfo, width, height int, flatfields bool) ([]byte, error) {
 	initB44Tables()
 
-	// Get pooled buffer for channel data
-	poolBufPtr := b44BufferPool.Get().(*[]uint16)
-	poolBuf := *poolBufPtr
-	defer b44BufferPool.Put(poolBufPtr)
+	plan, err := makeB44Plan(channels)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) != plan.interleaved {
+		return nil, fmt.Errorf("%w: got %d bytes, channel list describes %d",
+			ErrB44DataSize, len(data), plan.interleaved)
+	}
 
-	// First pass: reorganize data by channel instead of scanline
-	// B44 processes each channel's data separately
-	channelData := make([][]uint16, len(channels))
-	poolOffset := 0
+	// Scratch planes, one per channel kind. The reference implementation
+	// de-interleaves into a single temporary buffer the same way; the copy is
+	// what lets the second pass emit each channel contiguously.
+	halfBufPtr := b44BufferPool.Get().(*[]uint16)
+	halfBuf := *halfBufPtr
+	if len(halfBuf) < plan.halfSamples {
+		halfBuf = make([]uint16, plan.halfSamples)
+	}
+	defer func() {
+		*halfBufPtr = halfBuf
+		b44BufferPool.Put(halfBufPtr)
+	}()
+	rawBuf := make([]byte, plan.rawBytes)
+
+	// First pass: de-interleave the scanlines into per-channel planes.
 	offset := 0
-
 	for y := 0; y < height; y++ {
-		for c, ch := range channels {
-			if ch.Height == 0 {
+		for i := range plan.channels {
+			c := &plan.channels[i]
+			if y >= c.ny {
 				continue
 			}
-			chWidth := ch.Width
-
-			if ch.Type == b44PixelTypeHalf {
-				if channelData[c] == nil {
-					chSize := ch.Width * ch.Height
-					// Limit maximum allocation to prevent DoS (256MB = 128M uint16 values)
-					const maxPoolSize = 128 * 1024 * 1024
-					if poolOffset+chSize > maxPoolSize {
-						return nil, ErrB44ImageTooLarge
-					}
-					// Grow pool buffer if needed
-					if poolOffset+chSize > len(poolBuf) {
-						newBuf := make([]uint16, poolOffset+chSize+chSize)
-						copy(newBuf, poolBuf[:poolOffset])
-						poolBuf = newBuf
-					}
-					channelData[c] = poolBuf[poolOffset : poolOffset+chSize]
-					poolOffset += chSize
-				}
-				chOffset := y * chWidth
-				// Read uint16 values from byte slice (little-endian)
-				for x := 0; x < chWidth; x++ {
-					v := uint16(data[offset]) | uint16(data[offset+1])<<8
-					channelData[c][chOffset+x] = v
-					offset += 2
-				}
-			} else if ch.Type == b44PixelTypeFloat {
-				// Float: skip 4 bytes per pixel
-				offset += chWidth * 4
-			} else {
-				// Uint: skip 4 bytes per pixel
-				offset += chWidth * 4
+			if !c.isHalf {
+				// UINT and FLOAT pass through byte for byte, little-endian as
+				// they already are in the file.
+				copy(rawBuf[c.off+y*c.rowBytes:], data[offset:offset+c.rowBytes])
+				offset += c.rowBytes
+				continue
+			}
+			dst := halfBuf[c.off+y*c.nx:]
+			for x := 0; x < c.nx; x++ {
+				dst[x] = binary.LittleEndian.Uint16(data[offset:])
+				offset += 2
 			}
 		}
 	}
 
-	// Second pass: compress each channel
+	// Second pass: emit each channel, compressed or not.
 	result := make([]byte, 0, len(data))
-	offset = 0
 
-	for c, ch := range channels {
-		if ch.Height == 0 {
+	for i := range plan.channels {
+		c := &plan.channels[i]
+		if c.ny == 0 {
 			continue
 		}
-		chWidth := ch.Width
-		chHeight := ch.Height
-
-		if ch.Type != b44PixelTypeHalf {
-			// OpenEXR's B44 passes non-HALF channels through uncompressed. This
-			// implementation does not track their source offsets, and the
-			// previous behaviour here was to emit a run of zero bytes — which
-			// silently discarded every FLOAT and UINT channel in the image.
-			// Refusing is strictly better than corrupting: a caller that asks
-			// for something this codec cannot do now finds out.
-			return nil, ErrB44NonHalfChannel
+		if !c.isHalf {
+			result = append(result, rawBuf[c.off:c.off+c.ny*c.rowBytes]...)
+			continue
 		}
 
 		// HALF data: compress 4x4 blocks
-		cd := channelData[c]
-		nx := chWidth
-		ny := chHeight
+		cd := halfBuf[c.off : c.off+c.nx*c.ny]
+		isLinear := channels[i].IsLinear
+		nx := c.nx
+		ny := c.ny
 		var block [14]byte
 
 		for y := 0; y < ny; y += 4 {
@@ -505,17 +595,17 @@ func B44Compress(data []byte, channels []B44ChannelInfo, width, height int, flat
 				}
 
 				// Apply linear conversion if needed
-				if ch.IsLinear {
+				if isLinear {
 					// Bounds check hint for compiler optimization
 					_ = b44ExpTable[65535]
 					_ = s[15]
-					for i := 0; i < 16; i++ {
-						s[i] = b44ExpTable[s[i]]
+					for j := 0; j < 16; j++ {
+						s[j] = b44ExpTable[s[j]]
 					}
 				}
 
 				// Pack the block
-				n := packB44(s, block[:], flatfields, !ch.IsLinear)
+				n := packB44(s, block[:], flatfields, !isLinear)
 				result = append(result, block[:n]...)
 			}
 		}
@@ -530,61 +620,59 @@ func B44Compress(data []byte, channels []B44ChannelInfo, width, height int, flat
 }
 
 // B44Decompress decompresses B44-compressed data.
-// channels describes the pixel type for each channel.
-// Returns the decompressed pixel data.
+//
+// channels describes the geometry and pixel type of each channel, in file
+// order; expectedSize is the size of the uncompressed, scanline-interleaved
+// chunk the channel list implies. UINT and FLOAT channels are read back from
+// the uncompressed run B44Compress wrote for them, bit for bit.
 func B44Decompress(data []byte, channels []B44ChannelInfo, width, height, expectedSize int) ([]byte, error) {
 	initB44Tables()
 
-	// Allocate scratch buffer for each channel
-	channelData := make([][]uint16, len(channels))
-	for c, ch := range channels {
-		if ch.Type == b44PixelTypeHalf {
-			// Pad to multiple of 4 for block processing
-			padWidth := ch.Width
-			padHeight := ch.Height
-			if padWidth%4 != 0 {
-				padWidth += 4 - (padWidth % 4)
-			}
-			if padHeight%4 != 0 {
-				padHeight += 4 - (padHeight % 4)
-			}
-			channelData[c] = make([]uint16, padWidth*padHeight)
-		}
+	plan, err := makeB44Plan(channels)
+	if err != nil {
+		return nil, err
+	}
+	if expectedSize != plan.interleaved {
+		return nil, fmt.Errorf("%w: caller expects %d bytes, channel list describes %d",
+			ErrB44DataSize, expectedSize, plan.interleaved)
 	}
 
-	// Decompress each channel
+	halfBuf := make([]uint16, plan.halfSamples)
+	rawBuf := make([]byte, plan.rawBytes)
+
+	// Decompress each channel. Channels appear in the stream one after another,
+	// each occupying either its block-compressed run (HALF) or its plain
+	// uncompressed run (UINT, FLOAT).
 	inOffset := 0
-	for c, ch := range channels {
-		if ch.Height == 0 {
+	for i := range plan.channels {
+		c := &plan.channels[i]
+		if c.ny == 0 {
 			continue
 		}
-		nx := ch.Width
-		ny := ch.Height
+		nx := c.nx
+		ny := c.ny
 
-		if ch.Type != b44PixelTypeHalf {
-			// Non-HALF: copy directly
-			nBytes := nx * ny * 4
+		if !c.isHalf {
+			nBytes := ny * c.rowBytes
 			if inOffset+nBytes > len(data) {
-				nBytes = len(data) - inOffset
+				return nil, fmt.Errorf("%w: channel %d needs %d uncompressed bytes at offset %d, only %d available",
+					ErrB44Truncated, i, nBytes, inOffset, len(data)-inOffset)
 			}
-			// Skip for now (will copy in output phase)
+			copy(rawBuf[c.off:c.off+nBytes], data[inOffset:inOffset+nBytes])
 			inOffset += nBytes
 			continue
 		}
 
 		// HALF: decompress 4x4 blocks
-		padWidth := nx
-		if padWidth%4 != 0 {
-			padWidth += 4 - (padWidth % 4)
-		}
-
-		cd := channelData[c]
+		cd := halfBuf[c.off : c.off+nx*ny]
+		isLinear := channels[i].IsLinear
 		var s [16]uint16
 
 		for y := 0; y < ny; y += 4 {
 			for x := 0; x < nx; x += 4 {
 				if inOffset+3 > len(data) {
-					break
+					return nil, fmt.Errorf("%w: channel %d block at (%d,%d) starts past the end of %d bytes",
+						ErrB44Truncated, i, x, y, len(data))
 				}
 
 				// Check for flat field (3-byte encoding)
@@ -593,66 +681,49 @@ func B44Decompress(data []byte, channels []B44ChannelInfo, width, height, expect
 					inOffset += 3
 				} else {
 					if inOffset+14 > len(data) {
-						break
+						return nil, fmt.Errorf("%w: channel %d block at (%d,%d) is cut short by the end of %d bytes",
+							ErrB44Truncated, i, x, y, len(data))
 					}
 					unpack14(data[inOffset:], &s)
 					inOffset += 14
 				}
 
 				// Apply linear conversion if needed
-				if ch.IsLinear {
-					for i := 0; i < 16; i++ {
-						s[i] = b44LogTable[s[i]]
+				if isLinear {
+					for j := 0; j < 16; j++ {
+						s[j] = b44LogTable[s[j]]
 					}
 				}
 
 				// Copy to output buffer, handling edge cases
 				for by := 0; by < 4 && y+by < ny; by++ {
 					for bx := 0; bx < 4 && x+bx < nx; bx++ {
-						cd[(y+by)*padWidth+(x+bx)] = s[by*4+bx]
+						cd[(y+by)*nx+(x+bx)] = s[by*4+bx]
 					}
 				}
 			}
 		}
 	}
 
-	// Reassemble output by scanline
-	result := make([]byte, expectedSize)
+	// Re-interleave the channel planes into the uncompressed chunk layout.
+	result := make([]byte, plan.interleaved)
 	outOffset := 0
 
 	for y := 0; y < height; y++ {
-		for c, ch := range channels {
-			if ch.Height == 0 {
+		for i := range plan.channels {
+			c := &plan.channels[i]
+			if y >= c.ny {
 				continue
 			}
-			chWidth := ch.Width
-
-			if ch.Type == b44PixelTypeHalf {
-				padWidth := chWidth
-				if padWidth%4 != 0 {
-					padWidth += 4 - (padWidth % 4)
-				}
-				cd := channelData[c]
-				rowStart := y * padWidth
-				bytesNeeded := chWidth * 2
-				if outOffset+bytesNeeded <= expectedSize {
-					// Copy uint16 values to bytes (little-endian)
-					for x := 0; x < chWidth; x++ {
-						v := cd[rowStart+x]
-						result[outOffset] = byte(v)
-						result[outOffset+1] = byte(v >> 8)
-						outOffset += 2
-					}
-				}
-			} else {
-				// Non-HALF: would need to copy from original compressed data
-				// For now, fill with zeros (simplified)
-				bytesPerPixel := 4
-				for x := 0; x < chWidth; x++ {
-					if outOffset+bytesPerPixel <= expectedSize {
-						outOffset += bytesPerPixel
-					}
-				}
+			if !c.isHalf {
+				copy(result[outOffset:outOffset+c.rowBytes], rawBuf[c.off+y*c.rowBytes:])
+				outOffset += c.rowBytes
+				continue
+			}
+			src := halfBuf[c.off+y*c.nx:]
+			for x := 0; x < c.nx; x++ {
+				binary.LittleEndian.PutUint16(result[outOffset:], src[x])
+				outOffset += 2
 			}
 		}
 	}

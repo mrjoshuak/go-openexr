@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **B44/B44A now pass FLOAT and UINT channels through, as OpenEXR does.** These
+  channels are stored uncompressed alongside the block-compressed HALF ones.
+  Previously the compressor emitted zero bytes for them and the decompressor
+  skipped them, leaving zeros — so a mixed-type image lost every non-HALF
+  channel in both directions. v1.3.0 refused such images rather than corrupting
+  them; they now work. Verified against reference-written mixed-type files:
+  FLOAT and UINT channels decode bit-exact, HALF within B44's lossy budget.
+- Failure modes in the B44 path that previously produced zeros now return
+  errors: `ErrB44Truncated`, `ErrB44DataSize`, `ErrB44BadGeometry`.
+- Channels with `ySampling > 1` are rejected by the B44 path with
+  `ErrSubsampledChannels` instead of being silently misread. The wider
+  subsampling gap is unchanged and still affects the other codecs.
+
 ## [1.3.0] - 2026-08-17
 
 **Full codec interoperability with the OpenEXR reference implementation.**

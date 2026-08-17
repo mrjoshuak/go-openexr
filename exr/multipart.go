@@ -552,6 +552,9 @@ func compressChunkData(data []byte, width, height int, cl *ChannelList, comp Com
 
 	case CompressionB44, CompressionB44A:
 		sortedChannels := cl.SortedByName()
+		if err := checkNoYSubsampling(sortedChannels); err != nil {
+			return nil, err
+		}
 
 		channels := make([]compression.B44ChannelInfo, len(sortedChannels))
 		for i, ch := range sortedChannels {

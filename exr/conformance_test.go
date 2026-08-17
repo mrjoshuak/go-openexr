@@ -34,6 +34,10 @@ const conformanceDir = "testdata/conformance"
 // goldenImage is the reference implementation's own view of a fixture.
 type goldenImage struct {
 	channels []string
+	// types[i] is the pixel type oiiotool named for channels[i], when the
+	// transcript names one. It only does so for images whose channels are not
+	// all the same type, e.g. `channel list: R (half), G (half), Z (float)`.
+	types []string
 	// pixels[i] holds one value per channel, in the order named by channels.
 	pixels [][]float64
 }
@@ -54,8 +58,10 @@ func parseGolden(t *testing.T, path string) *goldenImage {
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if rest, ok := strings.CutPrefix(line, "channel list:"); ok {
-			for _, name := range strings.Split(rest, ",") {
-				g.channels = append(g.channels, strings.TrimSpace(name))
+			for _, entry := range strings.Split(rest, ",") {
+				name, typ, _ := strings.Cut(strings.TrimSpace(entry), " ")
+				g.channels = append(g.channels, name)
+				g.types = append(g.types, strings.Trim(typ, "()"))
 			}
 			continue
 		}
