@@ -428,8 +428,13 @@ func TestRoundToNearestEven(t *testing.T) {
 	// Test that rounding follows round-to-nearest-even
 	// The mantissa is truncated from 23 bits to 10 bits
 	// When the dropped bits are exactly 0.5, round to even
-
-	// These tests verify the rounding behavior
+	//
+	// The three exactly-representable cases below cannot distinguish
+	// round-to-nearest-even from any other tie rule, and mutation testing
+	// (scripts/mutation/run.py, id half-tie-normal) confirmed that: replacing
+	// the tie rule with round-half-up left this test green. The cases marked
+	// "tie" are the ones that carry the test's name; see also
+	// TestTiesRoundToEvenIEEE754 and TestSubnormalTiesRoundToEven.
 	tests := []struct {
 		name     string
 		input    float32
@@ -441,6 +446,11 @@ func TestRoundToNearestEven(t *testing.T) {
 		{"exact 1.5", 1.5, 0x3E00},
 		// 2.0 = 0x4000 in half
 		{"exact 2.0", 2.0, 0x4000},
+		// Halfway between 1.0 (0x3C00, even significand) and the next half
+		// up (0x3C01, odd): IEEE 754 roundTiesToEven keeps 0x3C00.
+		{"tie 1+2^-11 goes down to the even 0x3C00", 1 + 1.0/2048, 0x3C00},
+		// Halfway between 0x3C01 (odd) and 0x3C02 (even): rounds up.
+		{"tie 1+3*2^-11 goes up to the even 0x3C02", 1 + 3.0/2048, 0x3C02},
 	}
 
 	for _, tt := range tests {

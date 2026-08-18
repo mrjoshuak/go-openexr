@@ -67,10 +67,45 @@ count times corpus size, not a library allocation; `-parallel=4` runs clean.
 - [x] Conformance corpus with external ground truth (`exr/testdata/conformance/`)
 - [x] Exact-value tests against the ASWF `openexr-images` corpus
 - [x] Spec-anchored predictor, byte-reorder and wavelet tests
-- [ ] Remaining backlog: an audit found 125 candidate false-assurance tests, of
-      which 21 were proven unable to fail by mutation testing. The ZIP, PIZ,
-      B44, DWA, HTJ2K, huffman and half test files still rest largely on
-      round-trip or self-referential assertions and need spec anchors.
+- [x] Repeatable mutation harness (`scripts/mutation/run.py`, driven by
+      `scripts/mutation/mutations.json`). It applies one deliberate defect at a
+      time, runs the tests that claim to cover it, records whether they failed,
+      and restores the sources; `--verify-clean` proves the run left the tree
+      exactly as it found it. Every mutation carries the specification clause
+      the correct value comes from.
+- [x] 17 mutations measured across ZIP, PIZ, B44, DWA, HTJ2K, huffman and half.
+      Nine survived the suite as it stood: the wavelet's A_OFFSET, the packed
+      code-length table's short zero-run code, canonical code assignment order,
+      B44's 0x20 difference bias, both halves of the float32 -> half tie rule,
+      DWA's truncated-pi DCT constants, one JPEG quantisation table entry, and
+      the direction of the HTJ2K channel map. Each is now killed by a
+      spec-anchored test: `compression/{piz,huffman,b44,dwa,htj2k}_spec_vectors_test.go`
+      and `half/round_spec_test.go`, plus tie cases added to
+      `half.TestRoundToNearestEven`, whose table previously held only exactly
+      representable values.
+- [ ] Remaining backlog: the audit's 125 candidate false-assurance tests are
+      not all retired. `TestPIZHuffmanRLEDecodeFromCppData` skips unless
+      `/tmp/test_fill_piz.exr` exists, so it has asserted nothing since that
+      file was last written; the C++ fixture needs to move into the repository.
+- [ ] **HTJ2K silently drops every pixel of a multi-channel HALF or UINT
+      image.** `exrImage.At` returns `color.Gray16{Y: 0}` unless the part has
+      exactly one channel, so that is what the JPEG 2000 encoder is handed.
+      Measured at the public API: a four-channel HALF file written through
+      `ScanlineWriter` with `CompressionHTJ2K32` reads back as all zeros —
+      11 139 of 11 360 samples were non-zero in the uncompressed twin and 0 in
+      the HTJ2K file. It is invisible because
+      `TestHTJ2KCompressDecompressRGB` compares only the length of the
+      decompressed buffer, and because `scripts/validate.sh` records HTJ2K as
+      a known gap, so the external oracle never reads those rows. The FLOAT
+      path is unaffected (it builds planar components explicitly).
+- [ ] `extractPixelData` (integer HTJ2K path) inverts the chunk's channel map
+      while `htj2kCompressFloat` and `htj2kDecompressFloat` use it directly.
+      The two readings disagree for any layout whose map is not a self-inverse
+      permutation, e.g. channels named A, R, G, B, where the map is
+      {1, 2, 3, 0}. Latent behind the defect above; the new
+      `TestHTJ2KFloatComponentOrderFollowsChannelMap` pins the FLOAT path only.
+- [ ] `exr.TestHTJ2K_NotSupported` and `TestCompliance_Summary` still state
+      that HTJ2K is unsupported and assert nothing at all; they log.
 - [ ] `TiledWriter`/`MultiPartOutputFile` `PIZChannel` construction omits the
       XSampling/YSampling divides that the scanline path performs (latent;
       only bites subsampled channels).

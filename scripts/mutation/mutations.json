@@ -1,0 +1,729 @@
+{
+  "_comment": [
+    "One deliberate defect per entry, applied by scripts/mutation/run.py and then reverted.",
+    "",
+    "  id              stable name, used with --id",
+    "  codec           which codec's tests this is evidence about",
+    "  description     what the defect is, in one line",
+    "  spec            the document and clause the correct value comes from; a mutation",
+    "                  without one is an opinion, not a defect",
+    "  symmetric       true when the defect is applied identically to the encoder and the",
+    "                  decoder, which is the case a round-trip test cannot see by construction",
+    "  edits           exact-text replacements; count must match, so a refactor that moves",
+    "                  the anchor makes the harness fail loudly instead of silently testing",
+    "                  nothing",
+    "  existing_tests  the tests that claimed to cover this code before this exercise",
+    "  added_tests     the spec-anchored tests added because the existing ones did not fail",
+    "  expect          the measured outcome per phase; run.py exits non-zero on a mismatch"
+  ],
+  "mutations": [
+    {
+      "id": "piz-wenc16-aoffset",
+      "codec": "PIZ",
+      "description": "wavelet A_OFFSET halved (32768 -> 16384) in wenc16 and wdec16 together",
+      "spec": "OpenEXR ImfWav.cpp: #define A_OFFSET (1 << (NBITS - 1)) with NBITS 16, so 32768. The modulo-arithmetic round trip is exact for any offset, so only a decoder that agrees with the reference's offset reads reference files.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/wavelet.go",
+          "old": "wavAOffset  = 1 << (wavNBits - 1)",
+          "new": "wavAOffset  = 1 << (wavNBits - 2)",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWenc16Wdec16RoundTrip"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2EncodeMatchesReference"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2DEncodeDecodeWith16BitData"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressDecompressSimple"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWenc16MatchesImfWavVectors"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "piz-wdec14-rounding",
+      "codec": "PIZ",
+      "description": "wdec14 drops the +1 in (ds + 1) >> 1, i.e. rounds the reconstructed pair the other way",
+      "spec": "OpenEXR ImfWav.cpp wdec14: as = ms + ((ds + 1) >> 1); bs = ms - (ds >> 1).",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/wavelet.go",
+          "old": "\tas := ms + ((ds + 1) >> 1)",
+          "new": "\tas := ms + (ds >> 1)",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2DEncodeDecode14BitData"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2ReferenceRoundTrips"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressDecompressSimple"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWenc14MatchesImfWavVectors"
+        }
+      ],
+      "expect": {
+        "existing": "killed",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "piz-w14-threshold",
+      "codec": "PIZ",
+      "description": "the 14-bit/16-bit wavelet mode threshold moved from 1<<14 to 1<<13",
+      "spec": "OpenEXR ImfWav.cpp wav2Encode: bool w14 = mx < (1 << 14). The threshold is not signalled in the stream; it is recomputed from the transmitted maximum, so both sides move together.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/wavelet.go",
+          "old": "wavMaxFor14 = 1 << 14",
+          "new": "wavMaxFor14 = 1 << 13",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2EncodeMatchesReference"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestWav2DEncodeDecode14BitData"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressDecompressSimple"
+        }
+      ],
+      "added_tests": [],
+      "expect": {
+        "existing": "killed"
+      }
+    },
+    {
+      "id": "piz-huftable-shortrun",
+      "codec": "PIZ/huffman",
+      "description": "the short zero-run base code moved from 59 to 58 in the code-length table packer and unpacker",
+      "spec": "OpenEXR ImfHuf.cpp: SHORT_ZEROCODE_RUN = 59, LONG_ZEROCODE_RUN = 63, SHORTEST_LONG_RUN = 2 + LONG - SHORT. The packed code-length table is part of the PIZ chunk, so the constant is wire-visible.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/piz.go",
+          "old": "shortZeroCodeRun = 59",
+          "new": "shortZeroCodeRun = 58",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressDecompressSimple"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZLargerImages"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZSparseData"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressionDeterminism"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHufTableRangeMatchesSpecVector"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "huffman-canonical-order",
+      "codec": "huffman",
+      "description": "canonical codes assigned to symbols in descending instead of ascending symbol order, in all three places that build them",
+      "spec": "OpenEXR ImfHuf.cpp hufCanonicalCodeTable: codes are handed out in increasing symbol index, so within one code length the shorter symbol index gets the smaller code. Reversing it still yields a valid prefix code that this library can decode, and misreads every reference file.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/huffman.go",
+          "old": "\tfor symbol, length := range lengths {\n\t\tif length > 0 {\n\t\t\tcodes[symbol] = huffmanCode{code: lengthCount[length], length: length}\n\t\t\tlengthCount[length]++\n\t\t}\n\t}",
+          "new": "\tfor symbol := len(lengths) - 1; symbol >= 0; symbol-- {\n\t\tlength := lengths[symbol]\n\t\tif length > 0 {\n\t\t\tcodes[symbol] = huffmanCode{code: lengthCount[length], length: length}\n\t\t\tlengthCount[length]++\n\t\t}\n\t}",
+          "count": 1
+        },
+        {
+          "file": "compression/huffman.go",
+          "old": "\tfor symbol, length := range lengths {\n\t\tif length > 0 {\n\t\t\tcodes[symbol] = huffmanCode{code: nextCode[length], length: length}\n\t\t\tnextCode[length]++\n\t\t}\n\t}",
+          "new": "\tfor symbol := len(lengths) - 1; symbol >= 0; symbol-- {\n\t\tlength := lengths[symbol]\n\t\tif length > 0 {\n\t\t\tcodes[symbol] = huffmanCode{code: nextCode[length], length: length}\n\t\t\tnextCode[length]++\n\t\t}\n\t}",
+          "count": 1
+        },
+        {
+          "file": "compression/huffman.go",
+          "old": "\tfor symbol := minIdx; symbol <= maxIdx; symbol++ {\n\t\tlength := codeLengths[symbol]",
+          "new": "\tfor symbol := maxIdx; symbol >= minIdx; symbol-- {\n\t\tlength := codeLengths[symbol]",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHuffmanEncodeDecodeMultipleSymbols"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestGetFastHufDecoder"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestFastHufDecoderDecodeInto"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZOldVsNewHuffman"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPIZCompressDecompressSimple"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestCanonicalCodesMatchImfHuf"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHuffmanDecoderReadsSpecBitstream"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "b44-bias",
+      "codec": "B44",
+      "description": "the B44 difference bias moved from 0x20 to 0x21 in packB44 and unpack14 together",
+      "spec": "OpenEXR ImfB44Compressor.cpp pack(): const int bias = 0x20, and unpack14()'s bias = 0x20 << shift. The biased 6-bit differences are the packed bytes themselves.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/b44.go",
+          "old": "\tconst bias = 0x20",
+          "new": "\tconst bias = 0x21",
+          "count": 1
+        },
+        {
+          "file": "compression/b44.go",
+          "old": "\tbias := uint16(0x20) << shift",
+          "new": "\tbias := uint16(0x21) << shift",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPackUnpack14"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestB44RoundtripSimple"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestB44RoundtripVaried"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestB44HalfOnlyPreservesValues"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestB44CompressionDeterminism"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPackB44MatchesSpecVector"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestPackB44MatchesReferenceTranscription"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "b44-unpack-chain",
+      "codec": "B44",
+      "description": "unpack14 reconstructs s[8] from s[0] instead of s[4], breaking the running-difference chain",
+      "spec": "OpenEXR ImfB44Compressor.cpp unpack14(): s[8] = s[4] + ((b[3] << 2 | b[4] >> 6) & 0x3f) << shift - bias.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/b44.go",
+          "old": "\ts[8] = s[4] + uint16(",
+          "new": "\ts[8] = s[0] + uint16(",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPackUnpack14"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestB44RoundtripVaried"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestUnpack14MatchesReferenceTranscription"
+        }
+      ],
+      "expect": {
+        "existing": "killed",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "half-tie-normal",
+      "codec": "half",
+      "description": "normalised float32 -> half rounding changed from round-half-to-even to round-half-up",
+      "spec": "IEEE 754-2019 clause 4.3.1 roundTiesToEven, the default rounding attribute; OpenEXR's half uses it, and the conversion is what every EXR HALF sample goes through.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "half/half.go",
+          "old": "\tsticky := mantissa & 0x0FFF\n\n\tif round != 0 && (sticky != 0 || (halfMantissa&1) != 0) {",
+          "new": "\tsticky := mantissa & 0x0FFF\n\t_ = sticky\n\n\tif round != 0 {",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./half/",
+          "run": "TestRoundToNearestEven"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestFromFloat32_RoundTrip"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestMantissaOverflowRounding"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestConvertSlice32"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./half/",
+          "run": "TestRoundToNearestEven"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestTiesRoundToEvenIEEE754"
+        }
+      ],
+      "expect": {
+        "existing": "killed",
+        "added": "killed"
+      },
+      "note": "TestRoundToNearestEven appears in both phases because it was strengthened in place rather than replaced: before this exercise its table held only 1.0, 1.5 and 2.0, none of which is a tie, and it survived this mutation. The pristine measurement is in this repository's mutation report; the expectation here is the post-strengthening one."
+    },
+    {
+      "id": "half-tie-subnormal",
+      "codec": "half",
+      "description": "subnormal float32 -> half rounding changed from round-half-to-even to round-half-up",
+      "spec": "IEEE 754-2019 clause 4.3.1: roundTiesToEven applies to subnormal results too, so 2^-25 converts to +0 and 3*2^-25 to 2^-23.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "half/half.go",
+          "old": "\t\tsticky := mantissa & ((1 << (shift - 1)) - 1)\n\n\t\tif round != 0 && (sticky != 0 || (halfMantissa&1) != 0) {",
+          "new": "\t\tsticky := mantissa & ((1 << (shift - 1)) - 1)\n\t\t_ = sticky\n\n\t\tif round != 0 {",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./half/",
+          "run": "TestSubnormals"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestSubnormalConversion"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestUnderflow"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestRoundToNearestEven"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./half/",
+          "run": "TestSubnormalTiesRoundToEven"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "half-exponent-bias",
+      "codec": "half",
+      "description": "half exponent bias changed from 15 to 16 on both the to-half and from-half paths",
+      "spec": "IEEE 754-2019 clause 3.6: binary16 has a 5-bit exponent with bias 15.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "half/half.go",
+          "old": "\texponentBias = 15",
+          "new": "\texponentBias = 16",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./half/",
+          "run": "TestBits"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestConstants"
+        },
+        {
+          "pkg": "./half/",
+          "run": "TestFromFloat32_RoundTrip"
+        }
+      ],
+      "added_tests": [],
+      "expect": {
+        "existing": "killed"
+      }
+    },
+    {
+      "id": "dwa-pi",
+      "codec": "DWA",
+      "description": "the DCT constants built from the reference's truncated 3.14159 literal rebuilt from full-precision pi",
+      "spec": "OpenEXR internal_dwa_simd.h dctInverse8x8_scalar: a = .5f * cosf(3.14159f/4.f) and friends. The literal is part of the format: files decoded with true pi differ from the reference's own readback.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/dwa_dct.go",
+          "old": "var dwaPi = float32(3.14159)",
+          "new": "var dwaPi = float32(3.141592653589793)",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaDctInverseMatchesDefinition"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaDctForwardMatchesDefinition"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaLosslessChannelsSurviveExactly"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaLossyChannelsStayClose"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaDctConstantsAreTheReferenceLiterals"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "dwa-quant-table",
+      "codec": "DWA",
+      "description": "one entry of the JPEG luminance quantisation table changed from 10 to 11",
+      "spec": "ISO/IEC 10918-1 Annex K Table K.1, reproduced in OpenEXR ImfDwaCompressor.cpp LossyDctEncoder_base_construct. Entry (0,2) is 10.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/dwa_encode.go",
+          "old": "\t\t16, 11, 10, 16, 24, 40, 51, 61,",
+          "new": "\t\t16, 11, 11, 16, 24, 40, 51, 61,",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaLossyChannelsStayClose"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaQuantizeStaysWithinTolerance"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaSizesAreConsistent"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaQuantTablesAreJpegAnnexK"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "dwa-zigzag",
+      "codec": "DWA",
+      "description": "two entries of the zig-zag remap table swapped",
+      "spec": "ISO/IEC 10918-1 Figure A.6 zig-zag scan order, as reproduced in OpenEXR's quantizeCoeffAndZigXDR remap table.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/dwa_dct.go",
+          "old": "\t0, 1, 5, 6, 14, 15, 27, 28,",
+          "new": "\t0, 1, 6, 5, 14, 15, 27, 28,",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaZigZag"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestDwaLosslessChannelsSurviveExactly"
+        }
+      ],
+      "added_tests": [],
+      "expect": {
+        "existing": "killed"
+      }
+    },
+    {
+      "id": "htj2k-magic",
+      "codec": "HTJ2K",
+      "description": "the chunk magic changed from 0x4854 to 0x4855 on both the write and read side",
+      "spec": "OpenEXR ImfHTJ2KCompressor: every HTJ2K chunk starts with the two bytes 'H','T'.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/htj2k.go",
+          "old": "htj2kMagic      uint16 = 0x4854",
+          "new": "htj2kMagic      uint16 = 0x4855",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KChunkHeader"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestWriteHTJ2KHeader"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KCompressDecompressRoundtrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestWriteHTJ2KHeaderMatchesSpecVector"
+        }
+      ],
+      "expect": {
+        "existing": "killed",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "htj2k-chanmap-direction",
+      "codec": "HTJ2K",
+      "description": "the channel map read as EXR-channel -> J2K-component instead of J2K-component -> EXR-channel, on both the float encode and float decode side",
+      "spec": "OpenEXR ImfHTJ2KCompressor: the chunk's channel map gives, for each JPEG 2000 component in order, the index of the EXR channel it carries. The RGB triplet is placed in components 0,1,2 so the reversible colour transform of ISO/IEC 15444-1 Annex G applies to it.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/htj2k.go",
+          "old": "\t\t\tfor j2kComp := 0; j2kComp < numComponents; j2kComp++ {\n\t\t\t\tsrcCh := channelMap[j2kComp]\n\t\t\t\tdataOffset := pixelOffset + int(srcCh)*4",
+          "new": "\t\t\tfor j2kComp := 0; j2kComp < numComponents; j2kComp++ {\n\t\t\t\tsrcCh := invertHTJ2KChannelMapForMutation(channelMap)[j2kComp]\n\t\t\t\tdataOffset := pixelOffset + int(srcCh)*4",
+          "count": 1
+        },
+        {
+          "file": "compression/htj2k.go",
+          "old": "\t\t\t\toutCh := channelMap[j2kComp]\n\t\t\t\tval := floatImg.Components[j2kComp][pixelIdx]",
+          "new": "\t\t\t\toutCh := invertHTJ2KChannelMapForMutation(channelMap)[j2kComp]\n\t\t\t\tval := floatImg.Components[j2kComp][pixelIdx]",
+          "count": 1
+        },
+        {
+          "file": "compression/htj2k.go",
+          "old": "// makeChannelMap creates a channel map",
+          "new": "// invertHTJ2KChannelMapForMutation is injected by scripts/mutation/run.py only.\nfunc invertHTJ2KChannelMapForMutation(m []uint16) []uint16 {\n\tinv := make([]uint16, len(m))\n\tfor i, v := range m {\n\t\tif int(v) < len(inv) {\n\t\t\tinv[v] = uint16(i)\n\t\t}\n\t}\n\treturn inv\n}\n\n// makeChannelMap creates a channel map",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KCompressDecompressFloatRGB"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KCompressDecompressFloatRoundtrip"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KMakeChannelMapWithAlpha"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KFloatComponentOrderFollowsChannelMap"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "zip-pool-level",
+      "codec": "ZIP",
+      "description": "the pooled zlib writer built at BestSpeed instead of DefaultCompression",
+      "spec": "OpenEXR ImfZipCompressor.cpp calls compress2 with Z_DEFAULT_COMPRESSION; ZIPCompress documents 'default level'. RFC 1950 records the level category in FLEVEL.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/zip.go",
+          "old": "w, _ := zlib.NewWriterLevel(buf, zlib.DefaultCompression)",
+          "new": "w, _ := zlib.NewWriterLevel(buf, zlib.BestSpeed)",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestDetectZlibFLevel"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestZIPRoundTrip"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestZIPCompressLevel"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestZIPCompressionDeterminism"
+        }
+      ],
+      "added_tests": [],
+      "expect": {
+        "existing": "killed"
+      }
+    },
+    {
+      "id": "zip-interleave-half",
+      "codec": "ZIP",
+      "description": "the even/odd split point changed from (n+1)/2 to n/2 in both Interleave and Deinterleave",
+      "spec": "OpenEXR ImfZipCompressor.cpp compress(): the first half holds ceil(n/2) even-indexed bytes, so an odd-length block puts the extra byte in the first half.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/interleave.go",
+          "old": "\thalf := (n + 1) / 2",
+          "new": "\thalf := n / 2",
+          "count": 2
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestInterleaveOddLength"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestInterleavePattern"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestInterleaveDeinterleaveRoundTrip"
+        }
+      ],
+      "added_tests": [],
+      "expect": {
+        "existing": "killed"
+      }
+    }
+  ]
+}
