@@ -56,13 +56,13 @@ count times corpus size, not a library allocation; `-parallel=4` runs clean.
 - [x] go-jpeg2000 v1.3.0: parallel-encode race, HTJ2K code-block conformance
       (ISO/IEC 15444-1 Table A.18), decoder hardening; CI race job no longer
       skips HTJ2K
-- [ ] PXR24 has no automated write-side coverage
+- [x] PXR24 write-side coverage added (`exr/pxr24_conformance_test.go`); half and uint bit-exact, float within the derived 24-bit bound
 - [x] HTJ2K now has an external oracle, and all six (pixel type x HTJ2K codec)
       combinations are bit-identical to their uncompressed twin when read by
       OpenImageIO/OpenEXR/OpenJPH. `scripts/validate.sh` gates them exactly as
       it gates zip or piz. **This requires go-jpeg2000 newer than v1.3.0**; see
       the dependency note below.
-- [ ] `opj_decompress` parses our codestreams but recovers no coefficients
+- [x] `opj_decompress` now recovers coefficients correctly; go-jpeg2000 v1.4.0 fixed the MQ context initialisation and the DWT pass order
 
 ### Dependency: HTJ2K needs go-jpeg2000 newer than v1.3.0
 
