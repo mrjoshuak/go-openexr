@@ -1010,15 +1010,11 @@ func (w *ScanlineWriter) writePixelsSequential(y1, y2 int) error {
 			if err != nil {
 				return err
 			}
-		case CompressionHTJ2K256:
+		case CompressionHTJ2K256, CompressionHTJ2K32:
+			// Both HTJ2K codecs use the same 128x32 code-blocks; they differ
+			// only in scanlines per chunk, which ScanlinesPerChunk supplies.
 			numLines := chunkEnd - chunkStart + 1
 			data, err = w.compressHTJ2K(rawData, numLines, 128)
-			if err != nil {
-				return err
-			}
-		case CompressionHTJ2K32:
-			numLines := chunkEnd - chunkStart + 1
-			data, err = w.compressHTJ2K(rawData, numLines, 32)
 			if err != nil {
 				return err
 			}
@@ -1103,10 +1099,8 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 			compressed, compErr = w.compressB44(chunk.rawData, numLines, true)
 		case CompressionDWAA, CompressionDWAB:
 			compressed, compErr = w.compressDWA(chunk.rawData, chunk.chunkStart, numLines)
-		case CompressionHTJ2K256:
+		case CompressionHTJ2K256, CompressionHTJ2K32:
 			compressed, compErr = w.compressHTJ2K(chunk.rawData, numLines, 128)
-		case CompressionHTJ2K32:
-			compressed, compErr = w.compressHTJ2K(chunk.rawData, numLines, 32)
 		default:
 			compErr = errors.New("exr: compression not yet implemented: " + comp.String())
 		}
@@ -1479,7 +1473,7 @@ func (r *ScanlineReader) decompressHTJ2K(data []byte, numLines int) ([]byte, err
 }
 
 // compressHTJ2K compresses chunk data using HTJ2K (High-Throughput JPEG 2000).
-func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockSize int) ([]byte, error) {
+func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockWidth int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
 
 	// Build channel info
@@ -1508,7 +1502,7 @@ func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockSize int)
 		}
 	}
 
-	return compression.HTJ2KCompress(data, numLines, channels, blockSize)
+	return compression.HTJ2KCompress(data, numLines, channels, blockWidth)
 }
 
 // compressDWA compresses chunk data using DWAA or DWAB. DWAA and DWAB differ

@@ -31,9 +31,12 @@ const (
 	CompressionDWAA Compression = 8
 	// CompressionDWAB uses DCT-based lossy compression (256 scanlines).
 	CompressionDWAB Compression = 9
-	// CompressionHTJ2K256 uses High-Throughput JPEG 2000 with 128x128 code blocks.
+	// CompressionHTJ2K256 uses lossless High-Throughput JPEG 2000, 256 scanlines
+	// per chunk. The code-block size is 128x32 for both HTJ2K codecs; only the
+	// scanline grouping differs.
 	CompressionHTJ2K256 Compression = 10
-	// CompressionHTJ2K32 uses High-Throughput JPEG 2000 with 32x32 code blocks.
+	// CompressionHTJ2K32 uses lossless High-Throughput JPEG 2000, 32 scanlines
+	// per chunk. More efficient for partial buffer access.
 	CompressionHTJ2K32 Compression = 11
 )
 
@@ -81,8 +84,16 @@ func (c Compression) ScanlinesPerChunk() int {
 		return 32
 	case CompressionDWAB:
 		return 256
-	case CompressionHTJ2K256, CompressionHTJ2K32:
+	case CompressionHTJ2K256:
 		return 256
+	case CompressionHTJ2K32:
+		// The 256 and 32 in these codec names are the scanline grouping, not
+		// the code-block size: OpenEXR's CompressionDesc table gives
+		// htj2k256 numScanlines 256 and htj2k32 numScanlines 32
+		// (ImfCompression.cpp). Reporting 256 here wrote a htj2k32 file as one
+		// chunk of up to 256 lines, which the reference reads as a chunk of the
+		// wrong height and rejects.
+		return 32
 	default:
 		return 1
 	}

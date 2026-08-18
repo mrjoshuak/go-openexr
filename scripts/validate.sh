@@ -66,12 +66,27 @@
 #       in. That domain is non-linear, with a slope of at most about 2.2
 #       against linear at full scale, giving 0.091. Rounded up: 0.1.
 #
-# KNOWN GAP: HTJ2K. The reference implementation cannot read HTJ2K at all —
-# OpenImageIO rejects the codestream before any pixel comparison is possible —
-# so the six HTJ2K combinations are reported as a known gap instead of being
-# gated. The reference's exact refusal is printed each run; if it ever changes
-# to a successful read, the run says so and the rows should be moved into the
-# gate.
+# HTJ2K is lossless for every pixel type, so its six combinations are declared
+# exact and held to the same bit-identical standard as zip or piz. They are run
+# through exactly the same diff as every other row.
+#
+# HISTORICAL, retained as the reason the excuse exists. Until go-jpeg2000
+# v1.4.0 these six rows could not pass: this repository wrote them correctly but
+# v1.3.0 could not emit a codestream the reference would accept, for two reasons
+# that were both measured:
+#
+#   * v1.3.0's EncodeHalf and EncodeFloat ignore Options.HighThroughput, so
+#     Rsiz bit 14 is never set and OpenJPH stops at
+#     "Rsiz bit 14 is not set (this is not a JPH file)" (ojph_params.cpp:867).
+#   * v1.3.0 writes the NLT segment with a one-byte Cnlt and Lnlt = 5. ISO/IEC
+#     15444-2 A.3.10 makes Cnlt sixteen bits and Lnlt 6, and OpenJPH rejects
+#     anything else with "Unsupported NLT type" (ojph_params.cpp:2256).
+#
+# Both are fixed in go-jpeg2000 v1.4.0, which this module now requires, so all
+# six rows are gated exactly like zip or piz. The excuse survives only for a
+# build resolved at exactly v1.3.0 with no replacement, and a row that passes
+# while excused is reported as a closed gap — the excuse cannot outlive the
+# defect.
 #
 # Usage:  bash scripts/validate.sh
 #         STRICT=1 bash scripts/validate.sh   # treat skips as failures
@@ -248,28 +263,27 @@ else
 		note "exact = bit-identical to the uncompressed twin, no tolerance"
 		note "lossy = decodes, and max error <= the bound derived in this script's header"
 
+		# The HTJ2K rows are excused only while go-jpeg2000 is pinned at exactly
+		# v1.3.0 with no replacement; see this script's header for the two
+		# v1.3.0 defects that make the reference refuse those codestreams.
+		j2kmod=$(go list -m github.com/mrjoshuak/go-jpeg2000 2>/dev/null)
+		case "$j2kmod" in
+		*"=>"*) htj2k_excused=0 ;;
+		"github.com/mrjoshuak/go-jpeg2000 v1.3.0") htj2k_excused=1 ;;
+		*) htj2k_excused=0 ;;
+		esac
+		note "go-jpeg2000: ${j2kmod:-unresolved}"
+		if [ "$htj2k_excused" = "1" ]; then
+			note "htj2k rows are excused at v1.3.0 (see header); any other version gates them"
+		else
+			note "htj2k rows are gated as hard checks (go-jpeg2000 is past the v1.3.0 defects)"
+		fi
+
 		gaps=0
 		while IFS=$'\t' read -r file type codec expect; do
 			case "$file" in \#* | "") continue ;; esac
 			base="$FIX/wr_${type}_none.exr"
 			path="$FIX/$file"
-
-			# HTJ2K: recorded as a known gap, not gated. --stats forces a full
-			# pixel read, so the reference's refusal is real and is printed;
-			# a change in it cannot then pass unnoticed.
-			case "$codec" in
-			htj2k*)
-				if out=$(oiiotool --stats "$path" 2>&1); then
-					note "KNOWN GAP CLOSED: the reference now reads $type/$codec — move this row into the gate"
-				else
-					reason=$(printf '%s\n' "$out" | grep -m1 -E 'ERROR|error' | cut -c1-100)
-					printf '  gap  - %-5s %-9s reference cannot read HTJ2K: %s\n' \
-						"$type" "$codec" "${reason:-unknown refusal}"
-				fi
-				gaps=$((gaps + 1))
-				continue
-				;;
-			esac
 
 			# The uncompressed row is the baseline every other row is compared
 			# against; diffing it with itself would assert nothing, so it is
@@ -294,6 +308,25 @@ else
 			verdict=$(printf '%s\n' "$out" | grep -oE '^(PASS|FAILURE)' | head -1)
 			maxerr=$(printf '%s\n' "$out" | sed -n 's/.*Max error *= *\([^ ]*\).*/\1/p' | head -1)
 			[ -n "$maxerr" ] || maxerr=0
+
+			# An excused HTJ2K row still runs the full diff above, so the
+			# excuse is re-measured every run rather than assumed. A row that
+			# passes while excused says so and should be gated.
+			if [ "$htj2k_excused" = "1" ]; then
+				case "$codec" in
+				htj2k*)
+					if [ "$verdict" = "PASS" ]; then
+						note "KNOWN GAP CLOSED: $type/$codec is bit-identical at go-jpeg2000 v1.3.0 — delete the excuse in this script"
+					else
+						reason=$(printf '%s\n' "$out" | grep -m1 -E 'ojph|ERROR|error' | cut -c1-110)
+						printf '  gap  - %-5s %-9s go-jpeg2000 v1.3.0 cannot emit a codestream the reference accepts: %s\n' \
+							"$type" "$codec" "${reason:-unknown refusal}"
+						gaps=$((gaps + 1))
+						continue
+					fi
+					;;
+				esac
+			fi
 
 			if [ -z "$verdict" ]; then
 				fail "$(printf '%-5s %-9s the reference could not read the file: %s' \
@@ -327,7 +360,7 @@ else
 			esac
 		done <"$FIX/manifest.tsv"
 
-		[ "$gaps" -eq 0 ] || note "$gaps combinations recorded as the HTJ2K known gap, not gated"
+		[ "$gaps" -eq 0 ] || note "$gaps combinations excused because go-jpeg2000 is pinned at v1.3.0; bumping that dependency gates them"
 	fi
 fi
 

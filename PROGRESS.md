@@ -57,10 +57,36 @@ count times corpus size, not a library allocation; `-parallel=4` runs clean.
       (ISO/IEC 15444-1 Table A.18), decoder hardening; CI race job no longer
       skips HTJ2K
 - [ ] PXR24 has no automated write-side coverage
-- [ ] HTJ2K has no external oracle: OpenImageIO can neither write nor read it.
-      OpenJPH interop is blocked on go-jpeg2000 not setting Rsiz bit 14 in SIZ
-      alongside its CAP marker, so OpenEXR 3.4+ still will not read our output.
+- [x] HTJ2K now has an external oracle, and all six (pixel type x HTJ2K codec)
+      combinations are bit-identical to their uncompressed twin when read by
+      OpenImageIO/OpenEXR/OpenJPH. `scripts/validate.sh` gates them exactly as
+      it gates zip or piz. **This requires go-jpeg2000 newer than v1.3.0**; see
+      the dependency note below.
 - [ ] `opj_decompress` parses our codestreams but recovers no coefficients
+
+### Dependency: HTJ2K needs go-jpeg2000 newer than v1.3.0
+
+`go.mod` pins `github.com/mrjoshuak/go-jpeg2000 v1.3.0`, and at that version
+none of the six HTJ2K rows can pass, for two reasons both measured against
+OpenJPH:
+
+- v1.3.0's `EncodeHalf` and `EncodeFloat` ignore `Options.HighThroughput`, so
+  Rsiz bit 14 is never set and OpenJPH stops at "Rsiz bit 14 is not set (this
+  is not a JPH file)" (`ojph_params.cpp:867`).
+- v1.3.0 writes the NLT segment with a one-byte Cnlt and Lnlt = 5. ISO/IEC
+  15444-2 A.3.10 makes Cnlt sixteen bits and Lnlt 6; OpenJPH rejects anything
+  else with "Unsupported NLT type" (`ojph_params.cpp:2256`).
+
+Both are fixed in go-jpeg2000 after v1.3.0. `scripts/validate.sh` excuses the
+six rows *only* when the resolved module is exactly v1.3.0 with no replacement;
+with any other version, or with a local replace directive, it gates them like
+every other row. It runs the same bit-identical diff either way, so an excused
+row that starts passing is reported as a closed gap.
+
+`compression.TestHTJ2KExtractPackets` and `TestHTJ2KBuildPacketIndex` also fail
+at v1.3.0 (they assert Rsiz bit 14 and that packet payloads lie inside the tile
+body, neither of which holds for v1.3.0's private packet container). Bumping the
+dependency is what closes them.
 
 ### Test integrity work
 
@@ -87,23 +113,40 @@ count times corpus size, not a library allocation; `-parallel=4` runs clean.
       not all retired. `TestPIZHuffmanRLEDecodeFromCppData` skips unless
       `/tmp/test_fill_piz.exr` exists, so it has asserted nothing since that
       file was last written; the C++ fixture needs to move into the repository.
-- [ ] **HTJ2K silently drops every pixel of a multi-channel HALF or UINT
-      image.** `exrImage.At` returns `color.Gray16{Y: 0}` unless the part has
-      exactly one channel, so that is what the JPEG 2000 encoder is handed.
-      Measured at the public API: a four-channel HALF file written through
-      `ScanlineWriter` with `CompressionHTJ2K32` reads back as all zeros —
-      11 139 of 11 360 samples were non-zero in the uncompressed twin and 0 in
-      the HTJ2K file. It is invisible because
-      `TestHTJ2KCompressDecompressRGB` compares only the length of the
-      decompressed buffer, and because `scripts/validate.sh` records HTJ2K as
-      a known gap, so the external oracle never reads those rows. The FLOAT
-      path is unaffected (it builds planar components explicitly).
-- [ ] `extractPixelData` (integer HTJ2K path) inverts the chunk's channel map
-      while `htj2kCompressFloat` and `htj2kDecompressFloat` use it directly.
-      The two readings disagree for any layout whose map is not a self-inverse
-      permutation, e.g. channels named A, R, G, B, where the map is
-      {1, 2, 3, 0}. Latent behind the defect above; the new
-      `TestHTJ2KFloatComponentOrderFollowsChannelMap` pins the FLOAT path only.
+- [x] **HTJ2K silently dropped every pixel of a multi-channel HALF or UINT
+      image.** `exrImage.At` returned `color.Gray16{Y: 0}` unless the part had
+      exactly one channel, so that is what the JPEG 2000 encoder was handed:
+      a four-channel 71x40 HALF chunk produced a 144-byte codestream declaring
+      three 8-bit components, all zero. `compression/htj2k.go` no longer uses
+      the `image.Image` view at all. HALF goes through `jpeg2000.EncodeHalf`
+      as 16-bit signed components, and FLOAT and UINT through
+      `jpeg2000.EncodeFloat` as 32-bit signed components, in both cases as the
+      raw sample bit patterns with the NLT Type 3 point transform — which is
+      what the reference codec hands OpenJPH (`internal_ht.cpp`).
+- [x] `extractPixelData` (integer HTJ2K path) inverted the chunk's channel map
+      while the FLOAT path used it directly. Both directions now use it in the
+      one direction the reference defines (codestream component i carries EXR
+      channel map[i]), and `extractPixelData` is gone.
+- [x] **HTJ2K read the packed chunk as pixel-interleaved.** OpenEXR packs a
+      chunk one scanline at a time, and within a scanline one whole channel row
+      at a time in name-sorted order (the reference calls each channel's
+      position in a line its `raster_line_offset`). Reading it pixel-interleaved
+      transposes every sample, and no round trip can see it because the same
+      transposition is applied on the way back out.
+      `TestHTJ2KFloatComponentOrderFollowsChannelMap` built its fixture the same
+      wrong way and so agreed with the defect; its fixture is now packed the way
+      OpenEXR packs one.
+- [x] **htj2k32 wrote 256-scanline chunks.** `Compression.ScanlinesPerChunk`
+      returned 256 for both HTJ2K codecs. The 256 and 32 in the codec names are
+      the scanline grouping, not the code-block size: OpenEXR's own compression
+      table gives htj2k256 numScanlines 256 and htj2k32 numScanlines 32
+      (`ImfCompression.cpp`), and both use 128x32 code-blocks
+      (`cod.set_block_dims(128, 32)` in `internal_ht.cpp`). A 40-line htj2k32
+      file was written as one chunk instead of two.
+- [x] **The manifest declared HTJ2K lossy for HALF and FLOAT.** OpenEXR marks
+      htj2k256 and htj2k32 `lossy = false` for every pixel type; the codestream
+      is a reversible 5/3 wavelet over raw sample bit patterns. All six rows are
+      now declared exact and held to bit-identity, with no tolerance.
 - [ ] `exr.TestHTJ2K_NotSupported` and `TestCompliance_Summary` still state
       that HTJ2K is unsupported and assert nothing at all; they log.
 - [ ] `TiledWriter`/`MultiPartOutputFile` `PIZChannel` construction omits the

@@ -607,21 +607,15 @@
     {
       "id": "htj2k-chanmap-direction",
       "codec": "HTJ2K",
-      "description": "the channel map read as EXR-channel -> J2K-component instead of J2K-component -> EXR-channel, on both the float encode and float decode side",
+      "description": "the channel map read as EXR-channel -> J2K-component instead of J2K-component -> EXR-channel, on both the encode and the decode side",
       "spec": "OpenEXR ImfHTJ2KCompressor: the chunk's channel map gives, for each JPEG 2000 component in order, the index of the EXR channel it carries. The RGB triplet is placed in components 0,1,2 so the reversible colour transform of ISO/IEC 15444-1 Annex G applies to it.",
       "symmetric": true,
       "edits": [
         {
           "file": "compression/htj2k.go",
-          "old": "\t\t\tfor j2kComp := 0; j2kComp < numComponents; j2kComp++ {\n\t\t\t\tsrcCh := channelMap[j2kComp]\n\t\t\t\tdataOffset := pixelOffset + int(srcCh)*4",
-          "new": "\t\t\tfor j2kComp := 0; j2kComp < numComponents; j2kComp++ {\n\t\t\t\tsrcCh := invertHTJ2KChannelMapForMutation(channelMap)[j2kComp]\n\t\t\t\tdataOffset := pixelOffset + int(srcCh)*4",
-          "count": 1
-        },
-        {
-          "file": "compression/htj2k.go",
-          "old": "\t\t\t\toutCh := channelMap[j2kComp]\n\t\t\t\tval := floatImg.Components[j2kComp][pixelIdx]",
-          "new": "\t\t\t\toutCh := invertHTJ2KChannelMapForMutation(channelMap)[j2kComp]\n\t\t\t\tval := floatImg.Components[j2kComp][pixelIdx]",
-          "count": 1
+          "old": "\t\t\t\trow := line[offsets[channelMap[comp]]:]",
+          "new": "\t\t\t\trow := line[offsets[invertHTJ2KChannelMapForMutation(channelMap)[comp]]:]",
+          "count": 4
         },
         {
           "file": "compression/htj2k.go",
@@ -723,6 +717,129 @@
       "added_tests": [],
       "expect": {
         "existing": "killed"
+      }
+    },
+    {
+      "id": "htj2k-packet-set-truncated",
+      "codec": "HTJ2K",
+      "description": "HTJ2KExtractPackets drops the last packet of the codestream",
+      "spec": "ISO/IEC 15444-1 B.9: a codestream contains exactly one packet per (tile, layer, resolution, component, precinct). SIZ (A.5.1) gives the tile grid and component count, COD (A.6.1) gives the layer count, the decomposition levels and the precinct partition, so the packet count is fixed by the codestream's own markers and an extractor that returns fewer is losing data.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/htj2k_progressive.go",
+          "old": "\treturn packets, channelMap, nil",
+          "new": "\treturn packets[:len(packets)-1], channelMap, nil",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KProgressiveDecodeFeedAndReconstruct"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractCodestream"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractPackets"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KBuildPacketIndex"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "htj2k-packet-order-reversed",
+      "codec": "HTJ2K",
+      "description": "HTJ2KExtractPackets returns the packets in reverse codestream order",
+      "spec": "ISO/IEC 15444-1 B.12 and Table A.16: packets appear in the progression order COD declares. COD SGcod here is 0 (LRCP), so the packets run layer-major, then resolution, then component, then precinct; an extractor that permutes them misaddresses every packet it returns.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/htj2k_progressive.go",
+          "old": "\treturn packets, channelMap, nil",
+          "new": "\treturn reverseHTJ2KPacketsForMutation(packets), channelMap, nil",
+          "count": 1
+        },
+        {
+          "file": "compression/htj2k_progressive.go",
+          "old": "// HTJ2KBuildPacketIndex builds a memory-efficient packet index from",
+          "new": "// reverseHTJ2KPacketsForMutation is injected by scripts/mutation/run.py only.\nfunc reverseHTJ2KPacketsForMutation(p []jpeg2000.Packet) []jpeg2000.Packet {\n\tout := make([]jpeg2000.Packet, len(p))\n\tfor i, pkt := range p {\n\t\tout[len(p)-1-i] = pkt\n\t}\n\treturn out\n}\n\n// HTJ2KBuildPacketIndex builds a memory-efficient packet index from",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KProgressiveDecodeFeedAndReconstruct"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractCodestream"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractPackets"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KBuildPacketIndex"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
+      }
+    },
+    {
+      "id": "htj2k-codestream-offset",
+      "codec": "HTJ2K",
+      "description": "HTJ2KExtractCodestream hands over the codestream two bytes late, past the SOC marker",
+      "spec": "OpenEXR ImfHTJ2KCompressor: the chunk is a header (magic, PLEN, channel map) followed by the JPEG 2000 codestream, which by ISO/IEC 15444-1 A.4.1 begins with the SOC marker FF4F. The codestream handed to the packet parser must start exactly at the first byte after the chunk header.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/htj2k_progressive.go",
+          "old": "\treturn src[headerSize:], channelMap, nil",
+          "new": "\treturn src[headerSize+2:], channelMap, nil",
+          "count": 1
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractCodestream"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractCodestreamRGB"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KExtractPackets"
+        },
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KBuildPacketIndex"
+        }
+      ],
+      "expect": {
+        "existing": "survived",
+        "added": "killed"
       }
     }
   ]

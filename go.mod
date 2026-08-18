@@ -4,5 +4,5 @@ go 1.23
 
 require (
 	github.com/klauspost/compress v1.18.2
-	github.com/mrjoshuak/go-jpeg2000 v1.3.0
+	github.com/mrjoshuak/go-jpeg2000 v1.4.0
 )

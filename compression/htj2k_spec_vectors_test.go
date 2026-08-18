@@ -97,11 +97,19 @@ func TestHTJ2KFloatComponentOrderFollowsChannelMap(t *testing.T) {
 		}
 	}
 
-	src := make([]byte, width*height*len(names)*4)
-	for p := 0; p < width*height; p++ {
+	// OpenEXR packs a chunk one scanline at a time, and within a scanline one
+	// whole channel row at a time in name-sorted order — not pixel-interleaved.
+	// See internal_ht.cpp, which walks the packed buffer as
+	// line_pixels + raster_line_offset and advances line_pixels by one line per
+	// scanline.
+	bytesPerLine := width * len(names) * 4
+	src := make([]byte, bytesPerLine*height)
+	for y := 0; y < height; y++ {
 		for c, n := range names {
-			off := (p*len(names) + c) * 4
-			putFloat32LE(src[off:], values[n])
+			row := src[y*bytesPerLine+c*width*4:]
+			for x := 0; x < width; x++ {
+				putFloat32LE(row[x*4:], values[n])
+			}
 		}
 	}
 

@@ -43,8 +43,11 @@ type codec struct {
 	//   b44/b44a               4x4 block quantisation of HALF only; FLOAT and
 	//                          UINT are passed through uncompressed
 	//   dwaa/dwab              lossy for HALF and FLOAT; UINT is passed through
-	//   htj2k                  wavelet coding of HALF and FLOAT; UINT passed
-	//                          through
+	//   htj2k                  entirely lossless: reversible 5/3 wavelet over
+	//                          the raw sample bit patterns. OpenEXR's own
+	//                          compression table marks htj2k256 and htj2k32
+	//                          lossy=false for every pixel type
+	//                          (ImfCompression.cpp)
 	lossless []string
 }
 
@@ -67,8 +70,8 @@ var (
 		{"b44a", exr.CompressionB44A, []string{"float", "uint"}},
 		{"dwaa", exr.CompressionDWAA, []string{"uint"}},
 		{"dwab", exr.CompressionDWAB, []string{"uint"}},
-		{"htj2k256", exr.CompressionHTJ2K256, []string{"uint"}},
-		{"htj2k32", exr.CompressionHTJ2K32, []string{"uint"}},
+		{"htj2k256", exr.CompressionHTJ2K256, all},
+		{"htj2k32", exr.CompressionHTJ2K32, all},
 	}
 )
 

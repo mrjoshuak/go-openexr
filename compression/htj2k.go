@@ -261,308 +261,302 @@ func (img *exrImage) At(x, y int) color.Color {
 	return color.Gray16{Y: 0}
 }
 
-// HTJ2KCompress compresses scanline data using HTJ2K compression
-func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockSize int) ([]byte, error) {
+// Sample geometry of an OpenEXR chunk.
+//
+// A compressed scanline chunk holds its pixels the way OpenEXR packs them: for
+// each scanline in the chunk, for each channel in name-sorted order, that
+// channel's whole row. It is *not* pixel-interleaved. The reference codec calls
+// each channel's position within a line its raster_line_offset
+// (internal_ht_common.cpp), and both its encoder and its decoder index the
+// packed buffer as line_pixels + raster_line_offset, advancing line_pixels by
+// one line's worth of bytes per scanline (internal_ht.cpp).
+//
+// Reading this buffer as though it were pixel-interleaved transposes every
+// sample, which no round trip can see because the same transposition is applied
+// on the way back out.
+
+// htj2kSampleSize returns the byte width of one sample of the given HTJ2K
+// pixel type.
+func htj2kSampleSize(pixelType int) int {
+	if pixelType == HTJ2KPixelTypeHalf {
+		return 2
+	}
+	return 4
+}
+
+// htj2kLineLayout returns each channel's byte offset within one packed
+// scanline, and the total number of bytes a scanline occupies. Channels are
+// given in EXR (name-sorted) order, which is the order they are packed in.
+func htj2kLineLayout(channels []HTJ2KChannelInfo) (offsets []int, bytesPerLine int) {
+	offsets = make([]int, len(channels))
+	for i, ch := range channels {
+		offsets[i] = bytesPerLine
+		bytesPerLine += ch.Width * htj2kSampleSize(ch.Type)
+	}
+	return offsets, bytesPerLine
+}
+
+// htj2kValidateChannels rejects the channel configurations this codec cannot
+// represent, rather than encoding them wrongly.
+func htj2kValidateChannels(channels []HTJ2KChannelInfo, width int) error {
+	if len(channels) == 0 {
+		return errors.New("htj2k: no channels specified")
+	}
+	for _, ch := range channels {
+		if ch.XSampling != 1 || ch.YSampling != 1 {
+			// The reference switches OpenJPH to planar mode for subsampled
+			// channels; go-jpeg2000 has no planar entry point, so a subsampled
+			// channel would silently be written at the wrong size.
+			return fmt.Errorf("htj2k: channel %q is subsampled (%dx%d); only 1x1 sampling is supported",
+				ch.Name, ch.XSampling, ch.YSampling)
+		}
+		if ch.Width != width {
+			return fmt.Errorf("htj2k: channel %q is %d wide, but channel %q is %d wide",
+				ch.Name, ch.Width, channels[0].Name, width)
+		}
+	}
+	return nil
+}
+
+// htj2kAllHalf reports whether every channel is HALF. HALF samples are 16 bits
+// wide and UINT and FLOAT samples are 32; go-jpeg2000 encodes a whole image at
+// one sample width, so the two cannot be mixed in one codestream.
+func htj2kAllHalf(channels []HTJ2KChannelInfo) (allHalf bool, anyHalf bool) {
+	allHalf = true
+	for _, ch := range channels {
+		if ch.Type == HTJ2KPixelTypeHalf {
+			anyHalf = true
+		} else {
+			allHalf = false
+		}
+	}
+	return allHalf, anyHalf
+}
+
+// htj2kWrap prepends the OpenEXR HTJ2K chunk header to a codestream.
+func htj2kWrap(channelMap []uint16, codestream []byte) ([]byte, error) {
+	var headerBuf bytes.Buffer
+	if err := writeHTJ2KHeader(&headerBuf, channelMap); err != nil {
+		return nil, err
+	}
+	output := make([]byte, 0, headerBuf.Len()+len(codestream))
+	output = append(output, headerBuf.Bytes()...)
+	output = append(output, codestream...)
+	return output, nil
+}
+
+// htj2kOptions returns the encoder options for an OpenEXR HTJ2K chunk.
+//
+// These mirror what the reference codec asks OpenJPH for in internal_ht.cpp:
+// reversible (lossless) coding, five decomposition levels, and 128x32
+// code-blocks for both HTJ2K codecs — the 256 and 32 in the codec names are
+// the scanline grouping, not the code-block size. HighThroughput is what makes
+// the codestream HTJ2K rather than baseline Part 1: it selects the FBCS block
+// coder, writes the CAP marker and sets Rsiz bit 14, without which OpenJPH
+// refuses the file with "Rsiz bit 14 is not set (this is not a JPH file)".
+func htj2kOptions(blockWidth int) *jpeg2000.Options {
+	if blockWidth <= 0 {
+		blockWidth = htj2kCodeBlockWidth
+	}
+	return &jpeg2000.Options{
+		Format:         jpeg2000.FormatJ2K, // raw codestream, no JP2 wrapper
+		Lossless:       true,
+		HighThroughput: true,
+		HTBlockWidth:   blockWidth,
+		HTBlockHeight:  htj2kCodeBlockHeight,
+		NumResolutions: htj2kNumResolutions,
+	}
+}
+
+// Codestream parameters the reference codec uses for every HTJ2K chunk
+// (internal_ht.cpp: set_block_dims(128, 32), set_num_decomposition(5)).
+const (
+	htj2kCodeBlockWidth  = 128
+	htj2kCodeBlockHeight = 32
+	htj2kNumResolutions  = 6 // 5 decomposition levels plus the base
+)
+
+// HTJ2KCompress compresses one packed OpenEXR scanline chunk into an HTJ2K
+// chunk: the OpenEXR chunk header followed by a JPEG 2000 codestream.
+//
+// src is packed in OpenEXR's scanline order (per line, each channel's whole row
+// in name-sorted order). numLines is the chunk height. blockWidth is the
+// code-block width; the reference always uses 128, and the height is fixed at
+// the reference's 32.
+//
+// Samples are carried as raw bit patterns, never converted: a HALF channel is
+// coded as a signed 16-bit component and a FLOAT or UINT channel as a signed
+// 32-bit component, each with the NLT Type 3 (binary complement) point
+// transform that maps the sign-magnitude encoding onto two's complement. That
+// is the transform the reference applies to HALF and FLOAT; it applies none to
+// UINT, declaring the component unsigned instead. Both forms are reversible and
+// both are read correctly by the reference decoder, which takes whatever
+// OpenJPH reconstructs and stores the 32 bits verbatim (internal_ht.cpp).
+func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockWidth int) ([]byte, error) {
 	if len(channels) == 0 {
 		return nil, errors.New("htj2k: no channels specified")
 	}
-
-	// Calculate dimensions
-	width := channels[0].Width
-	height := numLines
-
-	// Create channel map for RCT optimization
-	channelMap, isRGB := makeChannelMap(channels)
-
-	// Check if any channels are FLOAT
-	hasFloat := false
-	for _, ch := range channels {
-		if ch.Type == HTJ2KPixelTypeFloat {
-			hasFloat = true
-			break
-		}
-	}
-
-	if hasFloat {
-		// All channels must be FLOAT (mixed types not supported)
-		for _, ch := range channels {
-			if ch.Type != HTJ2KPixelTypeFloat {
-				return nil, errors.New("htj2k: mixed FLOAT and non-FLOAT channels not supported")
-			}
-		}
-		return htj2kCompressFloat(src, width, height, channels, channelMap)
-	}
-
-	// Create JPEG 2000 encoder options
-	opts := &jpeg2000.Options{
-		Format:         jpeg2000.FormatJ2K, // Raw codestream, no JP2 wrapper
-		Lossless:       true,               // OpenEXR HTJ2K is always lossless
-		HighThroughput: true,               // Enable HTJ2K mode
-		HTBlockWidth:   blockSize,
-		HTBlockHeight:  blockSize,
-		NumResolutions: 6, // 5 decomposition levels + base
-	}
-
-	// MCT (RCT for lossless) is automatically applied by go-jpeg2000
-	// when there are 3+ components, so no explicit option needed
-	_ = isRGB
-
-	// Create image wrapper
-	img := newEXRImage(width, height, channels, src)
-
-	// Encode to JPEG 2000
-	var codestreamBuf bytes.Buffer
-	if err := jpeg2000.Encode(&codestreamBuf, img, opts); err != nil {
-		return nil, fmt.Errorf("htj2k: jpeg2000 encode failed: %w", err)
-	}
-
-	// Build output: header + codestream
-	headerSize := htj2kHeaderSize + 2 + len(channelMap)*2
-	output := make([]byte, 0, headerSize+codestreamBuf.Len())
-
-	var headerBuf bytes.Buffer
-	if err := writeHTJ2KHeader(&headerBuf, channelMap); err != nil {
+	width, height := channels[0].Width, numLines
+	if err := htj2kValidateChannels(channels, width); err != nil {
 		return nil, err
 	}
-	output = append(output, headerBuf.Bytes()...)
-	output = append(output, codestreamBuf.Bytes()...)
-
-	return output, nil
-}
-
-// htj2kCompressFloat handles FLOAT channel compression via EncodeFloat.
-func htj2kCompressFloat(src []byte, width, height int, channels []HTJ2KChannelInfo, channelMap []uint16) ([]byte, error) {
-	numComponents := len(channels)
-	bytesPerPixel := numComponents * 4
-
-	// Build planar float32 components from interleaved binary data
-	components := make([][]float32, numComponents)
-	for i := range components {
-		components[i] = make([]float32, width*height)
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("htj2k: empty chunk %dx%d", width, height)
 	}
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			pixelOffset := (y*width + x) * bytesPerPixel
-			for j2kComp := 0; j2kComp < numComponents; j2kComp++ {
-				srcCh := channelMap[j2kComp]
-				dataOffset := pixelOffset + int(srcCh)*4
-				bits := binary.LittleEndian.Uint32(src[dataOffset:])
-				components[j2kComp][y*width+x] = math.Float32frombits(bits)
+	offsets, bytesPerLine := htj2kLineLayout(channels)
+	if need := bytesPerLine * height; len(src) < need {
+		return nil, fmt.Errorf("htj2k: chunk data is %d bytes, need %d for %d lines of %d bytes",
+			len(src), need, height, bytesPerLine)
+	}
+
+	// The channel map records which EXR channel each codestream component
+	// carries; it puts R, G and B in components 0, 1 and 2 so the reversible
+	// colour transform decorrelates them.
+	channelMap, _ := makeChannelMap(channels)
+
+	allHalf, anyHalf := htj2kAllHalf(channels)
+	if anyHalf && !allHalf {
+		return nil, errors.New("htj2k: mixed HALF and 32-bit channels not supported")
+	}
+
+	n := len(channels)
+	var codestreamBuf bytes.Buffer
+
+	if allHalf {
+		components := make([][]uint16, n)
+		for c := range components {
+			components[c] = make([]uint16, width*height)
+		}
+		for y := 0; y < height; y++ {
+			line := src[y*bytesPerLine:]
+			for comp := 0; comp < n; comp++ {
+				row := line[offsets[channelMap[comp]]:]
+				dst := components[comp][y*width : (y+1)*width]
+				for x := 0; x < width; x++ {
+					dst[x] = binary.LittleEndian.Uint16(row[x*2:])
+				}
 			}
+		}
+		img := &jpeg2000.HalfImage{Width: width, Height: height, Components: components}
+		if err := jpeg2000.EncodeHalf(&codestreamBuf, img, htj2kOptions(blockWidth)); err != nil {
+			return nil, fmt.Errorf("htj2k: jpeg2000 half encode failed: %w", err)
+		}
+	} else {
+		components := make([][]float32, n)
+		for c := range components {
+			components[c] = make([]float32, width*height)
+		}
+		for y := 0; y < height; y++ {
+			line := src[y*bytesPerLine:]
+			for comp := 0; comp < n; comp++ {
+				row := line[offsets[channelMap[comp]]:]
+				dst := components[comp][y*width : (y+1)*width]
+				for x := 0; x < width; x++ {
+					// Float32frombits is a reinterpretation, not a conversion:
+					// a UINT channel's 32 bits survive it unchanged and come
+					// back out of Float32bits on the other side.
+					dst[x] = math.Float32frombits(binary.LittleEndian.Uint32(row[x*4:]))
+				}
+			}
+		}
+		img := &jpeg2000.FloatImage{
+			Width: width, Height: height, Components: components,
+			BitDepth: 32, Signed: true,
+		}
+		if err := jpeg2000.EncodeFloat(&codestreamBuf, img, htj2kOptions(blockWidth)); err != nil {
+			return nil, fmt.Errorf("htj2k: jpeg2000 float encode failed: %w", err)
 		}
 	}
 
-	img := &jpeg2000.FloatImage{
-		Width:      width,
-		Height:     height,
-		Components: components,
-		BitDepth:   32,
-		Signed:     true,
-	}
-
-	opts := &jpeg2000.Options{
-		Format:   jpeg2000.FormatJ2K,
-		Lossless: true,
-	}
-
-	var codestreamBuf bytes.Buffer
-	if err := jpeg2000.EncodeFloat(&codestreamBuf, img, opts); err != nil {
-		return nil, fmt.Errorf("htj2k: jpeg2000 float encode failed: %w", err)
-	}
-
-	headerSize := htj2kHeaderSize + 2 + len(channelMap)*2
-	output := make([]byte, 0, headerSize+codestreamBuf.Len())
-
-	var headerBuf bytes.Buffer
-	if err := writeHTJ2KHeader(&headerBuf, channelMap); err != nil {
-		return nil, err
-	}
-	output = append(output, headerBuf.Bytes()...)
-	output = append(output, codestreamBuf.Bytes()...)
-
-	return output, nil
+	return htj2kWrap(channelMap, codestreamBuf.Bytes())
 }
 
-// HTJ2KDecompress decompresses HTJ2K-compressed data
+// HTJ2KDecompress decompresses an HTJ2K chunk back into OpenEXR's packed
+// scanline layout. expectedSize is the size the caller expects, and is checked
+// rather than assumed; pass 0 to skip the check.
 func HTJ2KDecompress(src []byte, expectedSize int, channels []HTJ2KChannelInfo) ([]byte, error) {
 	if len(src) < htj2kHeaderSize {
 		return nil, ErrHTJ2KCorrupted
 	}
-
-	// Parse header
 	headerSize, channelMap, err := readHTJ2KHeader(src)
 	if err != nil {
 		return nil, err
 	}
-
-	// Validate channel map
 	if len(channelMap) != len(channels) {
 		return nil, fmt.Errorf("htj2k: channel count mismatch: expected %d, got %d",
 			len(channels), len(channelMap))
 	}
-
-	// Check if this is a float decode
-	codestream := src[headerSize:]
-
-	hasFloat := false
-	for _, ch := range channels {
-		if ch.Type == HTJ2KPixelTypeFloat {
-			hasFloat = true
-			break
+	if len(channels) == 0 {
+		return nil, errors.New("htj2k: no channels specified")
+	}
+	for _, c := range channelMap {
+		if int(c) >= len(channels) {
+			return nil, ErrHTJ2KChannelMap
 		}
 	}
 
-	if hasFloat {
-		return htj2kDecompressFloat(codestream, channels, channelMap)
-	}
-
-	// Decode JPEG 2000 codestream (integer path)
-	img, err := jpeg2000.Decode(bytes.NewReader(codestream))
-	if err != nil {
-		return nil, fmt.Errorf("htj2k: jpeg2000 decode failed: %w", err)
-	}
-
-	// Extract pixel data and reorder according to channel map
-	bounds := img.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-
-	// Calculate output size
-	bytesPerPixel := 0
-	for _, ch := range channels {
-		switch ch.Type {
-		case HTJ2KPixelTypeHalf:
-			bytesPerPixel += 2
-		case HTJ2KPixelTypeUint, HTJ2KPixelTypeFloat:
-			bytesPerPixel += 4
-		}
-	}
-
-	output := make([]byte, width*height*bytesPerPixel)
-
-	// Convert decoded image to EXR format
-	// This needs to handle the channel reordering from channelMap
-	if err := extractPixelData(img, output, channels, channelMap); err != nil {
+	width := channels[0].Width
+	if err := htj2kValidateChannels(channels, width); err != nil {
 		return nil, err
 	}
+	offsets, bytesPerLine := htj2kLineLayout(channels)
+	codestream := src[headerSize:]
 
-	return output, nil
-}
-
-// htj2kDecompressFloat handles FLOAT channel decompression via DecodeFloat.
-func htj2kDecompressFloat(codestream []byte, channels []HTJ2KChannelInfo, channelMap []uint16) ([]byte, error) {
-	floatImg, err := jpeg2000.DecodeFloat(bytes.NewReader(codestream))
-	if err != nil {
-		return nil, fmt.Errorf("htj2k: jpeg2000 float decode failed: %w", err)
+	allHalf, anyHalf := htj2kAllHalf(channels)
+	if anyHalf && !allHalf {
+		return nil, errors.New("htj2k: mixed HALF and 32-bit channels not supported")
 	}
 
-	width, height := floatImg.Width, floatImg.Height
-	numComponents := len(channels)
-	bytesPerPixel := numComponents * 4
-	output := make([]byte, width*height*bytesPerPixel)
+	n := len(channels)
+	var output []byte
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			pixelIdx := y*width + x
-			pixelOffset := pixelIdx * bytesPerPixel
-
-			for j2kComp := 0; j2kComp < numComponents && j2kComp < floatImg.ComponentCount(); j2kComp++ {
-				outCh := channelMap[j2kComp]
-				val := floatImg.Components[j2kComp][pixelIdx]
-				bits := math.Float32bits(val)
-				binary.LittleEndian.PutUint32(output[pixelOffset+int(outCh)*4:], bits)
-			}
+	if allHalf {
+		img, err := jpeg2000.DecodeHalf(bytes.NewReader(codestream))
+		if err != nil {
+			return nil, fmt.Errorf("htj2k: jpeg2000 half decode failed: %w", err)
 		}
-	}
-
-	return output, nil
-}
-
-// extractPixelData extracts pixel data from a decoded JPEG 2000 image
-func extractPixelData(img image.Image, dst []byte, channels []HTJ2KChannelInfo, channelMap []uint16) error {
-	bounds := img.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-
-	// Calculate byte offsets for each channel in the output
-	channelOffsets := make([]int, len(channels))
-	offset := 0
-	for i, ch := range channels {
-		channelOffsets[i] = offset
-		switch ch.Type {
-		case HTJ2KPixelTypeHalf:
-			offset += 2
-		case HTJ2KPixelTypeUint:
-			offset += 4
+		if img.Width != width || img.ComponentCount() != n {
+			return nil, fmt.Errorf("htj2k: codestream is %dx%d with %d components; the chunk declares %d wide with %d channels",
+				img.Width, img.Height, img.ComponentCount(), width, n)
 		}
-	}
-	bytesPerPixel := offset
-
-	// Create inverse channel map (J2K component -> output channel)
-	inverseMap := make([]int, len(channelMap))
-	for outCh, j2kComp := range channelMap {
-		if int(j2kComp) < len(inverseMap) {
-			inverseMap[j2kComp] = outCh
-		}
-	}
-
-	// Extract based on image type
-	switch src := img.(type) {
-	case *image.Gray16:
-		if len(channels) != 1 {
-			return errors.New("htj2k: Gray16 image but multiple channels expected")
-		}
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
-				gray := src.Gray16At(x, y)
-				dstOffset := (y*width + x) * bytesPerPixel
-				binary.LittleEndian.PutUint16(dst[dstOffset:], gray.Y)
-			}
-		}
-
-	case *image.NRGBA64:
-		// Handle multi-channel images
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
-				c := src.NRGBA64At(x, y)
-				dstOffset := (y*width + x) * bytesPerPixel
-
-				// Write channels in correct order using inverse map
-				for j2kComp := 0; j2kComp < len(channelMap); j2kComp++ {
-					outCh := inverseMap[j2kComp]
-					chOffset := channelOffsets[outCh]
-
-					var val uint16
-					switch j2kComp {
-					case 0:
-						val = c.R
-					case 1:
-						val = c.G
-					case 2:
-						val = c.B
-					case 3:
-						val = c.A
-					}
-
-					if channels[outCh].Type == HTJ2KPixelTypeHalf {
-						binary.LittleEndian.PutUint16(dst[dstOffset+chOffset:], val)
-					}
+		output = make([]byte, bytesPerLine*img.Height)
+		for y := 0; y < img.Height; y++ {
+			line := output[y*bytesPerLine:]
+			for comp := 0; comp < n; comp++ {
+				row := line[offsets[channelMap[comp]]:]
+				srcRow := img.Components[comp][y*width : (y+1)*width]
+				for x := 0; x < width; x++ {
+					binary.LittleEndian.PutUint16(row[x*2:], srcRow[x])
 				}
 			}
 		}
-
-	default:
-		// Generic fallback using color.Model
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
-				c := img.At(x, y)
-				gray := color.Gray16Model.Convert(c).(color.Gray16)
-				dstOffset := (y*width + x) * bytesPerPixel
-				binary.LittleEndian.PutUint16(dst[dstOffset:], gray.Y)
+	} else {
+		img, err := jpeg2000.DecodeFloat(bytes.NewReader(codestream))
+		if err != nil {
+			return nil, fmt.Errorf("htj2k: jpeg2000 float decode failed: %w", err)
+		}
+		if img.Width != width || img.ComponentCount() != n {
+			return nil, fmt.Errorf("htj2k: codestream is %dx%d with %d components; the chunk declares %d wide with %d channels",
+				img.Width, img.Height, img.ComponentCount(), width, n)
+		}
+		output = make([]byte, bytesPerLine*img.Height)
+		for y := 0; y < img.Height; y++ {
+			line := output[y*bytesPerLine:]
+			for comp := 0; comp < n; comp++ {
+				row := line[offsets[channelMap[comp]]:]
+				srcRow := img.Components[comp][y*width : (y+1)*width]
+				for x := 0; x < width; x++ {
+					binary.LittleEndian.PutUint32(row[x*4:], math.Float32bits(srcRow[x]))
+				}
 			}
 		}
 	}
 
-	return nil
+	if expectedSize > 0 && len(output) != expectedSize {
+		return nil, fmt.Errorf("htj2k: decoded %d bytes, the chunk declares %d", len(output), expectedSize)
+	}
+	return output, nil
 }
 
 // HTJ2KDecompressTo decompresses into a pre-allocated buffer
