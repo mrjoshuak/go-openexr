@@ -122,10 +122,10 @@ that — no claim either way, not a known failure:
 | ZIP             | verified, every sample      | verified, every sample      |
 | PIZ             | verified, every sample      | verified, every sample      |
 | PXR24           | verified, every sample      | not covered                 |
-| B44 / B44A      | spot-checked only           | not covered                 |
-| DWAA / DWAB     | **fails** (see below)       | not covered                 |
+| B44 / B44A      | verified, every sample      | verified via oiiotool       |
+| DWAA / DWAB     | verified, every sample      | verified (96 cases)         |
 | HTJ2K (FLOAT)   | no oracle available         | no oracle available         |
-| HTJ2K (HALF)    | **broken** (see below)      | **broken** (see below)      |
+| HTJ2K (HALF)    | no oracle available         | no oracle available         |
 
 None, RLE, ZIPS, ZIP and PIZ are covered in **both** directions by
 `exr/conformance_test.go` over `exr/testdata/conformance/`. The read side is
@@ -134,22 +134,24 @@ additionally covered by `TestReferenceImagesDecodeExactly` against the official
 corpus, which contains 7 PXR24, 4 ZIP and 2 PIZ real-world images — every sample
 of all thirteen matches the reference implementation exactly.
 
-B44 is confirmed by hand to read reference-written files but has no automated
-coverage. No codec's *output* beyond the five above is checked against the
-reference; extending the corpus to the lossy codecs needs a tolerance model
-rather than exact comparison, and is outstanding work.
+B44/B44A and DWAA/DWAB are lossy, so their fixtures carry the reference's own
+readback rather than sharing a golden with an uncompressed twin — otherwise the
+test would be measuring the codec's loss instead of this library's agreement
+with the reference. B44's FLOAT and UINT passthrough channels are compared
+exactly, since the format stores them uncompressed. PXR24 has no automated
+write-side coverage yet.
 
-**HTJ2K status.** FLOAT channels round-trip exactly. **HALF channels currently
-decode to all zeros**, with no error raised — do not use HTJ2K with half-float
-images. Neither case can be checked against the reference implementation:
-OpenImageIO 3.1.16 can neither write an HTJ2K EXR nor read one this library
-produces, so "no oracle available" above means exactly that, not "verified".
+**HTJ2K has no external oracle.** OpenImageIO 3.1.16 can neither write an HTJ2K
+EXR nor read one this library produces, so "no oracle available" above means
+exactly that — not "verified" and not "known broken". Both FLOAT and HALF
+channels round-trip losslessly within this library; all 65536 half bit patterns
+survive exactly. Interoperability with OpenJPH-based readers, which is what
+OpenEXR 3.4+ uses, is not yet established.
 
-**DWAA/DWAB read limitation.** DWA chunks that use OpenEXR's static Huffman
-coding are not decodable: `compression.huffmanDecode` falls back to zlib
-(`compression/dwa.go`). DWA files written by this library read back correctly,
-but DWA files written by OpenEXR or OpenImageIO return
-`dwa: corrupt compressed data`.
+**Subsampled channels.** Channels with `ySampling > 1` are refused by the B44
+and DWA paths rather than silently misread. The chunk layout code assumes one
+row per channel per scanline, so the other codecs do not handle them correctly
+either; OpenImageIO refuses such files outright.
 
 See [docs/CONFORMANCE.md](docs/CONFORMANCE.md) for how conformance is tested and
 why round-trip tests alone are not sufficient.

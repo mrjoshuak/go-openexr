@@ -35,15 +35,9 @@ jobs:
       # -race also enables checkptr, which catches invalid unsafe.Pointer
       # arithmetic. Without this the suite can be green while the package has
       # undefined behaviour in its strided frame buffer accessors.
-      #
-      # HTJ2K is skipped because go-jpeg2000 v1.2.1 races on a shared *T1 inside
-      # its parallel tile encoder (entropy.(*T1).EncodeFast5 writing while
-      # entropy.(*T1).TruncationPoints reads). The race is in the dependency,
-      # not here; everything go-openexr owns is race-clean. Remove the skip once
-      # the dependency is fixed.
       - name: Run tests with race detector
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.24'
-        run: go test -race -skip 'HTJ2K' ./...
+        run: go test -race ./...
 
       - name: Run tests with coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.24'

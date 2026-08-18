@@ -5,7 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-08-17
+
+**Every compression codec now interoperates with the OpenEXR reference
+implementation.** B44/B44A and DWAA/DWAB join the codecs fixed in 1.3.0, and
+HTJ2K's data race is resolved by the dependency bump.
+
+### Changed
+- `go-jpeg2000` raised to v1.3.0, which fixes a data race in its parallel tile
+  encoder, brings HTJ2K code-block dimensions into ISO/IEC 15444-1 conformance,
+  and hardens its decoder against malformed input. CI now runs `go test -race`
+  with no exclusions.
+
+### Deprecated
+- `CompressDWAA`, `CompressDWAB`, `DecompressDWAA`, `DecompressDWAB`,
+  `DwaCompressor`, `DwaDecompressor` and `DwaChannelData` still exist and still
+  compile, but now delegate to `DWACompress` / `DWADecompress`. Their signatures
+  carry no channel list, and DWA classifies each channel by name into a
+  colour-space-converted triple, an RLE-coded alpha or a lossless passthrough —
+  so the old API could only ever describe a single HALF channel, and did not
+  produce a codestream any conforming reader could decode. They now do, for that
+  one case. Use the new entry points for anything else.
 
 ### Fixed
 - **DWAA/DWAB now read files written by the OpenEXR reference implementation,
