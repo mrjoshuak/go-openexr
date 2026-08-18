@@ -45,6 +45,23 @@ Known: `go test -fuzz` at the default 16 workers can still be OOM-killed on a
 machine under load, because each worker loads the ~39 MB corpus. That is worker
 count times corpus size, not a library allocation; `-parallel=4` runs clean.
 
+### Codec gaps closed (v1.4.0, 2026-08-17)
+
+- [x] B44/B44A FLOAT and UINT passthrough — verified bit-exact against
+      reference-written mixed-type files
+- [x] DWAA/DWAB static Huffman decode — matches the reference's own readback to
+      within one half-ULP across a 48-case read sweep and 96 write cases
+- [x] HTJ2K HALF channels — all 65536 half bit patterns survive exactly
+      (needed go-jpeg2000 v1.3.0)
+- [x] go-jpeg2000 v1.3.0: parallel-encode race, HTJ2K code-block conformance
+      (ISO/IEC 15444-1 Table A.18), decoder hardening; CI race job no longer
+      skips HTJ2K
+- [ ] PXR24 has no automated write-side coverage
+- [ ] HTJ2K has no external oracle: OpenImageIO can neither write nor read it.
+      OpenJPH interop is blocked on go-jpeg2000 not setting Rsiz bit 14 in SIZ
+      alongside its CAP marker, so OpenEXR 3.4+ still will not read our output.
+- [ ] `opj_decompress` parses our codestreams but recovers no coefficients
+
 ### Test integrity work
 
 - [x] Conformance corpus with external ground truth (`exr/testdata/conformance/`)
