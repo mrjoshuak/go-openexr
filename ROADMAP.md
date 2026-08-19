@@ -61,8 +61,8 @@ code-blocks the rectangle can reach.
 
 ## Now
 
-Nothing. Every item that was here is below, done. The next section is the one
-after that.
+Nothing open. Every item that stood here is struck through below, with what it
+measured. The work that remains is under Later.
 
 ### ~~Codestream-level decode through the EXR API~~ — done, and measured
 
