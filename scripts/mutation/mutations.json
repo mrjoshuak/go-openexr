@@ -841,6 +841,175 @@
         "existing": "survived",
         "added": "killed"
       }
+    },
+    {
+      "id": "tiled-offset-write-order",
+      "codec": "Tiled",
+      "description": "tile offset table indexed by write order instead of tile coordinate",
+      "spec": "OpenEXR file layout: a tiled part's chunk offset table is indexed by tile coordinate (level major, y level major for a ripmap, then tile row, then column). A reader looks a tile up by coordinate, so a table built in write order is only correct for the canonical order.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/file.go",
+          "count": 1,
+          "old": "\t\tif idx, err = tileChunkIndex(w.headers[part], tileX, tileY, levelX, levelY); err != nil {",
+          "new": "\t\tif idx, err = w.chunkIndex[part], error(nil); err != nil {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestTiledWriterWithMipmap"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestTiledWriterOffsetTableIsIndexedByCoordinate"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "tiled-subsampling-guard",
+      "codec": "Tiled",
+      "description": "Header.Validate stops rejecting subsampled channels on a tiled header",
+      "spec": "The format forbids subsampled channels in a tiled image; the reference refuses to open one with 'x subsampling factor is not 1 for a tiled image'.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/header.go",
+          "count": 1,
+          "old": "\t\t\tif ch.XSampling != 1 || ch.YSampling != 1 {",
+          "new": "\t\t\tif false {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartOutputFileWriteTile"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestValidateRejectsSubsampledTiledChannels"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "multipart-version-tiled-flag",
+      "codec": "MultiPart",
+      "description": "multi-part version field sets the tiled flag alongside the multi-part flag",
+      "spec": "The tiled and multi-part version flags are mutually exclusive: a multi-part file states each part's storage in that part's own type attribute. OpenEXR rejects the combination with EXR_ERR_FILE_BAD_HEADER.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/file.go",
+          "count": 1,
+          "old": "\twriter.versionField = MakeVersionField(2, false, false, false, true)",
+          "new": "\twriter.versionField = MakeVersionField(2, true, false, false, true)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartOutputFileWriteTile"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartVersionFlags"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "multipart-datawindow-origin",
+      "codec": "MultiPart",
+      "description": "multi-part scanline part addresses the frame buffer in image coordinates instead of relative to the data window",
+      "spec": "Everywhere else in this package the frame buffer's (0,0) is the pixel at the data window's origin. A part whose data window does not start at y=0 is otherwise shifted by the origin. Unlike the others here, the pre-existing TestMultiPartOutputFile does catch this one, so it is recorded as killed in both phases: the defect shipped despite having signal in the suite, not for want of it.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/multipart.go",
+          "count": 1,
+          "old": "buildScanlineData(p.frameBuffer, cl, width, chunkY-minY, linesInChunk)",
+          "new": "buildScanlineData(p.frameBuffer, cl, width, chunkY, linesInChunk)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartOutputFile"
+        },
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartOutputFileWithCompression"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartDataWindowOrigin"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "killed"
+      }
+    },
+    {
+      "id": "deep-scanline-header-size",
+      "codec": "Deep",
+      "description": "deep scanline chunk header shortened to 20 bytes, dropping unpackedSizeOfSampleData, in writer and header size together \u2014 the shipped defect exactly",
+      "spec": "A deep scanline chunk header is int y + three uint64: packed offset-table size, packed sample-data size, unpacked sample-data size. Nothing else in the chunk says how many samples it holds.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/file.go",
+          "count": 1,
+          "old": "\tdeepScanlineChunkHeaderSize = 28 // int y + 3 x uint64",
+          "new": "\tdeepScanlineChunkHeaderSize = 20 // int y + 3 x uint64"
+        },
+        {
+          "file": "exr/deep.go",
+          "count": 1,
+          "old": "\txdr.ByteOrder.PutUint64(chunkHeader[20:28], uint64(len(uncompressedPixelData)))\n",
+          "new": ""
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepScanlineRoundTrip"
+        },
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepScanlinePixelDataRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepScanlineChunkWireFormat"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

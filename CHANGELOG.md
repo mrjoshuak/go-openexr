@@ -12,7 +12,10 @@ in the write direction, and deep images in both. Thirteen defects fell out of
 the first runs. Every one of them produced a file the reference refuses to open or
 reads wrongly, and every one was invisible to the existing suite, because a round
 trip reads a file back with the same assumption that wrote it. The gate grew
-from 44 checks to 157, and prints ten measured gaps on every run.
+from 44 checks to 157, and prints ten measured gaps on every run. Five new
+entries in `scripts/mutation/mutations.json` reproduce these defects and
+confirm the new checks die on them — for four of the five, the pre-existing
+round-trip tests stay green, which is the false-assurance shape itself.
 
 ### Fixed
 - **A tile's offset was recorded in the slot the write arrived in, not the slot
