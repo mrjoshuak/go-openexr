@@ -76,6 +76,22 @@ without decompressing the whole chunk, when the bytes read are demonstrably a
 subset of the chunk rather than the whole of it, and when the result matches a
 full decode downsampled to the same resolution.
 
+### Expose the chunk offset table for indexed reads
+
+An EXR carries a chunk offset table immediately after the header, giving the
+byte offset of every chunk. That is the outer half of the index a sequence
+player needs: the table locates the chunk, and go-jpeg2000's packet length
+markers locate the packets inside it. Together they map a frame's byte ranges
+from a few kilobytes read near the front of the file, which is what makes a
+rolling prefetch across a frame sequence practical rather than chatty.
+
+The table is parsed today to find chunks, but nothing exposes it, so a caller
+cannot plan reads without opening and walking the file.
+
+Done when a caller can obtain the offset and length of any chunk without
+decompressing it, and the two indexes compose: a viewport at a chosen
+resolution resolves to a set of byte ranges before any pixel data is read.
+
 ### Correct the tests that still deny HTJ2K works
 
 `exr.TestHTJ2K_NotSupported` and `TestCompliance_Summary` state that HTJ2K is
