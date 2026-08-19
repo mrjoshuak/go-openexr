@@ -675,7 +675,6 @@ $(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
 		done <"$TDIR/guards.tsv"
 
 		# ---- measured gaps ------------------------------------------------
-		note "GAP: the tiled READ direction is not gated — exrmaketiled can write tiled fixtures, but nothing here asks this library to read one back and compare, so the tiled read path rests on round trips"
 		note "GAP: the contents of generated mipmap/ripmap levels are not gated — the format specifies no downsampling filter, so only level placement and encoding are checked; nothing external can say what level 3 should contain"
 		note "GAP: b44a and both htj2k compressions are not exercised over tiles — the scanline matrix covers them, the tiled chunk path does not"
 	fi
@@ -1008,7 +1007,6 @@ else
 		note "GAP: deep parts in a multi-part file are not gated — MultiPartOutputFile exposes only WritePixels and WriteTile, so this library cannot write a deepscanline or deeptiled part into a multi-part file at all"
 		note "GAP: ripmapped tiled parts inside a multi-part file are not gated — the mipmapped part above covers one level per step, but a ripmap's independent x and y levels are a different chunk offset table and are unexercised"
 		note "GAP: subsampled channels (XSampling or YSampling above 1) are not gated in multi-part parts"
-		note "GAP: the multi-part READ direction is not gated — the reference can write multi-part files (the control above is one), but nothing here asks this library to read one back and compare, so MultiPartInputFile rests on round trips"
 	fi
 fi
 
@@ -1243,6 +1241,244 @@ fi
 		note "GAP: deep mipmap and ripmap levels are not gated — DeepTiledWriter writes LevelModeOne only, and no deep mipmapped fixture could be produced with oiiotool 3.1.16 to gate ReadTileLevel above level 0 against"
 		note "GAP: writing deep parts into a multi-part file is not gated — MultiPartOutputFile has no deep entry point; reading multi-part deep is gated, scanline and tiled"
 		note "GAP: deep sample semantics are not asserted — Z-sorted and non-overlapping ordering, deepImageState and alpha premultiplication; only that samples return in the order written"
+# ---------------------------------------------------------------------------
+# 8. The read direction for tiled files.
+#
+#    Sections 5 to 7 all run the same way round: this library writes, the
+#    reference reads. That leaves the readers resting on round trips, and a
+#    round trip cannot see a convention the reader and the writer share — which
+#    is the exact shape of every defect this gate has found so far.
+#
+#    So here nothing this library wrote is involved. exrmaketiled writes the
+#    fixture, scripts/exrtiledump reads it with libOpenEXR and prints every
+#    sample of every level, scripts/exrtileread reads the same file with this
+#    library and prints the same format, and scripts/tilecmp.awk compares them
+#    by key. A missing sample and an invented one are reported separately from
+#    a wrong one, so a reader that silently drops a level cannot pass on the
+#    levels it did produce.
+#
+#    A control runs first — the two dumps of a file both tools agree on — and a
+#    signal check confirms the comparator reports a difference when handed a
+#    deliberately mismatched pair.
+# ---------------------------------------------------------------------------
+section "external oracle (tiled read direction: the reference writes, this library reads)"
+
+if ! command -v exrmaketiled >/dev/null 2>&1; then
+	skip "exrmaketiled not installed; the reference cannot write tiled fixtures (brew install openexr)"
+elif ! command -v oiiotool >/dev/null 2>&1; then
+	skip "oiiotool not installed; the base image for exrmaketiled cannot be generated"
+elif [ "$build_ok" = "0" ]; then
+	skip "tiled read direction (build failed)"
+elif [ ! -x "$TILEDUMP" ]; then
+	skip "tiled read direction (exrtiledump could not be built against the reference)"
+else
+	RDIR="$WORK/tiledread"
+	mkdir -p "$RDIR"
+	TILEREAD="$WORK/exrtileread"
+
+	if ! go build -o "$TILEREAD" ./scripts/exrtileread/ 2>"$RDIR/build.err"; then
+		fail "could not build scripts/exrtileread: $(head -1 "$RDIR/build.err")"
+	else
+		# Two base images: one whose dimensions are a whole number of tiles, and
+		# one whose are not, so partial tiles on both edges are exercised.
+		oiiotool --pattern noise:type=uniform 64x48 3 -d half -o "$RDIR/base_even.exr" >/dev/null 2>&1
+		oiiotool --pattern noise:type=uniform 37x23 3 -d half -o "$RDIR/base_odd.exr" >/dev/null 2>&1
+		oiiotool "$RDIR/base_even.exr" --origin +17-9 --fullpixels -o "$RDIR/base_off.exr" >/dev/null 2>&1
+
+		if [ ! -s "$RDIR/base_even.exr" ] || [ ! -s "$RDIR/base_odd.exr" ]; then
+			fail "oiiotool could not write the base images for the tiled read direction"
+		else
+			# ---- control: the oracle and this library must agree on a file
+			# neither of them wrote, before any of it is believed.
+			exrmaketiled -t 16 16 "$RDIR/base_even.exr" "$RDIR/ctl.exr" >/dev/null 2>&1
+			if [ ! -s "$RDIR/ctl.exr" ]; then
+				fail "control: exrmaketiled could not write a tiled file"
+			else
+				"$TILEDUMP" "$RDIR/ctl.exr" >"$RDIR/ctl.ref" 2>"$RDIR/ctl.referr"
+				if [ ! -s "$RDIR/ctl.ref" ]; then
+					fail "control: the reference could not read its own tiled file: $(head -1 "$RDIR/ctl.referr" | cut -c1-110)"
+				else
+					pass "control: the reference reads its own exrmaketiled output ($(grep -cv '^#' "$RDIR/ctl.ref") samples)"
+
+					# ---- signal: the comparator must fail when it should.
+					"$TILEDUMP" "$RDIR/ctl.exr" | sed 's/ \([0-9.eE+-]*\)$/ 99999/' >"$RDIR/ctl.wrong"
+					sig=$(awk -f "$REPO/scripts/tilecmp.awk" "$RDIR/ctl.ref" "$RDIR/ctl.wrong")
+					case "$sig" in
+					*maxerr=0*) fail "signal: tilecmp reported no difference against deliberately wrong values ($sig)" ;;
+					*) pass "signal: tilecmp reports the difference it is given ($sig)" ;;
+					esac
+				fi
+			fi
+
+			# ---- the matrix: level mode x compression x tile fit.
+			for base in even odd off; do
+				case $base in
+				even) tile="16 16" ;;
+				odd) tile="8 8" ;;
+				off) tile="16 16" ;;
+				esac
+				[ -s "$RDIR/base_$base.exr" ] || continue
+				for mode in one m r; do
+					case $mode in
+					one) flag="" ;;
+					m) flag="-m" ;;
+					r) flag="-r" ;;
+					esac
+					for codec in none zip piz b44; do
+						name="${base}_${mode}_${codec}"
+						# shellcheck disable=SC2086
+						exrmaketiled $flag -t $tile -z $codec \
+							"$RDIR/base_$base.exr" "$RDIR/$name.exr" >/dev/null 2>&1
+						if [ ! -s "$RDIR/$name.exr" ]; then
+							note "GAP: exrmaketiled would not write $name; no fixture, so nothing measured"
+							continue
+						fi
+						"$TILEDUMP" "$RDIR/$name.exr" >"$RDIR/$name.ref" 2>/dev/null
+						if [ ! -s "$RDIR/$name.ref" ]; then
+							fail "read $name: the reference could not read the file it just wrote"
+							continue
+						fi
+						if ! "$TILEREAD" "$RDIR/$name.exr" >"$RDIR/$name.got" 2>"$RDIR/$name.err"; then
+							fail "read $name: this library could not read a file the reference wrote: $(head -1 "$RDIR/$name.err" | cut -c1-110)"
+							continue
+						fi
+						line=$(awk -f "$REPO/scripts/tilecmp.awk" "$RDIR/$name.ref" "$RDIR/$name.got")
+						missing=$(printf '%s' "$line" | sed -n 's/.*missing=\([0-9]*\).*/\1/p')
+						extra=$(printf '%s' "$line" | sed -n 's/.*extra=\([0-9]*\).*/\1/p')
+						maxerr=$(printf '%s' "$line" | sed -n 's/.*maxerr=\([^ ]*\).*/\1/p')
+						if [ "$missing" != "0" ] || [ "$extra" != "0" ]; then
+							fail "read $name: this library and the reference disagree about which samples exist ($line)"
+						elif [ "$maxerr" != "0" ]; then
+							fail "read $name: this library read a file the reference wrote and got different values ($line)"
+						else
+							pass "read $name: every sample of every level matches the reference's own reading ($line)"
+						fi
+					done
+				done
+			done
+
+			note "GAP: uint32 tiled fixtures are not read-gated — oiiotool 3.1.16 will not write a uint EXR for exrmaketiled to tile; the write direction covers uint through the pixel-type matrix"
+		fi
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# 9. The read direction for multi-part files.
+#
+#    Same argument as section 8, and the same shape. oiiotool writes a
+#    multi-part file, scripts/exrmpread reads it with this library and writes
+#    one PFM per part per channel, and the reference is asked for the same
+#    channel of the same part. The two are compared with every oiiotool
+#    threshold pinned to zero, so PASS means bit-identical rather than close.
+#
+#    Note what the fixture itself measured: the reference refuses to write
+#    parts that disagree about the display window, which is the rule
+#    NewMultiPartWriter enforces as ErrConflictingAttributes. The fixtures
+#    below therefore share a display window and differ in everything else.
+# ---------------------------------------------------------------------------
+section "external oracle (multi-part read direction: the reference writes, this library reads)"
+
+if ! command -v oiiotool >/dev/null 2>&1; then
+	skip "oiiotool not installed; the reference cannot write multi-part fixtures (brew install openimageio)"
+elif [ "$build_ok" = "0" ]; then
+	skip "multi-part read direction (build failed)"
+else
+	MDIR="$WORK/mpread"
+	mkdir -p "$MDIR"
+	MPREAD="$WORK/exrmpread"
+
+	if ! go build -o "$MPREAD" ./scripts/exrmpread/ 2>"$MDIR/build.err"; then
+		fail "could not build scripts/exrmpread: $(head -1 "$MDIR/build.err")"
+	else
+		# Two parts that differ in pixel type, channel layout and name, sharing
+		# the display window the format requires them to share.
+		oiiotool --pattern noise:type=uniform 48x32 3 -d half \
+			--attrib oiio:subimagename beauty -o "$MDIR/a.exr" >/dev/null 2>&1
+		oiiotool --pattern noise:type=uniform 48x32 1 -d float --chnames Z \
+			--attrib oiio:subimagename depth -o "$MDIR/b.exr" >/dev/null 2>&1
+		oiiotool --pattern noise:type=uniform 48x32 3 -d half --tile 16 16 \
+			--compression zip --attrib oiio:subimagename tiled -o "$MDIR/c.exr" >/dev/null 2>&1
+
+		oiiotool "$MDIR/a.exr" "$MDIR/b.exr" --siappend -o "$MDIR/mp_scan.exr" >/dev/null 2>&1
+		oiiotool "$MDIR/a.exr" "$MDIR/c.exr" --siappend -o "$MDIR/mp_tiled.exr" >/dev/null 2>&1
+
+		if [ ! -s "$MDIR/mp_scan.exr" ]; then
+			fail "oiiotool could not write a multi-part fixture; the read direction cannot be measured"
+		else
+			# ---- control: the reference must be able to read back the part and
+			# channel it just wrote, or a later FAILURE means nothing.
+			mp_extract "$MDIR/mp_scan.exr" 0 0 R "$MDIR/ctl.pfm" >/dev/null 2>&1
+			if [ ! -s "$MDIR/ctl.pfm" ]; then
+				fail "control: the reference could not extract a channel from its own multi-part file"
+			else
+				pass "control: the reference reads a part and channel out of its own multi-part file"
+			fi
+
+			for f in mp_scan mp_tiled; do
+				[ -s "$MDIR/$f.exr" ] || { note "GAP: oiiotool would not write $f.exr; nothing measured for it"; continue; }
+				rm -rf "$MDIR/${f}_out"
+				if ! "$MPREAD" "$MDIR/$f.exr" "$MDIR/${f}_out" >"$MDIR/$f.parts" 2>"$MDIR/$f.err"; then
+					fail "read $f: this library could not read a multi-part file the reference wrote: $(head -1 "$MDIR/$f.err" | cut -c1-110)"
+					continue
+				fi
+
+				# Structure: the part count this library reports must be the
+				# count the reference wrote, so a reader that finds one part in
+				# a two-part file fails here rather than passing on the part it
+				# did find.
+				ours=$(grep -c '^part ' "$MDIR/$f.parts")
+				theirs=$(oiiotool --info -v "$MDIR/$f.exr" 2>/dev/null | grep -c '^ *subimage ')
+				if [ "$theirs" = "0" ]; then
+					theirs=$(exrheader "$MDIR/$f.exr" 2>/dev/null | grep -c '^ *name (type string)')
+				fi
+				if [ "$ours" = "$theirs" ] && [ "$ours" != "0" ]; then
+					pass "read $f: this library finds the same $ours parts the reference wrote"
+				else
+					fail "read $f: this library found $ours parts, the reference wrote $theirs"
+				fi
+
+				# Pixels: every channel of every part, bit for bit.
+				while read -r _ pnum _ _ _ _ _ _ chans; do
+					for ch in $(printf '%s' "$chans" | tr ',' ' '); do
+						ref="$MDIR/${f}_ref_p${pnum}_${ch}.pfm"
+						got="$MDIR/${f}_out/p${pnum}_l0_${ch}.pfm"
+						if [ ! -s "$got" ]; then
+							fail "read $f part $pnum channel $ch: this library produced no samples"
+							continue
+						fi
+						out=$(mp_extract "$MDIR/$f.exr" "$pnum" 0 "$ch" "$ref")
+						if [ ! -s "$ref" ]; then
+							fail "read $f part $pnum channel $ch: the reference could not extract it ($(mp_reason "$out"))"
+							continue
+						fi
+						d=$(mp_diff "$ref" "$got")
+						case "$(mp_verdict "$d")" in
+						PASS) pass "read $f part $pnum channel $ch: bit-identical to the reference's own reading" ;;
+						FAILURE) fail "read $f part $pnum channel $ch: this library read a file the reference wrote and got different values (max error $(mp_maxerr "$d"))" ;;
+						*) fail "read $f part $pnum channel $ch: the reference could not compare ($(mp_reason "$d"))" ;;
+						esac
+					done
+				done <"$MDIR/$f.parts"
+			done
+
+			# ---- signal: comparing two channels that genuinely differ must
+			# report FAILURE, or every PASS above is worthless.
+			if [ -s "$MDIR/mp_scan_out/p0_l0_R.pfm" ]; then
+				mp_extract "$MDIR/mp_scan.exr" 0 0 G "$MDIR/sig.pfm" >/dev/null 2>&1
+				sd=$(mp_diff "$MDIR/sig.pfm" "$MDIR/mp_scan_out/p0_l0_R.pfm")
+				case "$(mp_verdict "$sd")" in
+				FAILURE) pass "signal: the reference reports a difference between two channels that differ" ;;
+				*) fail "signal: the reference reported no difference between two channels that differ; the comparison above proves nothing" ;;
+				esac
+			fi
+
+			note "GAP: mipmapped and ripmapped parts are not read-gated — oiiotool 3.1.16 writes a one-level file for -o:mipmap=1 and drops levels on --siappend, so no reference-written multi-level multi-part fixture could be produced; single-part mipmap and ripmap reads are gated in section 8"
+			note "GAP: deep parts inside a multi-part file are not read-gated here — a PFM cannot carry a varying sample count; the deep section gates deep reads, including multi-part deep"
+		fi
+	fi
+fi
+
+
 
 section "result"
 echo "checks run: $checked, failures: $failures, skipped: $skips"

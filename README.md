@@ -254,17 +254,20 @@ by mutating the code under them. Coverage counted every one of those as covered.
 
 What the guarantees actually rest on:
 
-1. `scripts/validate.sh` — 157 checks against the OpenEXR reference
-   implementation, both directions, failing the build on any regression. It
-   covers the pixel-type by compression matrix; tiled writing, with plain,
-   mipmapped and ripmapped fixtures read back level by level by a program
-   linked against libOpenEXR itself; multi-part files read back part by part,
-   level by level and channel by channel; and deep images sample by sample, in
-   both directions. Each area runs a control and a signal check that must fail,
-   so a broken oracle stays distinguishable from a defect.
+1. `scripts/validate.sh` — 209 checks against the OpenEXR reference
+   implementation, in both directions, failing the build on any regression. It
+   covers the pixel-type by compression matrix; tiled images, with plain,
+   mipmapped and ripmapped fixtures compared level by level against a program
+   linked against libOpenEXR itself; multi-part files, part by part, level by
+   level and channel by channel; and deep images sample by sample. Every storage
+   type is checked both ways — files this library wrote read by the reference,
+   and files the reference wrote read by this library. Each area runs a control
+   and a signal check that must fail, so a broken oracle stays distinguishable
+   from a defect.
 2. `scripts/mutation/run.py` — deliberately breaks a codec and records whether
-   the tests notice. Currently 11 of 20 mutations survive the pre-existing
-   tests; all 15 covered by the added spec-anchored tests are killed.
+   the tests notice. Of 26 mutations, 16 survive the pre-existing tests — that
+   is the measurement, not a complaint — and every one of the 21 covered by an
+   added spec-anchored test is killed by it.
 3. Line coverage, which says only that a line ran.
 
 See [PROGRESS.md](PROGRESS.md) for detailed implementation status and

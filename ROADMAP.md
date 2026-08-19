@@ -140,11 +140,14 @@ CHANGELOG). Controls run first: the reference's own `exrmaketiled` output must
 satisfy the same expectation, and the comparator must fail when it is given a
 mismatched pair.
 
-What remains open:
+The read direction is now gated too, and it found the worst defect in this
+repository's history. exrmaketiled writes 36 fixtures — one level, mipmap and
+ripmap, four codecs, tile sizes that divide the image and tile sizes that do
+not, and a data window at (17, -9) — `scripts/exrtiledump` reads each with
+libOpenEXR, `scripts/exrtileread` reads the same file with this library, and the
+two dumps are compared sample by sample. Nothing this library wrote takes part.
 
-- **The read direction.** No reference-written tiled fixture is read by this
-  library in the gate; the tiled read path is still only exercised by round
-  trips and by the mipmapped files in the conformance corpus.
+What remains open:
 - **Generated level contents.** The format specifies no downsampling filter, so
   for `WriteMipmapTiledImage` and `WriteRipmapTiledImage` only the container is
   gated — that each generated level lands where it belongs and encodes
@@ -198,8 +201,20 @@ What remains open:
 Multi-part files are now gated: `scripts/multipartgen` writes parts that differ
 in data window, compression, channel layout and storage type, and the reference
 reads each one back sample for sample. Five defects came out of it, all in
-CHANGELOG. Three cases remain outside it, and `validate.sh` prints them as gaps
-on every run rather than leaving them unsaid:
+CHANGELOG.
+
+The read direction is gated too: oiiotool writes multi-part fixtures — a
+scanline pair differing in pixel type and channel layout, and a pair with tiled
+parts — `scripts/exrmpread` reads them with this library into PFMs, and the
+reference is asked for the same channel of the same part with every difference
+threshold pinned to zero. The part count is checked as well, so a reader that
+finds one part in a two-part file fails rather than passing on the part it did
+find. Writing the fixture measured something on its own: the reference refuses
+parts that disagree about the display window, which is the rule
+`NewMultiPartWriter` enforces as `ErrConflictingAttributes`.
+
+Four cases remain outside it, and `validate.sh` prints them as gaps on every run
+rather than leaving them unsaid:
 
 - Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
   `WritePixels` and `WriteTile`, so this library cannot write one at all.
@@ -208,6 +223,10 @@ on every run rather than leaving them unsaid:
   levels are a different offset table and are unexercised.
 - Subsampled channels in multi-part parts — the same `XSampling`/`YSampling`
   gap listed above for the tiled and multi-part writers.
+- Multi-level parts in the read direction. oiiotool 3.1.16 writes a one-level
+  file for `-o:mipmap=1` and drops levels on `--siappend`, so no
+  reference-written multi-level multi-part fixture could be produced at all.
+  Single-part mipmap and ripmap reads are gated.
 
 
 ## Later

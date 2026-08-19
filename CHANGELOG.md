@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Closing the read directions for tiled and multi-part files found a memory-safety
+defect that had been present the whole time and could not be reached from any
+test this repository had, because every one of them read back through the same
+wrong arithmetic that wrote.
+
+### Fixed
+- **Reading or writing any image whose data window did not start at (0, 0)
+  wrote outside the frame buffer.** `AllocateChannels` biased `Slice.Base` by
+  the data window origin, so `PixelAddr` expected absolute image coordinates,
+  while every reader and writer in the package addresses the frame buffer
+  relative to the data window — `ScanlineWriter` computes `bufY := y - minY`,
+  and the tiled path indexes each level from zero. For a window at (17, -9) the
+  two disagreed by 1,118 bytes on a 64x48 half image, and because `Slice` writes
+  through an unchecked `unsafe.Pointer` the disagreement did not raise an error:
+  it corrupted the heap. Reading a reference-written ripmapped file with an
+  offset window crashed the Go runtime outright with `marked free object in
+  span`. A caller reading back through the same addressing saw correct values,
+  which is why no round trip ever caught it, and why the smaller cases appeared
+  to pass while silently writing out of bounds. The bias is gone; the pixel at
+  the data window's minimum corner is buffer position (0, 0), as the rest of the
+  package always assumed.
+
+### Added
+- The read direction is gated for tiled and multi-part files, so every storage
+  type in the format is now checked in both directions. `scripts/exrtileread`
+  and `scripts/exrmpread` read files the reference wrote and are compared
+  against the reference's own reading of the same file — 36 tiled fixtures
+  across three level modes, four codecs, exact and partial tile fits and an
+  offset data window; and multi-part fixtures with scanline and tiled parts,
+  compared channel by channel with every difference threshold pinned to zero.
+  Nothing this library wrote takes part in either. The gate runs 209 checks, up
+  from 157.
+- `exr/framebuffer_origin_test.go` asserts that every address a frame buffer's
+  slices can produce lies inside the buffer allocated for them, for windows with
+  positive, negative and mixed origins — the invariant whose absence hid the
+  defect above — and `scripts/mutation/mutations.json` gained an entry that
+  reintroduces the bias and confirms the new tests catch it while the existing
+  round trips stay green.
+
 ## [1.4.3] - 2026-08-19
 
 Tiled, multi-part and deep images are now gated by the reference implementation

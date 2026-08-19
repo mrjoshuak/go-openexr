@@ -61,3 +61,5 @@ CLAUDE.md
 fuzz-logs/
 /interopgen
 .docket-claims/
+/exrtileread
+/exrmpread

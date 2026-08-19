@@ -21,8 +21,8 @@ type Slice struct {
 	// Type is the pixel data type stored in this slice.
 	Type PixelType
 
-	// Base is a pointer to the pixel at (0, 0) in the slice's coordinate system.
-	// This may point before the actual allocated memory for windows with non-zero origin.
+	// Base is a pointer to the pixel at (0, 0) in the slice's coordinate
+	// system, which is the pixel at the data window's minimum corner.
 	Base unsafe.Pointer
 
 	// XStride is the number of bytes between adjacent pixels in the same row.
@@ -96,9 +96,17 @@ func NewSliceFromUint32(data []uint32, width, height int) Slice {
 	}
 }
 
-// PixelAddr returns the address of the pixel at (x, y).
-// The returned pointer may be outside the allocated buffer for data windows
-// with non-zero origin, which is intentional for OpenEXR's addressing model.
+// PixelAddr returns the address of the pixel at (x, y), where (0, 0) is the
+// pixel at the data window's minimum corner.
+//
+// The coordinates are relative to the data window, not absolute image
+// coordinates. Callers that hold image coordinates must subtract the data
+// window's origin first, as the scanline and tiled paths do.
+//
+// No bounds check is performed and the result is written through directly, so
+// a coordinate outside the slice's window corrupts memory rather than
+// producing an error. A Slice built by hand must have a Base, strides and
+// extent that agree.
 //
 //go:nocheckptr
 func (s *Slice) PixelAddr(x, y int) unsafe.Pointer {
@@ -549,15 +557,14 @@ func AllocateChannelsLimit(cl *ChannelList, dataWindow Box2i, maxBytes int64) (*
 			YSampling: int(ch.YSampling),
 		}
 
-		// Adjust base pointer for data window origin
-		if dataWindow.Min.X != 0 || dataWindow.Min.Y != 0 {
-			// Move base pointer so that pixel at dataWindow.Min maps to buffer[0]
-			// We need to subtract the offset
-			xOffset := -int(dataWindow.Min.X) / int(ch.XSampling)
-			yOffset := -int(dataWindow.Min.Y) / int(ch.YSampling)
-			offset := yOffset*slice.YStride + xOffset*slice.XStride
-			slice.Base = unsafe.Pointer(uintptr(slice.Base) + uintptr(offset))
-		}
+		// No origin bias. The pixel at dataWindow.Min is buffer position
+		// (0, 0), which is how every reader and writer in this package
+		// addresses a frame buffer — ScanlineWriter computes "bufY := y - minY"
+		// and the tiled path indexes each level from zero. Biasing Base here so
+		// that PixelAddr took absolute image coordinates instead put every
+		// access to a non-origin window outside its own buffer, and since Slice
+		// writes through an unchecked unsafe.Pointer that corrupted the heap
+		// rather than failing. See TestAllocateChannelsAddressesStayInBounds.
 
 		fb.Set(ch.Name, slice)
 	}
