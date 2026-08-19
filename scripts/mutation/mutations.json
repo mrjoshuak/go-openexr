@@ -914,8 +914,8 @@
         {
           "file": "exr/file.go",
           "count": 1,
-          "old": "\twriter.versionField = MakeVersionField(2, false, false, false, true)",
-          "new": "\twriter.versionField = MakeVersionField(2, true, false, false, true)"
+          "old": "\twriter.versionField = MakeVersionField(2, false, false, anyDeep, true)",
+          "new": "\twriter.versionField = MakeVersionField(2, true, false, anyDeep, true)"
         }
       ],
       "existing_tests": [
@@ -974,7 +974,7 @@
       "id": "deep-scanline-header-size",
       "codec": "Deep",
       "description": "deep scanline chunk header shortened to 20 bytes, dropping unpackedSizeOfSampleData, in writer and header size together \u2014 the shipped defect exactly",
-      "spec": "A deep scanline chunk header is int y + three uint64: packed offset-table size, packed sample-data size, unpacked sample-data size. Nothing else in the chunk says how many samples it holds.",
+      "spec": "A deep scanline chunk header is int y + three uint64: packed offset-table size, packed sample-data size, unpacked sample-data size. Nothing else in the chunk says how many samples it holds. Since multi-part deep writing landed, WriteDeepChunkPart sizes its header from this constant and writes the fourth field unconditionally, so shortening the constant overruns that buffer and the existing tests catch it too.",
       "symmetric": true,
       "edits": [
         {
@@ -986,7 +986,7 @@
         {
           "file": "exr/deep.go",
           "count": 1,
-          "old": "\txdr.ByteOrder.PutUint64(chunkHeader[20:28], uint64(len(uncompressedPixelData)))\n",
+          "old": "\txdr.ByteOrder.PutUint64(chunkHeader[20:28], unpackedSize)\n",
           "new": ""
         }
       ],
@@ -1008,7 +1008,7 @@
       ],
       "expect": {
         "added": "killed",
-        "existing": "survived"
+        "existing": "killed"
       }
     },
     {
@@ -1114,6 +1114,99 @@
       "expect": {
         "added": "killed",
         "existing": "survived"
+      }
+    },
+    {
+      "id": "rle-min-run-length",
+      "codec": "RLE",
+      "description": "RLE starts a run at four identical bytes instead of three",
+      "spec": "ImfRle.cpp MIN_RUN_LENGTH is 3. An encoder using a different threshold produces a stream its own decoder reads back perfectly and that is a different length from what every other implementation writes.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/rle.go",
+          "count": 1,
+          "old": "\trleMinRunLength = 3",
+          "new": "\trleMinRunLength = 4"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestRLECompressMixed"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestRLERunLengthLimitsMatchTheFormat"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "rle-max-run-length",
+      "codec": "RLE",
+      "description": "RLE caps a run at 126 bytes instead of 127",
+      "spec": "ImfRle.cpp MAX_RUN_LENGTH is 127: the largest count a signed control byte can carry as a run.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "compression/rle.go",
+          "count": 1,
+          "old": "\trleMaxRunLength = 127",
+          "new": "\trleMaxRunLength = 126"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestRLECompressRun"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestRLERunLengthLimitsMatchTheFormat"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "pxr24-mantissa-shift",
+      "codec": "PXR24",
+      "description": "PXR24 rounds the mantissa to 14 bits instead of 15, on the finite path",
+      "spec": "PXR24 keeps 24 of a float's 32 bits: sign, all 8 exponent bits and the top 15 of the mantissa, rounded. The name is the specification. The first version of this mutation edited the NaN branch instead of the finite one and survived a test that only used finite values, which is why the finite path is the anchor. It is asymmetric: float24ToFloat32 shifts back by 8 unconditionally, so changing only the encoder breaks the round trip and the existing test catches it. Recorded as killed in both phases rather than left as a mismatch \u2014 this invariant was already covered, which is worth knowing.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/pxr24.go",
+          "count": 1,
+          "old": "\ti := ((e | m) + (m & 0x00000080)) >> 8",
+          "new": "\ti := ((e | m) + (m & 0x00000080)) >> 9"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPXR24RoundtripFloat"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestPXR24KeepsTwentyFourBits"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "killed"
       }
     }
   ]

@@ -222,15 +222,25 @@ inside its allocation for every window, `go test -race ./...` is clean with
 `checkptr` for non-zero-origin windows, and the gate's off-origin tiled fixtures
 still read exactly.
 
-### Finish the false-assurance backlog
+### ~~Finish the false-assurance backlog~~ — every mutation is killed
 
-The audit's 125 candidates are partly addressed: 15 mutations now die against
-spec-anchored tests that previously survived. The remainder still rest on round
-trips or self-referential comparisons. The ZIP, PIZ, B44, DWA, HTJ2K, huffman
-and half test files are where they concentrate.
+`scripts/mutation/mutations.json` holds 31 mutations across every codec the
+package implements — B44, DWA, HTJ2K, PIZ, PXR24, RLE, ZIP, huffman and half —
+and the deep, tiled, multi-part, scanline and frame-buffer paths beside them.
+Every one is killed by something: 23 by spec-anchored tests added for them, and
+8 by tests that were already there. None survives everything.
 
-Done when every mutation in `scripts/mutation/mutations.json` is killed, and the
-manifest has grown to cover each codec's core invariants.
+The 16 that survive the *pre-existing* tests are the measurement, not a
+complaint: each is a deviation a round trip cannot see, and each now dies
+against an assertion anchored to the specification or to a reference-written
+fixture.
+
+Two things the harness caught about itself while this was finished, both worth
+keeping. It reports an anchor that no longer matches the source rather than
+silently testing nothing — two anchors had rotted under this session's own
+edits. And a PXR24 mutation that edited the NaN branch survived a test using
+only finite values, which is a mutation aimed at code the test never reaches;
+retargeting it at the finite path is what made it meaningful.
 
 ### ~~Deep coverage~~ — done in both directions, levels and semantics included
 
@@ -266,7 +276,7 @@ samples is accepted by every reader and shows up much later as a composite that
 is subtly wrong. Alpha premultiplication remains a convention this library
 neither imposes nor checks, which is what the reference does too.
 
-### The multi-part cases the gate still does not reach
+### ~~The multi-part cases the gate does not reach~~ — none remain
 
 Multi-part files are now gated: `scripts/multipartgen` writes parts that differ
 in data window, compression, channel layout and storage type, and the reference
