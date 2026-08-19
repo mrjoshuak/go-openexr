@@ -56,7 +56,8 @@ func TestAllocateChannelsAddressesStayInBounds(t *testing.T) {
 				// The corners are enough: the addressing is affine, so if
 				// (0,0) and (width-1, height-1) are inside, everything between
 				// them is too.
-				for _, p := range [][2]int{{0, 0}, {width - 1, height - 1}} {
+				ox, oy := int(w.box.Min.X), int(w.box.Min.Y)
+				for _, p := range [][2]int{{ox, oy}, {ox + width - 1, oy + height - 1}} {
 					addr := uintptr(s.PixelAddr(p[0], p[1]))
 					if addr < lo {
 						t.Errorf("channel %q pixel (%d,%d): address %#x is %d bytes BEFORE the buffer (%#x..%#x); a write here corrupts the heap",
@@ -72,10 +73,12 @@ func TestAllocateChannelsAddressesStayInBounds(t *testing.T) {
 	}
 }
 
-// TestAllocateChannelsIsDataWindowRelative states the convention directly, so a
-// future change that reintroduces an origin bias fails here with the reason
-// rather than somewhere downstream as corruption.
-func TestAllocateChannelsIsDataWindowRelative(t *testing.T) {
+// TestAllocateChannelsIsWindowAbsolute states the convention directly.
+//
+// Both halves matter: a Base biased outside its allocation is what makes the
+// collector throw, and dropping the origin silently changes what every
+// coordinate means.
+func TestAllocateChannelsIsWindowAbsolute(t *testing.T) {
 	cl := NewChannelList()
 	cl.Add(Channel{Name: "R", Type: PixelTypeHalf, XSampling: 1, YSampling: 1})
 
@@ -86,10 +89,16 @@ func TestAllocateChannelsIsDataWindowRelative(t *testing.T) {
 		t.Fatal("no slice for R")
 	}
 
-	// The pixel at the data window's origin is buffer position (0, 0), which
-	// callers reach as (0, 0) — not as (17, -9).
-	if got, want := uintptr(s.PixelAddr(0, 0)), uintptr(unsafe.Pointer(&bufs["R"][0])); got != want {
-		t.Errorf("PixelAddr(0,0) = %#x, want the start of the buffer %#x: "+
-			"the frame buffer is addressed relative to the data window", got, want)
+	start := uintptr(unsafe.Pointer(&bufs["R"][0]))
+	if got := uintptr(s.PixelAddr(17, -9)); got != start {
+		t.Errorf("PixelAddr(17,-9) = %#x, want the buffer start %#x: coordinates "+
+			"are the data window's own", got, start)
+	}
+	if got := uintptr(s.Base); got != start {
+		t.Errorf("Slice.Base = %#x, want %#x: a base outside its allocation is what "+
+			"makes the garbage collector throw", got, start)
+	}
+	if s.OriginX != 17 || s.OriginY != -9 {
+		t.Errorf("origin recorded as (%d,%d), want (17,-9)", s.OriginX, s.OriginY)
 	}
 }

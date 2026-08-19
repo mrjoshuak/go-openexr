@@ -938,15 +938,15 @@
     {
       "id": "multipart-datawindow-origin",
       "codec": "MultiPart",
-      "description": "multi-part scanline part addresses the frame buffer in image coordinates instead of relative to the data window",
-      "spec": "Everywhere else in this package the frame buffer's (0,0) is the pixel at the data window's origin. A part whose data window does not start at y=0 is otherwise shifted by the origin. Unlike the others here, the pre-existing TestMultiPartOutputFile does catch this one, so it is recorded as killed in both phases: the defect shipped despite having signal in the suite, not for want of it.",
+      "description": "a multi-part scanline part packs its chunk from the wrong row: the frame buffer row index loses the data window's origin",
+      "spec": "Everywhere else in this package the frame buffer's (0,0) is the pixel at the data window's origin. A part whose data window does not start at y=0 is otherwise shifted by the origin. Unlike the others here, the pre-existing TestMultiPartOutputFile does catch this one, so it is recorded as killed in both phases: the defect shipped despite having signal in the suite, not for want of it. Recorded as surviving the pre-existing tests: it was killed by them while the frame buffer was addressed relative to the window, because the mutation then shifted every part. Now that coordinates are window-absolute the shift only shows on a part whose window does not start at the origin, which is what the added test is for.",
       "symmetric": true,
       "edits": [
         {
           "file": "exr/multipart.go",
           "count": 1,
-          "old": "buildScanlineData(p.frameBuffer, cl, width, chunkY-minY, linesInChunk)",
-          "new": "buildScanlineData(p.frameBuffer, cl, width, chunkY, linesInChunk)"
+          "old": "\tuncompressed := buildScanlineData(p.frameBuffer, cl, width, int(dw.Min.X), chunkY, linesInChunk)",
+          "new": "\tuncompressed := buildScanlineData(p.frameBuffer, cl, width, int(dw.Min.X), chunkY-int(dw.Min.Y), linesInChunk)"
         }
       ],
       "existing_tests": [
@@ -967,7 +967,7 @@
       ],
       "expect": {
         "added": "killed",
-        "existing": "killed"
+        "existing": "survived"
       }
     },
     {
@@ -1014,15 +1014,15 @@
     {
       "id": "framebuffer-origin-bias",
       "codec": "FrameBuffer",
-      "description": "AllocateChannels biases Slice.Base by the data window origin again, so PixelAddr takes absolute image coordinates",
-      "spec": "Every reader and writer in this package addresses a frame buffer relative to the data window: ScanlineWriter computes bufY := y - minY, and the tiled path indexes each level from zero. A Base biased for absolute coordinates puts every access to a non-origin window outside its own buffer, and Slice writes through an unchecked unsafe.Pointer, so the result is heap corruption rather than an error.",
+      "description": "AllocateChannels drops the window origin, so every coordinate means something else",
+      "spec": "Slice carries the window's minimum as OriginX/OriginY and PixelAddr subtracts it, so coordinates are the ones the data window is expressed in. Dropping the origin makes every access to a non-zero-origin window address the wrong pixel \u2014 and read or write outside the buffer at the far edge, which the collector reports as a bad pointer.",
       "symmetric": true,
       "edits": [
         {
           "file": "exr/framebuffer.go",
           "count": 1,
-          "old": "\t\t// No origin bias. The pixel at dataWindow.Min is buffer position",
-          "new": "\t\tif dataWindow.Min.X != 0 || dataWindow.Min.Y != 0 {\n\t\t\toff := (-int(dataWindow.Min.Y)/int(ch.YSampling))*slice.YStride + (-int(dataWindow.Min.X)/int(ch.XSampling))*slice.XStride\n\t\t\tslice.Base = unsafe.Pointer(uintptr(slice.Base) + uintptr(off))\n\t\t}\n\t\t// No origin bias. The pixel at dataWindow.Min is buffer position"
+          "old": "\t\tslice.OriginX = int(dataWindow.Min.X)\n\t\tslice.OriginY = int(dataWindow.Min.Y)\n",
+          "new": ""
         }
       ],
       "existing_tests": [
@@ -1038,11 +1038,11 @@
       "added_tests": [
         {
           "pkg": "./exr/",
-          "run": "TestAllocateChannelsAddressesStayInBounds"
+          "run": "TestAllocateChannelsIsWindowAbsolute"
         },
         {
           "pkg": "./exr/",
-          "run": "TestAllocateChannelsIsDataWindowRelative"
+          "run": "TestAllocateChannelsAddressesStayInBounds"
         }
       ],
       "expect": {

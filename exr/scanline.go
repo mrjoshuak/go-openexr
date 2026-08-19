@@ -547,7 +547,11 @@ func (r *ScanlineReader) decodeUncompressedChunkParallel(chunkY int, data []byte
 		// Map from absolute data window coordinates to buffer-relative coordinates.
 		// The framebuffer is allocated for the data window dimensions, so pixel
 		// (minX, minY) maps to buffer position (0, 0).
-		bufY := y - minY
+		// The frame buffer is addressed in the data window's own coordinates,
+		// so the row index is the image row. Subtracting minY here was right
+		// while Slice carried a biased base and is wrong now that it carries
+		// the origin instead.
+		bufY := y
 
 		for i := range channelInfos {
 			ci := &channelInfos[i]
@@ -608,7 +612,11 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 		// Map from absolute data window coordinates to buffer-relative coordinates.
 		// The framebuffer is allocated for the data window dimensions, so pixel
 		// (minX, minY) maps to buffer position (0, 0).
-		bufY := y - minY
+		// The frame buffer is addressed in the data window's own coordinates,
+		// so the row index is the image row. Subtracting minY here was right
+		// while Slice carried a biased base and is wrong now that it carries
+		// the origin instead.
+		bufY := y
 
 		for i := range channelInfos {
 			ci := &channelInfos[i]
@@ -1133,7 +1141,6 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 // encodeUncompressedChunk encodes scanlines as uncompressed data.
 func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
-	minY := int(w.dataWindow.Min.Y)
 
 	// Calculate buffer size
 	bufSize := 0
@@ -1158,7 +1165,11 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 		// Map from absolute data window coordinates to buffer-relative coordinates.
 		// The framebuffer is allocated for the data window dimensions, so pixel
 		// (minX, minY) maps to buffer position (0, 0).
-		bufY := y - minY
+		// The frame buffer is addressed in the data window's own coordinates,
+		// so the row index is the image row. Subtracting minY here was right
+		// while Slice carried a biased base and is wrong now that it carries
+		// the origin instead.
+		bufY := y
 
 		for _, ch := range sortedChannels {
 			pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)

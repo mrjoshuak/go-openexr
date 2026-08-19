@@ -144,7 +144,7 @@ func readSamplesAsFloat32(t *testing.T, path string) (map[string][]float32, int,
 	h := int(dw.Max.Y-dw.Min.Y) + 1
 
 	fb := NewFrameBuffer()
-	out, finish := bindChannelsToFrameBuffer(t, path, r.Header().Channels(), w, h, fb)
+	out, finish := bindChannelsToFrameBuffer(t, path, r.Header().Channels(), w, h, int(dw.Min.X), int(dw.Min.Y), fb)
 	r.SetFrameBuffer(fb)
 
 	if err := r.ReadPixels(int(dw.Min.Y), int(dw.Max.Y)); err != nil {
@@ -168,7 +168,7 @@ func readTiledSamplesAsFloat32(t *testing.T, f *File) (map[string][]float32, int
 	h := int(dw.Max.Y-dw.Min.Y) + 1
 
 	fb := NewFrameBuffer()
-	out, finish := bindChannelsToFrameBuffer(t, "tiled", r.Header().Channels(), w, h, fb)
+	out, finish := bindChannelsToFrameBuffer(t, "tiled", r.Header().Channels(), w, h, int(dw.Min.X), int(dw.Min.Y), fb)
 	r.SetFrameBuffer(fb)
 	if err := r.ReadTiles(0, 0, r.NumXTilesAtLevel(0)-1, r.NumYTilesAtLevel(0)-1); err != nil {
 		t.Fatalf("ReadTiles: %v", err)
@@ -182,7 +182,12 @@ func readTiledSamplesAsFloat32(t *testing.T, f *File) (map[string][]float32, int
 // bindChannelsToFrameBuffer allocates a destination slice for every channel in
 // its native pixel type and returns closures that convert each to float32 once
 // the read completes.
-func bindChannelsToFrameBuffer(t *testing.T, path string, cl *ChannelList, w, h int, fb *FrameBuffer) (map[string][]float32, []func()) {
+// ox and oy are the data window's minimum. A slice built over a bare buffer
+// starts at the origin, and the library addresses a frame buffer in the data
+// window's own coordinates, so a window that does not start at (0, 0) must say
+// so — otherwise the first pixel is written as if it were at (0, 0) and the
+// last runs past the end of the buffer.
+func bindChannelsToFrameBuffer(t *testing.T, path string, cl *ChannelList, w, h, ox, oy int, fb *FrameBuffer) (map[string][]float32, []func()) {
 	t.Helper()
 
 	out := make(map[string][]float32, cl.Len())
@@ -194,7 +199,7 @@ func bindChannelsToFrameBuffer(t *testing.T, path string, cl *ChannelList, w, h 
 		switch ch.Type {
 		case PixelTypeHalf:
 			buf := make([]half.Half, w*h)
-			fb.Set(name, NewSliceFromHalf(buf, w, h))
+			fb.Set(name, NewSliceFromHalf(buf, w, h).WithOrigin(ox, oy))
 			finish = append(finish, func() {
 				vals := make([]float32, len(buf))
 				for j, v := range buf {
@@ -204,11 +209,11 @@ func bindChannelsToFrameBuffer(t *testing.T, path string, cl *ChannelList, w, h 
 			})
 		case PixelTypeFloat:
 			buf := make([]float32, w*h)
-			fb.Set(name, NewSliceFromFloat32(buf, w, h))
+			fb.Set(name, NewSliceFromFloat32(buf, w, h).WithOrigin(ox, oy))
 			finish = append(finish, func() { out[name] = buf })
 		case PixelTypeUint:
 			buf := make([]uint32, w*h)
-			fb.Set(name, NewSliceFromUint32(buf, w, h))
+			fb.Set(name, NewSliceFromUint32(buf, w, h).WithOrigin(ox, oy))
 			finish = append(finish, func() {
 				vals := make([]float32, len(buf))
 				for j, v := range buf {

@@ -289,7 +289,7 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 	h := p.header
 	dw := h.DataWindow()
 	width := int(dw.Width())
-	minY, maxY := int(dw.Min.Y), int(dw.Max.Y)
+	maxY := int(dw.Max.Y)
 	comp := h.Compression()
 	linesPerChunk := comp.ScanlinesPerChunk()
 
@@ -321,7 +321,7 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 		// relative to the data window, as everywhere else in this package:
 		// the pixel at (dataWindow.Min.X, dataWindow.Min.Y) is buffer
 		// position (0, 0).
-		uncompressed := buildScanlineData(p.frameBuffer, cl, width, chunkY-minY, linesInChunk)
+		uncompressed := buildScanlineData(p.frameBuffer, cl, width, int(dw.Min.X), chunkY, linesInChunk)
 
 		// Compress. The codecs that care about position — DWA — want the
 		// chunk's place in the image, not in the buffer.
@@ -403,7 +403,12 @@ func (m *MultiPartOutputFile) WriteTileLevel(part, tileX, tileY, levelX, levelY 
 	// tile at (0, 0) reads from buffer position (0, 0) whatever the data
 	// window's origin is. Only the codecs are told where the tile sits in the
 	// image.
-	uncompressed := buildTileData(p.frameBuffer, cl, startX, startY, actualW, actualH)
+	// The frame buffer is addressed in the data window's own coordinates, as
+	// everywhere else, so the tile's level-relative position is offset by the
+	// window's minimum before it indexes anything.
+	pdw := p.header.DataWindow()
+	uncompressed := buildTileData(p.frameBuffer, cl,
+		int(pdw.Min.X)+startX, int(pdw.Min.Y)+startY, actualW, actualH)
 
 	// Compress
 	compressed, err := compressChunkData(uncompressed, int(dw.Min.X)+startX, int(dw.Min.Y)+startY, actualW, actualH, cl, comp)
@@ -427,7 +432,7 @@ func (m *MultiPartOutputFile) Close() error {
 // coordinate: the caller subtracts the data window's origin. Reading image
 // coordinates here shifted every part whose data window did not start at y=0
 // and ran off the end of the caller's buffer.
-func buildScanlineData(fb *FrameBuffer, cl *ChannelList, width, startY, numLines int) []byte {
+func buildScanlineData(fb *FrameBuffer, cl *ChannelList, width, startX, startY, numLines int) []byte {
 	// A channel with XSampling n stores every n-th column, so it contributes
 	// ceil(width/n) samples per row rather than width of them. Packing the
 	// full width for a subsampled channel makes the chunk longer than the
@@ -468,7 +473,7 @@ func buildScanlineData(fb *FrameBuffer, cl *ChannelList, width, startY, numLines
 				step = slice.XSampling
 			}
 			for xi := 0; xi < sampled[ci]; xi++ {
-				x := xi * step
+				x := startX + xi*step
 				if slice == nil {
 					switch ch.Type {
 					case PixelTypeHalf:

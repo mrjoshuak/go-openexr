@@ -104,10 +104,15 @@ func dumpLevel(out *bufio.Writer, r *exr.TiledReader, lx, ly int) error {
 		if s == nil {
 			return fmt.Errorf("channel %q missing from frame buffer at level %d,%d", c.name, lx, ly)
 		}
+		// The frame buffer is addressed in the data window's own coordinates,
+		// so a level whose window starts at (17, -9) is read from there. The
+		// dump's coordinates stay level-relative, which is what exrtiledump
+		// prints and what the comparison is against.
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
 				fmt.Fprintf(out, "%d %d %d %d %s %s\n",
-					lx, ly, x, y, c.name, sampleValue(s, c.pt, x, y))
+					lx, ly, x, y, c.name,
+					sampleValue(s, c.pt, int(dw.Min.X)+x, int(dw.Min.Y)+y))
 			}
 		}
 	}

@@ -21,9 +21,24 @@ type Slice struct {
 	// Type is the pixel data type stored in this slice.
 	Type PixelType
 
-	// Base is a pointer to the pixel at (0, 0) in the slice's coordinate
-	// system, which is the pixel at the data window's minimum corner.
+	// Base points at the first byte of the slice's own allocation: the pixel
+	// at (OriginX, OriginY).
+	//
+	// It always points *into* the allocation. The C++ convention biases this
+	// pointer so the window's minimum lands at buffer[0], which is correct in
+	// C++ and not expressible in Go — an unsafe.Pointer must address a live
+	// object, and the collector throws "found bad pointer in Go heap" when it
+	// scans one that does not.
 	Base unsafe.Pointer
+
+	// OriginX and OriginY are the window's minimum corner: the coordinates of
+	// the pixel Base addresses.
+	//
+	// Carrying the origin as data rather than folding it into Base is what
+	// keeps coordinates window-absolute — GetFloat32(x, y) takes the same
+	// (x, y) the data window is expressed in — while Base stays valid.
+	OriginX int
+	OriginY int
 
 	// XStride is the number of bytes between adjacent pixels in the same row.
 	XStride int
@@ -72,6 +87,22 @@ func NewSliceFromFloat32(data []float32, width, height int) Slice {
 	}
 }
 
+// WithOrigin returns a copy of the slice whose coordinates are measured from
+// (x, y) rather than from zero.
+//
+// A slice built over a bare buffer starts at the origin, which is right for a
+// data window that also starts there and wrong for one that does not: the
+// library addresses a frame buffer in the data window's own coordinates, so a
+// slice over a window at (11, 5) must say so or its first pixel is read as if
+// it were at (0, 0).
+//
+// AllocateChannels sets this from the window it is given, so callers that use
+// it need not.
+func (s Slice) WithOrigin(x, y int) Slice {
+	s.OriginX, s.OriginY = x, y
+	return s
+}
+
 // NewSliceFromHalf creates a Slice backed by a []half.Half.
 func NewSliceFromHalf(data []half.Half, width, height int) Slice {
 	return Slice{
@@ -96,12 +127,12 @@ func NewSliceFromUint32(data []uint32, width, height int) Slice {
 	}
 }
 
-// PixelAddr returns the address of the pixel at (x, y), where (0, 0) is the
-// pixel at the data window's minimum corner.
+// PixelAddr returns the address of the pixel at (x, y).
 //
-// The coordinates are relative to the data window, not absolute image
-// coordinates. Callers that hold image coordinates must subtract the data
-// window's origin first, as the scanline and tiled paths do.
+// The coordinates are window-absolute: the same system the data window is
+// expressed in, so the pixel at the window's minimum corner is
+// (OriginX, OriginY). A Slice with the zero origin behaves exactly as one
+// addressed from zero, which is every slice built by hand over a bare buffer.
 //
 // No bounds check is performed and the result is written through directly, so
 // a coordinate outside the slice's window corrupts memory rather than
@@ -110,9 +141,10 @@ func NewSliceFromUint32(data []uint32, width, height int) Slice {
 //
 //go:nocheckptr
 func (s *Slice) PixelAddr(x, y int) unsafe.Pointer {
-	// Apply subsampling
-	sx := x / s.XSampling
-	sy := y / s.YSampling
+	// Subsampling first, then the window origin. Subtracting the origin here
+	// rather than pre-biasing Base is what keeps Base inside its allocation.
+	sx := (x - s.OriginX) / s.XSampling
+	sy := (y - s.OriginY) / s.YSampling
 	offset := sy*s.YStride + sx*s.XStride
 	return unsafe.Pointer(uintptr(s.Base) + uintptr(offset))
 }
@@ -216,12 +248,24 @@ func (s *Slice) SetUint32(x, y int, val uint32) {
 	}
 }
 
+// The row functions below take xStart relative to the window's left edge,
+// which is where RowAddr points: a caller asking for the whole row passes 0
+// whatever the window's origin is. Their per-pixel fallbacks go through the
+// absolute accessors and so add OriginX — the two paths inside one function
+// disagreeing about that is a defect that only shows on a non-zero origin,
+// where the fast path is taken for one pixel type and the fallback for another.
+//
 // RowAddr returns the starting address of row y and the stride between pixels.
 // This allows bulk operations without per-pixel method call overhead.
 func (s *Slice) RowAddr(y int) (base unsafe.Pointer, stride int) {
-	sy := y / s.YSampling
-	offset := sy * s.YStride
-	return unsafe.Pointer(uintptr(s.Base) + uintptr(offset)), s.XStride
+	// y is window-absolute, as it is for PixelAddr. The returned address is
+	// the row's first stored pixel — the window's left edge — so a caller
+	// asking for the whole row adds nothing.
+	//
+	// Subtracting OriginX here as well would name absolute column zero, which
+	// for a window starting at x=7 is seven pixels before the row's own data.
+	sy := (y - s.OriginY) / s.YSampling
+	return unsafe.Pointer(uintptr(s.Base) + uintptr(sy*s.YStride)), s.XStride
 }
 
 // IsContiguous returns true if the slice has unit stride (no gaps between pixels in a row).
@@ -250,7 +294,7 @@ func (s *Slice) WriteRowHalfBytes(y int, data []byte, xStart, width int) {
 	// Fallback to per-pixel conversion
 	for i := 0; i < width; i++ {
 		val := uint16(data[i*2]) | uint16(data[i*2+1])<<8
-		s.SetHalf(xStart+i, y, half.FromBits(val))
+		s.SetHalf(s.OriginX+xStart+i, y, half.FromBits(val))
 	}
 }
 
@@ -273,7 +317,7 @@ func (s *Slice) WriteRowHalf(y int, data []uint16, xStart, width int) {
 	} else {
 		// Fallback to per-pixel
 		for i := 0; i < width; i++ {
-			s.SetHalf(xStart+i, y, half.FromBits(data[i]))
+			s.SetHalf(s.OriginX+xStart+i, y, half.FromBits(data[i]))
 		}
 	}
 }
@@ -297,7 +341,7 @@ func (s *Slice) WriteRowFloat(y int, data []byte, xStart, width int) {
 		// Fallback to per-pixel (with conversion)
 		for i := 0; i < width; i++ {
 			val := *(*float32)(unsafe.Pointer(&data[i*4]))
-			s.SetFloat32(xStart+i, y, val)
+			s.SetFloat32(s.OriginX+xStart+i, y, val)
 		}
 	}
 }
@@ -321,7 +365,7 @@ func (s *Slice) WriteRowUint(y int, data []byte, xStart, width int) {
 		// Fallback to per-pixel (with conversion)
 		for i := 0; i < width; i++ {
 			val := *(*uint32)(unsafe.Pointer(&data[i*4]))
-			s.SetUint32(xStart+i, y, val)
+			s.SetUint32(s.OriginX+xStart+i, y, val)
 		}
 	}
 }
@@ -344,7 +388,7 @@ func (s *Slice) ReadRowHalf(y int, data []uint16, xStart, width int) {
 	} else {
 		// Fallback to per-pixel
 		for i := 0; i < width; i++ {
-			data[i] = s.GetHalf(xStart+i, y).Bits()
+			data[i] = s.GetHalf(s.OriginX+xStart+i, y).Bits()
 		}
 	}
 }
@@ -367,7 +411,7 @@ func (s *Slice) ReadRowFloat(y int, data []byte, xStart, width int) {
 	} else {
 		// Fallback to per-pixel (with conversion)
 		for i := 0; i < width; i++ {
-			val := s.GetFloat32(xStart+i, y)
+			val := s.GetFloat32(s.OriginX+xStart+i, y)
 			*(*float32)(unsafe.Pointer(&data[i*4])) = val
 		}
 	}
@@ -391,7 +435,7 @@ func (s *Slice) ReadRowUint(y int, data []byte, xStart, width int) {
 	} else {
 		// Fallback to per-pixel (with conversion)
 		for i := 0; i < width; i++ {
-			val := s.GetUint32(xStart+i, y)
+			val := s.GetUint32(s.OriginX+xStart+i, y)
 			*(*uint32)(unsafe.Pointer(&data[i*4])) = val
 		}
 	}
@@ -557,14 +601,17 @@ func AllocateChannelsLimit(cl *ChannelList, dataWindow Box2i, maxBytes int64) (*
 			YSampling: int(ch.YSampling),
 		}
 
-		// No origin bias. The pixel at dataWindow.Min is buffer position
-		// (0, 0), which is how every reader and writer in this package
-		// addresses a frame buffer — ScanlineWriter computes "bufY := y - minY"
-		// and the tiled path indexes each level from zero. Biasing Base here so
-		// that PixelAddr took absolute image coordinates instead put every
-		// access to a non-origin window outside its own buffer, and since Slice
-		// writes through an unchecked unsafe.Pointer that corrupted the heap
-		// rather than failing. See TestAllocateChannelsAddressesStayInBounds.
+		// The origin is recorded, not folded into Base.
+		//
+		// Biasing Base so the window's minimum lands at buffer[0] is the C++
+		// convention and is not expressible in Go: the resulting pointer is
+		// outside its allocation, and the collector rejects it with "found bad
+		// pointer in Go heap". Carrying the origin as data keeps Base inside
+		// the allocation and leaves coordinates window-absolute, so a caller
+		// addresses pixels in the coordinates the data window is expressed in.
+		// See TestAllocateChannelsAddressesStayInBounds.
+		slice.OriginX = int(dataWindow.Min.X)
+		slice.OriginY = int(dataWindow.Min.Y)
 
 		fb.Set(ch.Name, slice)
 	}

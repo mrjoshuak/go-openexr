@@ -24,7 +24,10 @@ func mpSample(part, ch, x, y, w, h int) float32 {
 // mpHalfPart builds a frame buffer of half channels holding mpSample, in the
 // coordinate system this package's frame buffers use: the pixel at the data
 // window's minimum is buffer position (0, 0).
-func mpHalfPart(part int, names []string, w, h int) (*FrameBuffer, map[string][]half.Half) {
+// mpHalfPart builds a frame buffer over bare buffers. ox and oy are the data
+// window's minimum: a hand-built slice starts at zero unless told otherwise,
+// and the library addresses frame buffers in the window's own coordinates.
+func mpHalfPart(part int, names []string, w, h, ox, oy int) (*FrameBuffer, map[string][]half.Half) {
 	fb := NewFrameBuffer()
 	planes := map[string][]half.Half{}
 	for ci, n := range names {
@@ -35,7 +38,7 @@ func mpHalfPart(part int, names []string, w, h int) (*FrameBuffer, map[string][]
 			}
 		}
 		planes[n] = plane
-		fb.Set(n, NewSliceFromHalf(plane, w, h))
+		fb.Set(n, NewSliceFromHalf(plane, w, h).WithOrigin(ox, oy))
 	}
 	return fb, planes
 }
@@ -74,7 +77,7 @@ func TestMultiPartWritePixelsIsChunkAligned(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewMultiPartOutputFile: %v", err)
 		}
-		fb, _ := mpHalfPart(0, names, w, h)
+		fb, _ := mpHalfPart(0, names, w, h, int(dw.Min.X), int(dw.Min.Y))
 		if err := mpo.SetFrameBuffer(0, fb); err != nil {
 			t.Fatalf("SetFrameBuffer: %v", err)
 		}
@@ -125,7 +128,7 @@ func TestMultiPartDataWindowOrigin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewMultiPartOutputFile: %v", err)
 		}
-		fb, planes := mpHalfPart(0, names, w, h)
+		fb, planes := mpHalfPart(0, names, w, h, int(dw.Min.X), int(dw.Min.Y))
 		if err := mpo.SetFrameBuffer(0, fb); err != nil {
 			t.Fatalf("SetFrameBuffer: %v", err)
 		}
@@ -150,7 +153,10 @@ func TestMultiPartDataWindowOrigin(t *testing.T) {
 		for _, n := range names {
 			plane := make([]half.Half, w*h)
 			got[n] = plane
-			out.Set(n, NewSliceFromHalf(plane, w, h))
+			// The same origin the write side used: a hand-built slice starts
+			// at zero, and the library addresses the buffer in the data
+			// window's own coordinates.
+			out.Set(n, NewSliceFromHalf(plane, w, h).WithOrigin(int(dw.Min.X), int(dw.Min.Y)))
 		}
 		sr.SetFrameBuffer(out)
 		if err := sr.ReadPixels(int(dw.Min.Y), int(dw.Max.Y)); err != nil {
@@ -278,7 +284,7 @@ func TestMultiPartTilesWrittenOutOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMultiPartOutputFile: %v", err)
 	}
-	fb, planes := mpHalfPart(0, names, w, h)
+	fb, planes := mpHalfPart(0, names, w, h, int(dw.Min.X), int(dw.Min.Y))
 	if err := mpo.SetFrameBuffer(0, fb); err != nil {
 		t.Fatalf("SetFrameBuffer: %v", err)
 	}
@@ -311,7 +317,9 @@ func TestMultiPartTilesWrittenOutOfOrder(t *testing.T) {
 	for _, n := range names {
 		plane := make([]half.Half, w*h)
 		got[n] = plane
-		out.Set(n, NewSliceFromHalf(plane, w, h))
+		// The read side needs the same origin as the write side: the library
+		// addresses a frame buffer in the data window's own coordinates.
+		out.Set(n, NewSliceFromHalf(plane, w, h).WithOrigin(int(dw.Min.X), int(dw.Min.Y)))
 	}
 	tr.SetFrameBuffer(out)
 	if err := tr.ReadTiles(0, 0, nx-1, ny-1); err != nil {
@@ -365,7 +373,7 @@ func TestMultiPartMipmapLevels(t *testing.T) {
 		lw, lh := hdr.LevelWidth(l), hdr.LevelHeight(l)
 		// A different part index per level so no two levels hold the same
 		// normalised image: a swapped level has to be visible.
-		fb, planes := mpHalfPart(l, names, lw, lh)
+		fb, planes := mpHalfPart(l, names, lw, lh, int(dw.Min.X), int(dw.Min.Y))
 		want[l] = planes
 		if err := mpo.SetFrameBuffer(0, fb); err != nil {
 			t.Fatalf("SetFrameBuffer level %d: %v", l, err)
@@ -435,7 +443,7 @@ func TestMultiPartCompressionIsApplied(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: NewMultiPartOutputFile: %v", comp, err)
 		}
-		fb, _ := mpHalfPart(0, names, w, h)
+		fb, _ := mpHalfPart(0, names, w, h, int(dw.Min.X), int(dw.Min.Y))
 		if err := mpo.SetFrameBuffer(0, fb); err != nil {
 			t.Fatalf("%v: SetFrameBuffer: %v", comp, err)
 		}

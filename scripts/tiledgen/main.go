@@ -127,7 +127,11 @@ func makeLevel(lx, ly, w, h int, lossy bool, pt exr.PixelType) (*level, error) {
 	return l, nil
 }
 
-func (l *level) frameBuffer(pt exr.PixelType) *exr.FrameBuffer {
+// frameBuffer builds this level's frame buffer. ox and oy are the data
+// window's minimum: the library addresses a frame buffer in the window's own
+// coordinates, and a slice over a bare buffer starts at zero unless told
+// otherwise.
+func (l *level) frameBuffer(pt exr.PixelType, ox, oy int) *exr.FrameBuffer {
 	fb := exr.NewFrameBuffer()
 	for _, ch := range channels {
 		switch pt {
@@ -136,11 +140,11 @@ func (l *level) frameBuffer(pt exr.PixelType) *exr.FrameBuffer {
 			for i, v := range l.vals[ch] {
 				hv[i] = half.FromFloat32(v)
 			}
-			fb.Set(ch, exr.NewSliceFromHalf(hv, l.w, l.h))
+			fb.Set(ch, exr.NewSliceFromHalf(hv, l.w, l.h).WithOrigin(ox, oy))
 		case exr.PixelTypeFloat:
 			cp := make([]float32, len(l.vals[ch]))
 			copy(cp, l.vals[ch])
-			fb.Set(ch, exr.NewSliceFromFloat32(cp, l.w, l.h))
+			fb.Set(ch, exr.NewSliceFromFloat32(cp, l.w, l.h).WithOrigin(ox, oy))
 		}
 	}
 	return fb
@@ -331,7 +335,7 @@ func writeFixture(dir string, f fixture) ([]*level, error) {
 				return nil, err
 			}
 			levels = append(levels, l)
-			w.SetFrameBuffer(l.frameBuffer(f.pt))
+			w.SetFrameBuffer(l.frameBuffer(f.pt, f.offX, f.offY))
 			nx, ny := h.NumXTiles(lx), h.NumYTiles(ly)
 			for i := 0; i < ny; i++ {
 				for j := 0; j < nx; j++ {
@@ -351,7 +355,7 @@ func writeFixture(dir string, f fixture) ([]*level, error) {
 		if err != nil {
 			return nil, err
 		}
-		fb := src.frameBuffer(f.pt)
+		fb := src.frameBuffer(f.pt, f.offX, f.offY)
 		gen, err := exr.GenerateMipmapsFromFrameBuffer(fb, f.w, f.h, h, exr.FilterBox)
 		if err != nil {
 			return nil, err
@@ -368,7 +372,7 @@ func writeFixture(dir string, f fixture) ([]*level, error) {
 		if err != nil {
 			return nil, err
 		}
-		fb := src.frameBuffer(f.pt)
+		fb := src.frameBuffer(f.pt, f.offX, f.offY)
 		gen, err := exr.GenerateRipmapsFromFrameBuffer(fb, f.w, f.h, h, exr.FilterBox)
 		if err != nil {
 			return nil, err
@@ -431,7 +435,7 @@ func writeScanlineTwin(dir string, f fixture, l *level) error {
 	if err != nil {
 		return err
 	}
-	wr.SetFrameBuffer(l.frameBuffer(f.pt))
+	wr.SetFrameBuffer(l.frameBuffer(f.pt, f.offX, f.offY))
 	if err := wr.WritePixels(f.offY, f.offY+f.h-1); err != nil {
 		return err
 	}

@@ -440,7 +440,12 @@ func partPixels(partIdx int, p partSpec, level int) [][]float32 {
 	return planes
 }
 
+// frameBuffer builds the part's frame buffer. Slices carry the part's data
+// window origin: the library addresses a frame buffer in the window's own
+// coordinates, and a slice built over a bare buffer starts at zero unless it
+// is told otherwise.
 func frameBuffer(p partSpec, w, h int, planes [][]float32) *exr.FrameBuffer {
+	ox, oy := p.minX(), p.minY()
 	fb := exr.NewFrameBuffer()
 	for ci, c := range p.chans {
 		// The slice is the channel's own width; Slice divides the caller's x
@@ -453,17 +458,17 @@ func frameBuffer(p partSpec, w, h int, planes [][]float32) *exr.FrameBuffer {
 			for i, v := range planes[ci] {
 				hv[i] = half.FromFloat32(v)
 			}
-			fb.Set(c.name, exr.NewSliceFromHalf(hv, w, h))
+			fb.Set(c.name, exr.NewSliceFromHalf(hv, w, h).WithOrigin(ox, oy))
 		case exr.PixelTypeFloat:
 			fv := make([]float32, w*h)
 			copy(fv, planes[ci])
-			fb.Set(c.name, exr.NewSliceFromFloat32(fv, w, h))
+			fb.Set(c.name, exr.NewSliceFromFloat32(fv, w, h).WithOrigin(ox, oy))
 		case exr.PixelTypeUint:
 			uv := make([]uint32, w*h)
 			for i, v := range planes[ci] {
 				uv[i] = uint32(v)
 			}
-			fb.Set(c.name, exr.NewSliceFromUint32(uv, w, h))
+			fb.Set(c.name, exr.NewSliceFromUint32(uv, w, h).WithOrigin(ox, oy))
 		}
 	}
 	return fb

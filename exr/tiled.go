@@ -432,11 +432,18 @@ func (r *TiledReader) decompressTilePXR24(data []byte, tileWidth, tileHeight int
 
 // decodeTileLevel decodes uncompressed tile data at a specific level into the frame buffer.
 func (r *TiledReader) decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight int, data []byte) error {
-	// For multi-level images, we need to calculate the starting coordinates based on level
-	// The frame buffer is typically sized for level 0, but for lower levels we need different offsets
-	// Note: For now, we assume the frame buffer is sized for the specific level being read
-	startX := tileX * int(r.tileDesc.XSize)
-	startY := tileY * int(r.tileDesc.YSize)
+	// Where this tile begins in the frame buffer's coordinates.
+	//
+	// A tile's position within its level is level-relative; a frame buffer is
+	// addressed in the data window's own coordinates, which is what Slice
+	// carries an origin for. So the window's minimum is added here rather than
+	// subtracted from every access. For a window at the origin the two are the
+	// same, which is why the level-relative position worked for every file
+	// whose data window started at (0, 0) and read outside the buffer for the
+	// rest.
+	dw := r.header.DataWindow()
+	startX := int(dw.Min.X) + tileX*int(r.tileDesc.XSize)
+	startY := int(dw.Min.Y) + tileY*int(r.tileDesc.YSize)
 
 	// Channels are sorted by name
 	sortedChannels := r.channelList.SortedByName()
@@ -736,8 +743,11 @@ func (w *TiledWriter) encodeTile(tileX, tileY, tileWidth, tileHeight int) ([]byt
 func (w *TiledWriter) encodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight int) ([]byte, error) {
 	// For multi-level images, we calculate coordinates based on the level
 	// The frame buffer should be sized for the specific level being written
-	startX := tileX * int(w.tileDesc.XSize)
-	startY := tileY * int(w.tileDesc.YSize)
+	// The same absolute addressing the reader uses: a frame buffer is indexed
+	// in the data window's coordinates, not the level's.
+	wdw := w.header.DataWindow()
+	startX := int(wdw.Min.X) + tileX*int(w.tileDesc.XSize)
+	startY := int(wdw.Min.Y) + tileY*int(w.tileDesc.YSize)
 
 	// Calculate buffer size
 	bytesPerPixel := 0

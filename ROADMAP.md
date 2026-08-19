@@ -191,36 +191,41 @@ This is also the compatibility half of the strategy above: mipmapped output is
 what readers that do not know the codestream trick will use, and mipmapped input
 is how this library serves proxies from files other tools wrote.
 
-### Window-absolute frame buffer coordinates
+### ~~Window-absolute frame buffer coordinates~~ — done
 
-`Slice` addresses a frame buffer in window-relative coordinates: for a window
-whose minimum is (17, -9), the pixel there is `(0, 0)`. The C++ convention, and
-what this package documented before v1.4.4, is window-absolute — that pixel is
-`(17, -9)` — achieved by biasing the base pointer so the minimum lands at
-`buffer[0]`.
+`Slice` carries the window's minimum as `OriginX`/`OriginY`, `PixelAddr`
+subtracts it, and `Base` always points into its allocation. Coordinates are the
+ones the data window is expressed in: for a window at (17, -9), the pixel there
+is `(17, -9)`.
 
-That bias is not expressible in Go. The biased pointer is outside its
-allocation, and the collector rejects it with `found bad pointer in Go heap`,
-intermittently, depending on where the offset happens to land (issue #5). v1.4.4
-fixed it by removing the bias, which made the coordinates relative.
+That is both halves of issue #5 at once. The C++ convention biases the base
+pointer so the window's minimum lands at `buffer[0]`, which is not expressible
+in Go — the resulting pointer is outside its allocation and the collector
+rejects it with "found bad pointer in Go heap". v1.4.4 fixed the crash by
+removing the bias, which made coordinates window-relative and moved the problem
+onto callers holding image coordinates. Carrying the origin as data keeps the
+pointer valid and the coordinates absolute.
 
-The better fix, and the one a downstream consumer asked for, is to carry the
-origin as data: `OriginX`/`OriginY` on `Slice`, subtracted in `PixelAddr` and
-`RowAddr`, `Base` left pointing at the allocation. That keeps the pointer valid
-*and* the coordinates absolute, so no caller has to change.
+`Slice.WithOrigin` declares the origin of a slice built over a bare buffer;
+`AllocateChannels` sets it from the window it is given, so callers using it need
+nothing. A caller that builds slices by hand over a non-origin window must now
+say so, which is the one migration this asks for.
 
-It is not a seven-call-site change. Every internal path addresses the buffer
-relative to the window — `ScanlineWriter` computes `bufY := y - minY`, the tiled
-path indexes each level from zero, and the deep, multi-part, mipmap and
-colour-transform paths do the same — so making the accessors absolute makes all
-of them wrong for a non-zero-origin window. Attempted once: the reference-image
-tests hung and `TestMultiPartTilesWrittenOutOfOrder` failed, and it was reverted
-rather than shipped half-converted.
+Four defects came out of converting the internal paths, each invisible while
+every window started at (0, 0):
 
-Done when every internal call site passes window-absolute coordinates, `Base` is
-inside its allocation for every window, `go test -race ./...` is clean with
-`checkptr` for non-zero-origin windows, and the gate's off-origin tiled fixtures
-still read exactly.
+- the scanline reader and writer, the tiled reader and writer, and the
+  multi-part scanline and tile packers all indexed the frame buffer relative to
+  the window;
+- `ReadRowHalf` and its siblings held *two* conventions in one function — the
+  fast path treated `xStart` as window-relative and the per-pixel fallback as
+  absolute, so which one was right depended on the pixel type;
+- `RowAddr` initially subtracted `OriginX` as well, naming absolute column zero,
+  which for a window at x=7 is seven pixels before the row's own data.
+
+`go test -race ./...` is clean with `checkptr` for windows with positive,
+negative and mixed origins, and the gate's off-origin tiled fixtures — a
+reference-written ripmap at (17, -9) — read exactly.
 
 ### ~~Finish the false-assurance backlog~~ — every mutation is killed
 
