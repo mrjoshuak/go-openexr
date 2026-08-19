@@ -6,3 +6,7 @@ github.com/mrjoshuak/go-jpeg2000 v1.5.1 h1:AceIJ+ZXXox5SPXhGezr/FIh3RptQEScbwx3U
 github.com/mrjoshuak/go-jpeg2000 v1.5.1/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=
 github.com/mrjoshuak/go-jpeg2000 v1.5.2 h1:q3CY8cTPlCw7h/nSE9ZHrytyhrM+EO3NCS3U7pQgGb4=
 github.com/mrjoshuak/go-jpeg2000 v1.5.2/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=
+github.com/mrjoshuak/go-jpeg2000 v1.5.3 h1:E4knGobiw0232PDnDuo5a5lKqI+HXczGjqnG5X4gGlQ=
+github.com/mrjoshuak/go-jpeg2000 v1.5.3/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=
+github.com/mrjoshuak/go-jpeg2000 v1.5.4 h1:5e8cT2NnfhjhcZa7YZx6mCvEemtpSSQTZAActSSepuM=
+github.com/mrjoshuak/go-jpeg2000 v1.5.4/go.mod h1:Zvb2bdmP52/rpmJOuzMo1HQR75zex//CvqEvopdTweo=

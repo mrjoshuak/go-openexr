@@ -61,6 +61,14 @@ type HTJ2KPartialResult struct {
 	Data          []byte
 	Width, Height int
 	BytesPerLine  int
+
+	// DecodedBytes and SkippedBytes are the code-block data this decode put
+	// through the block coder, and the data a region let it leave alone. They
+	// are what makes "a viewport costs less than the chunk" a measurement: a
+	// region decode that read everything and cropped would produce identical
+	// samples and report SkippedBytes of zero.
+	DecodedBytes int
+	SkippedBytes int
 }
 
 // HTJ2KDecompressPartial decompresses part of an HTJ2K chunk: a chosen
@@ -117,6 +125,7 @@ func HTJ2KDecompressPartial(src []byte, channels []HTJ2KChannelInfo, opts *HTJ2K
 		bytesPerLine  int
 		offsets       []int
 		out           []byte
+		cost          jpeg2000.DecodeCost
 	)
 
 	if allHalf {
@@ -128,7 +137,7 @@ func HTJ2KDecompressPartial(src []byte, channels []HTJ2KChannelInfo, opts *HTJ2K
 			return nil, fmt.Errorf("htj2k: codestream has %d components, the chunk declares %d channels",
 				img.ComponentCount(), n)
 		}
-		width, height = img.Width, img.Height
+		width, height, cost = img.Width, img.Height, img.Cost
 		offsets, bytesPerLine = htj2kLineLayoutAt(channels, width)
 		out = make([]byte, bytesPerLine*height)
 		for y := 0; y < height; y++ {
@@ -150,7 +159,7 @@ func HTJ2KDecompressPartial(src []byte, channels []HTJ2KChannelInfo, opts *HTJ2K
 			return nil, fmt.Errorf("htj2k: codestream has %d components, the chunk declares %d channels",
 				img.ComponentCount(), n)
 		}
-		width, height = img.Width, img.Height
+		width, height, cost = img.Width, img.Height, img.Cost
 		offsets, bytesPerLine = htj2kLineLayoutAt(channels, width)
 		out = make([]byte, bytesPerLine*height)
 		for y := 0; y < height; y++ {
@@ -167,6 +176,7 @@ func HTJ2KDecompressPartial(src []byte, channels []HTJ2KChannelInfo, opts *HTJ2K
 
 	return &HTJ2KPartialResult{
 		Data: out, Width: width, Height: height, BytesPerLine: bytesPerLine,
+		DecodedBytes: cost.Decoded, SkippedBytes: cost.Skipped,
 	}, nil
 }
 

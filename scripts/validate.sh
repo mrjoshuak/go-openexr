@@ -1878,6 +1878,177 @@ fi
 
 
 
+# ---------------------------------------------------------------------------
+# 10. Viewport reads: a rectangle, resolved to byte ranges and decoded without
+#     touching the rest of the file.
+#
+#     Sections 8 and 9 read whole files. This one reads part of one, which is
+#     the capability the chunk offset table and the codestream packet index
+#     were built for: File.ReadRegion turns a rectangle into the chunks that
+#     hold it by reading chunk headers, fetches only those chunks, and for
+#     HTJ2K decodes only the code-blocks the rectangle can reach.
+#
+#     Two things have to hold at once and each is checked separately, because
+#     either alone is easy and worthless. The samples must be the ones
+#     libOpenEXR reads for the same rectangle — scripts/exrtiledump prints
+#     every sample of the file and the viewport dump is compared against the
+#     part of it inside the rectangle, by key, so a missing sample and an
+#     invented one are reported apart from a wrong one. And the read must
+#     genuinely cost less: a viewport that decompressed everything and cropped
+#     would satisfy the first check completely.
+#
+#     The HTJ2K fixture is 512x512 in 256x256 tiles with its data window at
+#     (13, -7). Those numbers are load-bearing and scripts/viewportgen records
+#     why: the reference codec's HTJ2K parameters are fixed at 128x32
+#     code-blocks and five decompositions, so a code-block's influence spans
+#     about 64 samples at the lowest resolution and inside a smaller tile
+#     nothing can ever be skipped. The offset window is there because image,
+#     tile and codestream coordinates all coincide when a window starts at
+#     (0, 0).
+# ---------------------------------------------------------------------------
+section "external oracle (viewport reads: a rectangle costs a rectangle)"
+
+VPDIR="$WORK/viewport"
+VIEWPORT="$WORK/exrviewport"
+VPGEN="$WORK/viewportgen"
+mkdir -p "$VPDIR"
+
+if [ ! -x "$TILEDUMP" ]; then
+	skip "exrtiledump could not be built against the reference; a viewport read has no oracle"
+elif ! go build -o "$VIEWPORT" ./scripts/exrviewport/ 2>"$VPDIR/build.err"; then
+	fail "viewport: could not build scripts/exrviewport: $(head -1 "$VPDIR/build.err")"
+elif ! go build -o "$VPGEN" ./scripts/viewportgen/ 2>"$VPDIR/build.err"; then
+	fail "viewport: could not build scripts/viewportgen: $(head -1 "$VPDIR/build.err")"
+else
+	# The viewport, in image coordinates. The data window starts at (13, -7),
+	# so window-relative this is 200..327 by 32..159 — it straddles the
+	# boundary between the two tiles of the top row and reaches neither edge
+	# of either.
+	VX0=213; VY0=25; VX1=340; VY1=152
+	RX0=200; RY0=32; RX1=327; RY1=159
+
+	if ! "$VPGEN" "$VPDIR" >"$VPDIR/gen.log" 2>&1; then
+		fail "viewport: viewportgen would not write the fixture: $(head -1 "$VPDIR/gen.log")"
+	elif ! "$TILEDUMP" "$VPDIR/vp_htj2k.exr" >"$VPDIR/truth.dump" 2>"$VPDIR/dump.err"; then
+		fail "viewport: the reference would not read the HTJ2K fixture: $(head -1 "$VPDIR/dump.err")"
+	else
+		pass "viewport: the reference reads the 512x512 HTJ2K fixture written for this section"
+
+		# ---- control: the whole image, through the same path ---------------
+		#
+		# Without this, every check below is satisfied by a reader that is
+		# wrong everywhere in the same way, since the expectation is filtered
+		# from a dump of the same file.
+		if "$VIEWPORT" "$VPDIR/vp_htj2k.exr" 13 -7 524 504 >"$VPDIR/whole.dump" 2>"$VPDIR/whole.err"; then
+			awk '!/^#/' "$VPDIR/truth.dump" >"$VPDIR/truth.level0"
+			awk '!/^#/' "$VPDIR/whole.dump" >"$VPDIR/whole.samples"
+			tilecmp "$VPDIR/truth.level0" "$VPDIR/whole.samples"
+			if [ "$CMP_MISSING" = 0 ] && [ "$CMP_EXTRA" = 0 ] && [ "$CMP_MAXERR" = "0" ]; then
+				pass "viewport control: the whole data window read as one region matches the reference exactly ($CMP_SAMPLES samples)"
+			else
+				fail "viewport control: whole-window read differs: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+			fi
+		else
+			fail "viewport control: exrviewport would not read the whole window: $(head -1 "$VPDIR/whole.err")"
+		fi
+
+		# ---- the viewport itself -------------------------------------------
+		if "$VIEWPORT" "$VPDIR/vp_htj2k.exr" $VX0 $VY0 $VX1 $VY1 >"$VPDIR/vp.dump" 2>"$VPDIR/vp.err"; then
+			awk -v x0=$RX0 -v y0=$RY0 -v x1=$RX1 -v y1=$RY1 \
+				'!/^#/ && $1==0 && $2==0 && $3>=x0 && $3<=x1 && $4>=y0 && $4<=y1' \
+				"$VPDIR/truth.dump" >"$VPDIR/vp.expect"
+			awk '!/^#/' "$VPDIR/vp.dump" >"$VPDIR/vp.samples"
+			nexp=$(wc -l <"$VPDIR/vp.expect" | tr -d ' ')
+			if [ "$nexp" -eq 0 ]; then
+				fail "viewport: the expectation is empty; nothing was compared"
+			else
+				tilecmp "$VPDIR/vp.expect" "$VPDIR/vp.samples"
+				if [ "$CMP_MISSING" = 0 ] && [ "$CMP_EXTRA" = 0 ] && [ "$CMP_MAXERR" = "0" ]; then
+					pass "viewport: a 128x128 rectangle of a 512x512 HTJ2K file matches the reference exactly ($CMP_SAMPLES samples)"
+				else
+					fail "viewport: rectangle differs: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+				fi
+			fi
+
+			# ---- and it must cost less --------------------------------------
+			read_chunks=$(awk '/^# chunks/ {print $3}' "$VPDIR/vp.dump")
+			all_chunks=$(awk '/^# chunks/ {print $4}' "$VPDIR/vp.dump")
+			read_bytes=$(awk '/^# filebytes/ {print $3}' "$VPDIR/vp.dump")
+			all_bytes=$(awk '/^# filebytes/ {print $4}' "$VPDIR/vp.dump")
+			cb_decoded=$(awk '/^# codeblocks/ {print $3}' "$VPDIR/vp.dump")
+			cb_skipped=$(awk '/^# codeblocks/ {print $4}' "$VPDIR/vp.dump")
+			if [ "${read_chunks:-0}" -lt "${all_chunks:-0}" ] && [ "${read_bytes:-0}" -lt "${all_bytes:-0}" ]; then
+				pass "viewport: it read $read_chunks of $all_chunks chunks and $read_bytes of $all_bytes file bytes"
+			else
+				fail "viewport: it read $read_chunks of $all_chunks chunks and $read_bytes of $all_bytes file bytes; a rectangle must read less than the file"
+			fi
+			if [ "${cb_skipped:-0}" -gt 0 ]; then
+				pass "viewport: the block coder ran on $cb_decoded code-block bytes and skipped $cb_skipped inside the chunks it did read"
+			else
+				fail "viewport: no code-block data was skipped; the chunks were decoded whole and cropped"
+			fi
+		else
+			fail "viewport: exrviewport would not read the rectangle: $(head -1 "$VPDIR/vp.err")"
+		fi
+
+		# ---- signal: the comparison must reject wrong samples ---------------
+		if [ -s "$VPDIR/vp.samples" ]; then
+			awk '{ $6 = $6 + 0.5; print }' "$VPDIR/vp.samples" >"$VPDIR/vp.bad"
+			tilecmp "$VPDIR/vp.expect" "$VPDIR/vp.bad"
+			if [ "$CMP_MAXERR" = "0" ]; then
+				fail "viewport signal check: deliberately wrong samples compared clean"
+			else
+				pass "viewport signal check: the comparison reports wrong samples (maxerr=$CMP_MAXERR)"
+			fi
+		fi
+	fi
+
+	# ---- the same read, on a file the reference wrote --------------------
+	#
+	# Everything above starts from a file this library produced. A viewport
+	# read that agreed with the reference only on this library's own output
+	# would be the same shape of defect the read-direction sections exist to
+	# catch, so the same rectangle is read out of a ZIP file written entirely
+	# by OpenEXR's own tools.
+	if ! command -v exrmaketiled >/dev/null 2>&1; then
+		skip "viewport on a reference-written file: exrmaketiled is not installed (brew install openexr)"
+	elif ! command -v oiiotool >/dev/null 2>&1; then
+		skip "viewport on a reference-written file: oiiotool is not installed (brew install openimageio)"
+	elif ! oiiotool --pattern noise:type=uniform 512x512 3 -d half -o "$VPDIR/flat.exr" >"$VPDIR/oiio.log" 2>&1; then
+		fail "viewport on a reference-written file: oiiotool would not write the source: $(head -1 "$VPDIR/oiio.log")"
+	elif ! exrmaketiled -t 256 256 "$VPDIR/flat.exr" "$VPDIR/vp_zip.exr" >"$VPDIR/mk.log" 2>&1; then
+		fail "viewport on a reference-written file: exrmaketiled would not tile it: $(head -1 "$VPDIR/mk.log")"
+	elif ! "$TILEDUMP" "$VPDIR/vp_zip.exr" >"$VPDIR/ztruth.dump" 2>"$VPDIR/zdump.err"; then
+		fail "viewport on a reference-written file: the reference would not read it back: $(head -1 "$VPDIR/zdump.err")"
+	elif ! "$VIEWPORT" "$VPDIR/vp_zip.exr" 200 32 327 159 >"$VPDIR/zvp.dump" 2>"$VPDIR/zvp.err"; then
+		fail "viewport on a reference-written file: exrviewport would not read the rectangle: $(head -1 "$VPDIR/zvp.err")"
+	else
+		awk '!/^#/ && $1==0 && $2==0 && $3>=200 && $3<=327 && $4>=32 && $4<=159' \
+			"$VPDIR/ztruth.dump" >"$VPDIR/zvp.expect"
+		awk '!/^#/' "$VPDIR/zvp.dump" >"$VPDIR/zvp.samples"
+		if [ ! -s "$VPDIR/zvp.expect" ]; then
+			fail "viewport on a reference-written file: the expectation is empty; nothing was compared"
+		else
+			tilecmp "$VPDIR/zvp.expect" "$VPDIR/zvp.samples"
+			if [ "$CMP_MISSING" = 0 ] && [ "$CMP_EXTRA" = 0 ] && [ "$CMP_MAXERR" = "0" ]; then
+				pass "viewport: a rectangle of a file exrmaketiled wrote matches the reference exactly ($CMP_SAMPLES samples)"
+			else
+				fail "viewport on a reference-written file: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+			fi
+		fi
+		zread=$(awk '/^# chunks/ {print $3}' "$VPDIR/zvp.dump")
+		zall=$(awk '/^# chunks/ {print $4}' "$VPDIR/zvp.dump")
+		zskip=$(awk '/^# codeblocks/ {print $4}' "$VPDIR/zvp.dump")
+		if [ "${zread:-0}" -lt "${zall:-0}" ] && [ "${zskip:-1}" -eq 0 ]; then
+			pass "viewport: a ZIP file saves at the chunk level only — $zread of $zall chunks, and no claimed code-block saving"
+		else
+			fail "viewport: ZIP read $zread of $zall chunks and claimed $zskip skipped code-block bytes; a ZIP chunk has no addressable interior"
+		fi
+	fi
+fi
+
+
+
 section "result"
 echo "checks run: $checked, failures: $failures, skipped: $skips"
 if [ "$failures" -ne 0 ]; then

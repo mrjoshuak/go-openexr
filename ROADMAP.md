@@ -53,37 +53,56 @@ files written by tools that do not know the trick — but that path gives levels
 only, not regions and not progressive quality, so it is a genuine fallback
 rather than an equivalent.
 
-Both halves of the capability live in go-jpeg2000 and are unfinished there:
-precinct partitions are mis-read, and the HT encoder emits the cleanup pass only
-so there is no quality progression to serve. Its roadmap now carries both at the
-top. This one carries the API that would expose them.
+Both halves of this lived in go-jpeg2000 and were unfinished there. Precinct
+partitions are read correctly as of its v1.5.2 and region decode landed in
+v1.5.3, so the capability is real now rather than planned: `File.ReadRegion`
+turns a rectangle into chunks, fetches those chunks alone, and decodes only the
+code-blocks the rectangle can reach.
 
 ## Now
 
-### Codestream-level decode through the EXR API — surfaced, and blocked below
+Nothing. Every item that was here is below, done. The next section is the one
+after that.
 
-`HTJ2KDecompressPartial` and `HTJ2KDecodeOptions` expose the codestream's own
-capabilities — resolution, region, quality layers — and document that they are
-an extension beyond the reference compressor interface rather than a format
-feature. Nothing written this way changes a file.
+### ~~Codestream-level decode through the EXR API~~ — done, and measured
 
-Two of the three cannot be honoured yet, and building this is what found out
-why. In go-jpeg2000, `Config.DecodeArea` was declared, documented as "specifies
-a region to decode", and read by nothing — a region request returned the whole
-image. `Config.ReduceResolution` was correct for ordinary integer samples and
-returned wavelet-domain values as floats for any codestream carrying an NLT
-point transform, which an EXR HTJ2K chunk always does: dimensions right, samples
-off by 175 on a ramp spanning 0 to 2. Both refuse rather than mislead as of
-go-jpeg2000 v1.5.2, and this package's tests assert the refusal.
+`File.ReadRegion` reads a rectangle of a tiled part without reading or
+decompressing the rest of the file. `ChunksForRegion` resolves the rectangle to
+the tiles that hold it from chunk headers alone; those chunks are fetched by
+byte range; and for HTJ2K the chunk's own codestream is decoded for the
+rectangle, so the block coder never runs on the code-blocks the rectangle cannot
+reach. `HTJ2KDecompressPartial` remains the layer below, and now reports what it
+decoded and what a region let it skip.
 
-So a viewport resolves to byte ranges today — that is `File.ChunkRange` and the
-packet index, which need none of this — but turning those bytes into fewer
-pixels than the chunk holds does not work yet.
+Measured by the gate on a 512x512 HTJ2K file in 256x256 tiles, data window at
+(13, -7), for a 128x128 rectangle straddling two tiles: 2 of 4 chunks, 13856 of
+25905 file bytes, and inside those chunks 11114 code-block bytes decoded against
+2017 skipped. Every sample matches what libOpenEXR reads for the same rectangle.
 
-Done when a region or reduced-resolution decode of an HTJ2K chunk reads a
-demonstrable subset of the chunk, and its samples match the same region, or a
-downsample, of a full decode. It depends on the region-decode item in
-go-jpeg2000's roadmap.
+Two things are worth stating plainly rather than leaving to be inferred.
+
+**The codestream saving is real but modest, and the format is why.** An EXR
+HTJ2K chunk must be the chunk the reference implementation would have written —
+128x32 code-blocks, five decompositions, no precinct partition
+(`internal_ht.cpp`). With no precincts, addressing is per code-block, and a
+code-block's influence is its band rectangle grown by the synthesis margin,
+about 64 samples at the lowest resolution. Below roughly a 256x256 tile, every
+code-block reaches every pixel and nothing can be skipped at all; the saving is
+then entirely at the chunk level, which is still most of it. Precincts would
+sharpen this considerably, and writing them would make the file something the
+reference did not write. That trade is not this library's to make silently.
+
+**Only HTJ2K has an interior to address.** A ZIP or PIZ chunk decompresses whole
+or not at all, so for those `ReadRegion` saves the chunk reads and nothing more,
+and reports a skipped count of zero rather than implying otherwise. The gate
+asserts that zero on a ZIP file `exrmaketiled` wrote, because reporting a saving
+that does not exist is the easiest way for this API to overstate itself.
+
+Reduced-resolution decode is still refused, and its tests assert the refusal. An
+EXR HTJ2K chunk always carries an NLT point transform, and a reduced decode
+stops the inverse wavelet at an LL subband, leaving values NLT maps back from
+rather than samples — measured at off by 175 on a ramp spanning 0 to 2. It is
+listed under Later.
 
 ### ~~Expose the chunk offset table for indexed reads~~ — done, and it composes
 
@@ -345,6 +364,18 @@ now refuses a chunk with no channels rather than producing one.
 
 ## Later
 
+### Reduced-resolution decode of an HTJ2K chunk
+
+`HTJ2KDecodeOptions.ReduceResolution` is refused, and its tests assert the
+refusal. An EXR HTJ2K chunk always carries an NLT point transform; a reduced
+decode stops the inverse wavelet at an LL subband, so what comes out is
+wavelet-domain values that NLT then maps back from as though they were samples
+— dimensions right, values off by 175 on a ramp spanning 0 to 2 when measured.
+
+Done when a reduced decode of an NLT codestream produces the samples a full
+decode's own downsample produces, held to the wavelet's own error rather than to
+a tolerance chosen to fit. It needs the fix in go-jpeg2000, not here.
+
 ### Lossy codec tolerances derived rather than measured
 
 B44, B44A, DWAA and DWAB are gated with bounds stated in the script header. The
@@ -378,7 +409,7 @@ complete.
 
 ## Dependency note
 
-HTJ2K support requires go-jpeg2000 v1.5.0, which this module pins. Earlier versions cannot emit
+HTJ2K support requires go-jpeg2000 v1.5.4, which this module pins. Earlier versions cannot emit
 a codestream the reference accepts, for two reasons that were measured:
 `EncodeHalf`/`EncodeFloat` ignored `Options.HighThroughput` so Rsiz bit 14 was
 never set, and the NLT segment was written short. `scripts/validate.sh` excuses

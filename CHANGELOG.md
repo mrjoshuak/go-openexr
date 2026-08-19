@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.6] - 2026-08-19
+
+A rectangle of a tiled file can now be read without reading or decompressing the
+rest of it, and what that saves is measured rather than asserted.
+
+### Added
+- **`File.ReadRegion`.** It resolves a rectangle to the tiles that hold it by
+  reading chunk headers alone, fetches only those chunks, and for HTJ2K decodes
+  only the code-blocks the rectangle can reach. `RegionSamples` carries one
+  float32 plane per channel in the region's own coordinates, together with the
+  chunks read, the file bytes read, and the code-block bytes decoded and
+  skipped.
+
+  Measured by the gate against libOpenEXR on a 512x512 HTJ2K file in 256x256
+  tiles with its data window at (13, -7), for a 128x128 rectangle straddling two
+  tiles: 2 of 4 chunks, 13856 of 25905 file bytes, 11114 code-block bytes
+  decoded against 2017 skipped, and every sample identical to what the reference
+  reads for the same rectangle.
+
+  Two limits are stated rather than left to be inferred. The codestream saving
+  is modest because the format fixes it: an EXR HTJ2K chunk must be the chunk
+  the reference would have written — 128x32 code-blocks, five decompositions, no
+  precinct partition — so addressing is per code-block, and a code-block's
+  influence spans about 64 samples at the lowest resolution. Below roughly a
+  256x256 tile nothing can be skipped at all and the whole saving is at the
+  chunk level. And HTJ2K is the only compression with an interior to address; a
+  ZIP chunk decompresses whole or not at all, so for every other codec this
+  saves the chunk reads and reports a skipped count of zero. The gate asserts
+  that zero on a ZIP file `exrmaketiled` wrote, because claiming a saving that
+  does not exist is the easiest way for this to overstate itself.
+
+- `HTJ2KPartialResult.DecodedBytes` and `.SkippedBytes`, so a region decode of a
+  chunk reports what it spent. A region decode that decompressed everything and
+  cropped would return identical samples; this is what tells the two apart.
+
+### Changed
+- `go-jpeg2000` is now v1.5.4, which is where the region decode itself lives.
+
+### Internal
+- The tiled reader's decompression switch is a function, `decompressTileData`,
+  rather than a block inside `ReadTileLevel`. `ReadRegion` decompresses tiles it
+  fetched by byte range, with no frame buffer and no level walk, and a second
+  copy of that switch would be a second place for a codec to go missing — which
+  is exactly how HTJ2K came to be absent from the tiled path in the first place.
+
+### Gate
+- A new section, "viewport reads: a rectangle costs a rectangle": eight checks
+  covering the whole-window control, the rectangle against the reference's own
+  samples, the chunk-level and code-block-level savings, the signal check, and
+  the same rectangle read out of a ZIP file written entirely by OpenEXR's tools.
+  242 checks, 0 failures, 0 skipped.
+- A 32nd mutation, `region-tile-origin`: `ReadRegion` places a tile at its tile
+  index times the tile size, dropping the data window's origin. It survives the
+  origin-window test and is killed by the offset-window one, which is why the
+  test fixtures now run at both (0, 0) and (13, -7). Every coordinate system a
+  viewport read touches coincides at the origin.
+
 ## [1.4.5] - 2026-08-19
 
 Frame buffer coordinates are window-absolute again, and every storage type in

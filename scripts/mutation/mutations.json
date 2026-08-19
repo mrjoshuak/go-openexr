@@ -973,7 +973,7 @@
     {
       "id": "deep-scanline-header-size",
       "codec": "Deep",
-      "description": "deep scanline chunk header shortened to 20 bytes, dropping unpackedSizeOfSampleData, in writer and header size together \u2014 the shipped defect exactly",
+      "description": "deep scanline chunk header shortened to 20 bytes, dropping unpackedSizeOfSampleData, in writer and header size together — the shipped defect exactly",
       "spec": "A deep scanline chunk header is int y + three uint64: packed offset-table size, packed sample-data size, unpacked sample-data size. Nothing else in the chunk says how many samples it holds. Since multi-part deep writing landed, WriteDeepChunkPart sizes its header from this constant and writes the fourth field unconditionally, so shortening the constant overruns that buffer and the existing tests catch it too.",
       "symmetric": true,
       "edits": [
@@ -1015,7 +1015,7 @@
       "id": "framebuffer-origin-bias",
       "codec": "FrameBuffer",
       "description": "AllocateChannels drops the window origin, so every coordinate means something else",
-      "spec": "Slice carries the window's minimum as OriginX/OriginY and PixelAddr subtracts it, so coordinates are the ones the data window is expressed in. Dropping the origin makes every access to a non-zero-origin window address the wrong pixel \u2014 and read or write outside the buffer at the far edge, which the collector reports as a bad pointer.",
+      "spec": "Slice carries the window's minimum as OriginX/OriginY and PixelAddr subtracts it, so coordinates are the ones the data window is expressed in. Dropping the origin makes every access to a non-zero-origin window address the wrong pixel — and read or write outside the buffer at the far edge, which the collector reports as a bad pointer.",
       "symmetric": true,
       "edits": [
         {
@@ -1085,7 +1085,7 @@
       "id": "offset-table-close-only",
       "codec": "Scanline",
       "description": "the chunk offset table is written by Close alone, so a writer that is never closed leaves it as zeros",
-      "spec": "The chunk offset table sits immediately after the header and is how the reference implementation locates every chunk. A table of zeros makes the file unreadable outside this package, while this package's own reader recovers by scanning \u2014 which is why the defect behind issue #4 looked like a read bug.",
+      "spec": "The chunk offset table sits immediately after the header and is how the reference implementation locates every chunk. A table of zeros makes the file unreadable outside this package, while this package's own reader recovers by scanning — which is why the defect behind issue #4 looked like a read bug.",
       "symmetric": true,
       "edits": [
         {
@@ -1182,7 +1182,7 @@
       "id": "pxr24-mantissa-shift",
       "codec": "PXR24",
       "description": "PXR24 rounds the mantissa to 14 bits instead of 15, on the finite path",
-      "spec": "PXR24 keeps 24 of a float's 32 bits: sign, all 8 exponent bits and the top 15 of the mantissa, rounded. The name is the specification. The first version of this mutation edited the NaN branch instead of the finite one and survived a test that only used finite values, which is why the finite path is the anchor. It is asymmetric: float24ToFloat32 shifts back by 8 unconditionally, so changing only the encoder breaks the round trip and the existing test catches it. Recorded as killed in both phases rather than left as a mismatch \u2014 this invariant was already covered, which is worth knowing.",
+      "spec": "PXR24 keeps 24 of a float's 32 bits: sign, all 8 exponent bits and the top 15 of the mantissa, rounded. The name is the specification. The first version of this mutation edited the NaN branch instead of the finite one and survived a test that only used finite values, which is why the finite path is the anchor. It is asymmetric: float24ToFloat32 shifts back by 8 unconditionally, so changing only the encoder breaks the round trip and the existing test catches it. Recorded as killed in both phases rather than left as a mismatch — this invariant was already covered, which is worth knowing.",
       "symmetric": false,
       "edits": [
         {
@@ -1207,6 +1207,37 @@
       "expect": {
         "added": "killed",
         "existing": "killed"
+      }
+    },
+    {
+      "id": "region-tile-origin",
+      "codec": "HTJ2K",
+      "description": "File.ReadRegion places a tile at its tile index times the tile size, dropping the data window's origin",
+      "spec": "OpenEXR 3.x file layout, tiled images: tile (tx, ty) of level 0 covers the rectangle starting at dataWindow.min + (tx*xSize, ty*ySize). The origin is not optional and is not always zero — the reference's own exrmaketiled preserves whatever window the source had. A viewport read has three coordinate systems in play (image, tile, codestream) and they all coincide at a window of (0, 0), so this defect is invisible to any test whose fixture starts at the origin, which every tiled test in this package did before the viewport work.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/region.go",
+          "count": 1,
+          "old": "\t\ttx0 := dw.Min.X + int32(cr.TileX*tw)\n\t\tty0 := dw.Min.Y + int32(cr.TileY*th)",
+          "new": "\t\ttx0 := int32(cr.TileX * tw)\n\t\tty0 := int32(cr.TileY * th)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionMatchesTheWholeImage/htj2k256_origin"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionMatchesTheWholeImage/htj2k256_offset"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
       }
     }
   ]

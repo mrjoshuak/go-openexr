@@ -224,62 +224,51 @@ func (r *TiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error {
 	tileWidth := min(int(r.tileDesc.XSize), levelWidth-tileX*int(r.tileDesc.XSize))
 	tileHeight := min(int(r.tileDesc.YSize), levelHeight-tileY*int(r.tileDesc.YSize))
 
-	// Decompress the tile data. A tile that is not smaller than its
-	// uncompressed size was stored raw by the writer (see storeUncompressed);
-	// the size is the only signal for this. Small mipmap levels hit this
-	// constantly, since a 2x2 tile never compresses.
-	compression := r.header.Compression()
-	var decompressedData []byte
-
-	if compression != CompressionNone &&
-		len(data) >= r.calculateTileSize(tileWidth, tileHeight) {
-		return r.decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight, data)
-	}
-
-	switch compression {
-	case CompressionNone:
-		decompressedData = data
-	case CompressionRLE:
-		decompressedData, err = r.decompressTileRLE(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionZIPS, CompressionZIP:
-		decompressedData, err = r.decompressTileZIP(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionPIZ:
-		decompressedData, err = r.decompressTilePIZ(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionPXR24:
-		decompressedData, err = r.decompressTilePXR24(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionB44, CompressionB44A:
-		decompressedData, err = r.decompressTileB44(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionDWAA, CompressionDWAB:
-		decompressedData, err = r.decompressTileDWA(data, tileX, tileY, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	case CompressionHTJ2K256, CompressionHTJ2K32:
-		decompressedData, err = r.decompressTileHTJ2K(data, tileWidth, tileHeight)
-		if err != nil {
-			return err
-		}
-	default:
-		return errors.New("exr: compression not yet implemented: " + compression.String())
+	decompressedData, err := r.decompressTileData(data, tileX, tileY, tileWidth, tileHeight)
+	if err != nil {
+		return err
 	}
 
 	// Decode tile data - use level-aware decoding
 	return r.decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, tileHeight, decompressedData)
+}
+
+// decompressTileData expands one tile chunk's bytes to packed samples.
+//
+// A tile that is not smaller than its uncompressed size was stored raw by the
+// writer (see storeUncompressed); the size is the only signal for this. Small
+// mipmap levels hit this constantly, since a 2x2 tile never compresses.
+//
+// It is a function rather than part of ReadTileLevel because File.ReadRegion
+// decompresses tiles it fetched by byte range, without a frame buffer or a
+// level walk, and a second copy of this switch would be a second place for a
+// codec to go missing — which is exactly how HTJ2K came to be absent from the
+// tiled path in the first place.
+func (r *TiledReader) decompressTileData(data []byte, tileX, tileY, tileWidth, tileHeight int) ([]byte, error) {
+	comp := r.header.Compression()
+	if comp != CompressionNone && len(data) >= r.calculateTileSize(tileWidth, tileHeight) {
+		return data, nil
+	}
+	switch comp {
+	case CompressionNone:
+		return data, nil
+	case CompressionRLE:
+		return r.decompressTileRLE(data, tileWidth, tileHeight)
+	case CompressionZIPS, CompressionZIP:
+		return r.decompressTileZIP(data, tileWidth, tileHeight)
+	case CompressionPIZ:
+		return r.decompressTilePIZ(data, tileWidth, tileHeight)
+	case CompressionPXR24:
+		return r.decompressTilePXR24(data, tileWidth, tileHeight)
+	case CompressionB44, CompressionB44A:
+		return r.decompressTileB44(data, tileWidth, tileHeight)
+	case CompressionDWAA, CompressionDWAB:
+		return r.decompressTileDWA(data, tileX, tileY, tileWidth, tileHeight)
+	case CompressionHTJ2K256, CompressionHTJ2K32:
+		return r.decompressTileHTJ2K(data, tileWidth, tileHeight)
+	default:
+		return nil, errors.New("exr: compression not yet implemented: " + comp.String())
+	}
 }
 
 // ReadTiles reads all tiles in a range at level 0.
