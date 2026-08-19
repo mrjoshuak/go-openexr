@@ -12,10 +12,12 @@ A pure Go implementation of the OpenEXR image file format.
 go-openexr provides native Go support for reading and writing OpenEXR (.exr) files, the professional-grade HDR image format used in motion picture production, visual effects, and computer graphics.
 
 **All 36 pixel-type and compression combinations this library writes are read
-back correctly by the OpenEXR reference implementation, with no excused rows.**
-Thirty of those are verified in the read direction as well; the six HTJ2K
-combinations cannot be, because OpenImageIO cannot write an HTJ2K EXR for us to
-read. That gap is named in the table rather than left out of it.
+back correctly by the OpenEXR reference implementation.** Thirty of those are
+verified in the read direction too. The six HTJ2K combinations cannot be:
+OpenImageIO cannot write an HTJ2K EXR, so there is no reference-written file for
+us to read. Nothing is exempted from the table on the grounds of being
+difficult — that one gap exists because the fixture cannot be produced, and it
+is listed as such.
 
 Lossless codecs are compared bit-identically against the uncompressed twin;
 lossy ones against a bound derived from the format rather than from whatever we
@@ -76,7 +78,7 @@ PIZ compression now fully supports float32 and uint32 channels. Previous version
 
 ### Progressive HTJ2K Decoding
 
-Extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images. Introduced in v1.1.0; see [CHANGELOG.md](CHANGELOG.md) for what each release changed.
+Extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 Each wavelet packet represents one quality layer at one resolution level of one component -- the atomic unit for progressive quality improvement. Lower-resolution packets produce a coarse image instantly; higher-resolution and higher-quality-layer packets refine detail progressively. Packets can be delivered in any order, so applications can prioritize by resolution, component, or quality layer based on their needs.
 
@@ -178,9 +180,9 @@ that fixture.
 This required go-jpeg2000 v1.5.0. Earlier versions could not emit a codestream
 OpenJPH would accept: v1.3.0 ignored `HighThroughput` in `EncodeHalf`/
 `EncodeFloat`, so Rsiz bit 14 was never set, and wrote the NLT segment short.
-`scripts/validate.sh` excuses these rows only for a build resolved at exactly
-v1.3.0, and reports a row that passes while excused as a closed gap, so the
-excuse cannot outlive the defect.
+`scripts/validate.sh` waives these rows for a build resolved at exactly v1.3.0
+and gates them for every other version. If a waived row passes anyway, the
+script says so, so the waiver cannot outlive the defect it was granted for.
 
 **Subsampled channels.** Channels with `ySampling > 1` are refused by the B44
 and DWA paths rather than silently misread. The chunk layout code assumes one
