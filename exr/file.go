@@ -784,10 +784,70 @@ func (w *Writer) WriteTileChunk(tileX, tileY, levelX, levelY int, data []byte) e
 	return w.WriteTileChunkPart(0, tileX, tileY, levelX, levelY, data)
 }
 
+// tileChunkIndex returns the slot a tile's offset occupies in a tiled part's
+// chunk offset table.
+//
+// The format indexes that table by tile coordinate, not by the order the tiles
+// were written: level major — for a ripmap, y level major — then tile row, then
+// tile column. A reader looks a tile up by coordinate and then checks that the
+// chunk it lands on names that tile, so recording offsets in write order
+// produces a file that reads back only if the caller happened to write in the
+// canonical order, and is otherwise rejected outright:
+//
+//	(EXR_ERR_BAD_CHUNK_LEADER) Corrupt tile (0, 0), level (0, 0) (chunk 0):
+//	bad tile x coordinate (2, expect 0)
+//
+// The reference implementation lets an application emit tiles in any order for
+// exactly this reason, and scripts/validate.sh writes three fixtures in reverse
+// order to hold this to it.
+func tileChunkIndex(h *Header, tileX, tileY, levelX, levelY int) (int, error) {
+	td := h.TileDescription()
+	if td == nil {
+		return 0, ErrNotTiled
+	}
+	numXLevels, numYLevels := h.NumXLevels(), h.NumYLevels()
+	if levelX < 0 || levelX >= numXLevels || levelY < 0 || levelY >= numYLevels {
+		return 0, ErrLevelOutOfRange
+	}
+
+	base := 0
+	switch td.Mode {
+	case LevelModeOne:
+		if levelX != 0 || levelY != 0 {
+			return 0, ErrLevelOutOfRange
+		}
+	case LevelModeMipmap:
+		if levelX != levelY {
+			return 0, ErrLevelOutOfRange
+		}
+		for l := 0; l < levelX; l++ {
+			base += h.NumXTiles(l) * h.NumYTiles(l)
+		}
+	case LevelModeRipmap:
+		// Levels are numbered ly*numXLevels + lx, so every level before this
+		// one contributes its own tile count.
+		for l := levelY*numXLevels + levelX - 1; l >= 0; l-- {
+			base += h.NumXTiles(l%numXLevels) * h.NumYTiles(l/numXLevels)
+		}
+	default:
+		return 0, ErrNotTiled
+	}
+
+	numX, numY := h.NumXTiles(levelX), h.NumYTiles(levelY)
+	if tileX < 0 || tileX >= numX || tileY < 0 || tileY >= numY {
+		return 0, ErrTileOutOfRange
+	}
+	return base + tileY*numX + tileX, nil
+}
+
 // WriteTileChunkPart writes a tile chunk of pixel data to the specified part.
 // For tiled files, tileX and tileY are the tile coordinates.
 // levelX and levelY are the mipmap level coordinates (0,0 for single-level).
 // data should be the compressed pixel data.
+//
+// Tiles may be written in any order. The offset recorded for a tile is placed
+// in the slot the format assigns to its coordinates, not in the slot the write
+// happens to arrive in; see tileChunkIndex.
 func (w *Writer) WriteTileChunkPart(part, tileX, tileY, levelX, levelY int, data []byte) error {
 	if w.finalized {
 		return errors.New("exr: cannot write to finalized file")
@@ -796,9 +856,19 @@ func (w *Writer) WriteTileChunkPart(part, tileX, tileY, levelX, levelY int, data
 		return errors.New("exr: invalid part index")
 	}
 
-	idx := w.chunkIndex[part]
-	if idx >= len(w.offsets[part]) {
+	if w.chunkIndex[part] >= len(w.offsets[part]) {
 		return errors.New("exr: too many chunks written")
+	}
+
+	idx := w.chunkIndex[part]
+	if part < len(w.headers) && w.headers[part] != nil && w.headers[part].IsTiled() {
+		var err error
+		if idx, err = tileChunkIndex(w.headers[part], tileX, tileY, levelX, levelY); err != nil {
+			return err
+		}
+	}
+	if idx < 0 || idx >= len(w.offsets[part]) {
+		return errors.New("exr: tile is outside the chunk offset table")
 	}
 
 	// Record the offset

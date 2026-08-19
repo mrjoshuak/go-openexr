@@ -382,6 +382,287 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5. Tiled images, every resolution level, read back by the reference
+#    implementation itself.
+#
+#    scripts/tiledgen writes the fixtures — plain tiled, mipmapped and
+#    ripmapped, with tile sizes that divide the image and tile sizes that leave
+#    partial tiles on both edges — and beside each file it writes the samples
+#    that file is meant to hold and the geometry it is meant to claim.
+#    scripts/exrtiledump links against libOpenEXR and prints what the reference
+#    actually finds, level by level. Nothing in this library reads the files, so
+#    a defect applied identically to the tiled writer and the tiled reader — the
+#    shape of every codec defect found in v1.4.0 — fails here.
+#
+#    Two things are compared per fixture:
+#
+#      geometry  the dumper prints the mode, tile size, rounding, level count
+#                and every level's size and tile count, all computed by the
+#                reference from the file. tiledgen prints the same lines from
+#                this library's own level arithmetic. They are diffed, so the
+#                two implementations of the format's level math must agree
+#                exactly rather than merely both produce a readable file.
+#      samples   every sample of every level, by (level, x, y, channel) key.
+#                An "exact" row must be bit-identical; a "lossy" row must decode
+#                with a maximum error inside the bound derived for that codec in
+#                this script's header. Missing or invented samples fail the row
+#                whatever the error is, so a dump that stops early cannot pass.
+#
+#    THE LOSSY FIXTURE IS NOT THE SCANLINE ONE. B44's error bound is relative to
+#    each 4x4 block's own maximum and holds for blocks spanning at most one
+#    binade; scripts/interopgen's gradient runs down to zero, and at the small
+#    mipmap levels one block then covers a quarter of the image and several
+#    binades. Measured there, B44 costs 0.107 — and the OpenEXR reference
+#    encoder costs exactly the same 0.107 on the same samples, so it is the
+#    codec and the content, not the encoder. The tiled fixtures keep the lossy
+#    channels inside [0.5, 1], one binade, which makes the derived bound valid
+#    at every level. See scripts/tiledgen/main.go.
+#
+#    Three controls run before any of it, because this project has been fooled
+#    by a broken oracle and by a fixture with no signal, and both look exactly
+#    like a real defect:
+#
+#      a. exrmaketiled, the reference's own tiling tool, writes a tiled file
+#         from the same pixels; it must satisfy the same expectation. If it does
+#         not, the expectation or the dumper is wrong, not this library.
+#      b. oiiotool tiles its own output and reads it back, so a failure that is
+#         really OpenImageIO's stays distinguishable from one that is ours.
+#      c. The comparator is handed two mismatched pairs and must report both a
+#         difference and a shortfall. A check that cannot fail is not coverage,
+#         and an audit of this repository found 21 tests that could not.
+# ---------------------------------------------------------------------------
+section "external oracle (tiled: one level, mipmap, ripmap, every level)"
+
+# tiletol <codec> — the bound a lossy tiled row is held to, from this script's
+# header. Same numbers as the scanline rows: the codec does not change because
+# the chunk is a tile.
+tiletol() {
+	case "$1" in
+	b44 | b44a) echo "3.125e-02" ;;
+	dwaa | dwab) echo "1.0e-01" ;;
+	pxr24) echo "3.0517578125e-05" ;;
+	*) echo "" ;;
+	esac
+}
+
+# tilecmp <expect> <dump> — compare and publish the five measurements.
+CMP_SAMPLES=0
+CMP_MISSING=0
+CMP_EXTRA=0
+CMP_MAXERR=0
+CMP_AT=-
+tilecmp() {
+	line=$(awk -f "$REPO/scripts/tilecmp.awk" "$1" "$2") || return 1
+	# shellcheck disable=SC2086
+	set -- $line
+	CMP_SAMPLES=${1#samples=}
+	CMP_MISSING=${2#missing=}
+	CMP_EXTRA=${3#extra=}
+	CMP_MAXERR=${4#maxerr=}
+	CMP_AT=${5#at=}
+}
+
+TILEDUMP="$WORK/exrtiledump"
+TDIR="$WORK/tiled"
+
+if [ "$build_ok" = "0" ]; then
+	skip "tiled oracle (build failed)"
+elif ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists OpenEXR 2>/dev/null; then
+	skip "OpenEXR development files not found by pkg-config; the tiled oracle cannot be built (brew install openexr)"
+elif ! command -v c++ >/dev/null 2>&1; then
+	skip "no c++ compiler; the tiled oracle cannot be built"
+elif ! out=$(c++ -std=c++17 -O1 -o "$TILEDUMP" scripts/exrtiledump/exrtiledump.cpp \
+	$(pkg-config --cflags --libs OpenEXR) 2>&1); then
+	fail "could not build scripts/exrtiledump against the reference implementation
+$(echo "$out" | head -10)"
+else
+	mkdir -p "$TDIR"
+	note "oracle: scripts/exrtiledump linked against OpenEXR $(pkg-config --modversion OpenEXR)"
+
+	if ! go run ./scripts/tiledgen "$TDIR" >"$WORK/tiledgen.log" 2>&1; then
+		fail "scripts/tiledgen could not write the tiled fixtures"
+		cat "$WORK/tiledgen.log"
+	else
+		note "$(tail -1 "$WORK/tiledgen.log") into $TDIR"
+
+		# --- control (a): a file this library did not write ------------------
+		ctl="$TDIR/control_ref_one.exr"
+		if ! command -v exrmaketiled >/dev/null 2>&1; then
+			skip "control: exrmaketiled not installed; the reference cannot be asked to write the same tiled file"
+		elif ! exrmaketiled -o -t 32 32 -z zip \
+			"$TDIR/t_one_partial_half_zip_twin.exr" "$ctl" >"$WORK/mk.log" 2>&1; then
+			fail "control: exrmaketiled could not tile the fixture: $(head -2 "$WORK/mk.log")"
+		elif ! "$TILEDUMP" "$ctl" >"$WORK/ctl.dump" 2>"$WORK/ctl.err"; then
+			fail "control: the dumper cannot read the reference's own tiled file: $(head -1 "$WORK/ctl.err")"
+		else
+			tilecmp "$TDIR/t_one_partial_half_zip.expect" "$WORK/ctl.dump"
+			if [ "$CMP_MISSING" = "0" ] && [ "$CMP_EXTRA" = "0" ] && le "$CMP_MAXERR" 0; then
+				pass "control: exrmaketiled's own tiled file satisfies the same expectation ($CMP_SAMPLES samples, max error 0)"
+			else
+				fail "control: the reference's own tiled file does not match the expectation (missing $CMP_MISSING, extra $CMP_EXTRA, max error $CMP_MAXERR at $CMP_AT) — the oracle or the fixture is wrong, not the writer"
+			fi
+
+			# The same tool, asked for a mipmap: the dumper must reach levels
+			# past 0 on a file the reference wrote, and agree with this
+			# library's level arithmetic about how many there are.
+			if exrmaketiled -m -t 16 16 -z zip \
+				"$TDIR/t_mip_half_zip_twin.exr" "$TDIR/control_ref_mip.exr" >"$WORK/mk2.log" 2>&1 &&
+				"$TILEDUMP" -info "$TDIR/control_ref_mip.exr" >"$WORK/ctl2.dump" 2>&1; then
+				if diff -u "$TDIR/t_mip_half_zip.structure" "$WORK/ctl2.dump" >"$WORK/ctl2.diff" 2>&1; then
+					pass "control: the reference's own mipmap has the geometry this library computes ($(grep -c '^# level' "$WORK/ctl2.dump") levels)"
+				else
+					fail "control: this library and the reference disagree about the geometry of a mipmap the reference itself wrote
+$(head -8 "$WORK/ctl2.diff")"
+				fi
+			else
+				fail "control: exrmaketiled could not write a mipmap, or the dumper could not read it: $(head -2 "$WORK/mk2.log")"
+			fi
+		fi
+
+		# --- control (b): oiiotool round-trips its own tiled output ----------
+		if ! command -v oiiotool >/dev/null 2>&1; then
+			skip "control: oiiotool not installed; the second reader cannot be consulted"
+		elif oiiotool "$TDIR/t_one_partial_half_zip_twin.exr" --tile 32 32 \
+			-o "$TDIR/control_oiio.exr" >"$WORK/oiio.log" 2>&1 &&
+			oiiotool --fail 0 --failpercent 0 --hardfail 0 --warn 0 --warnpercent 0 --hardwarn 0 \
+				--diff "$TDIR/t_one_partial_half_zip_twin.exr" "$TDIR/control_oiio.exr" 2>&1 |
+			grep -q '^PASS'; then
+			pass "control: oiiotool tiles its own output and reads it back identically"
+		else
+			fail "control: oiiotool cannot round-trip its own tiled output; a tiled failure below may be OpenImageIO's, not this library's"
+		fi
+
+		# --- control (c): the comparator can fail ---------------------------
+		if "$TILEDUMP" "$TDIR/t_one_partial_half_zip.exr" >"$WORK/selftest.dump" 2>&1; then
+			tilecmp "$TDIR/t_one_partial_half_b44.expect" "$WORK/selftest.dump"
+			differs=$CMP_MAXERR
+			tilecmp "$TDIR/t_mip_half_zip.expect" "$WORK/selftest.dump"
+			short=$CMP_MISSING
+			if le 1e-9 "$differs" && [ "$short" -gt 0 ]; then
+				pass "control: the comparator reports a wrong value (max error $differs) and a missing level ($short samples), so the checks below can fail"
+			else
+				fail "control: the comparator reported no difference (max error $differs) or no shortfall (missing $short) between fixtures known to differ; every tiled check below is vacuous"
+			fi
+		else
+			fail "control: the dumper could not read the plain tiled fixture at all"
+		fi
+
+		# --- the fixtures ---------------------------------------------------
+		oiio_bad=""
+		oiio_seen=0
+		while IFS=$'\t' read -r file type codec mode expect levels chunks tile note; do
+			case "$file" in \#* | "") continue ;; esac
+			name=${file%.exr}
+			label=$(printf '%-7s %-5s %-5s %-9s' "$mode" "$tile" "$type" "$codec")
+
+			if ! "$TILEDUMP" "$TDIR/$file" >"$WORK/t.dump" 2>"$WORK/t.err"; then
+				fail "$label the reference cannot read it: $(head -1 "$WORK/t.err" | cut -c1-140)"
+				continue
+			fi
+
+			# Geometry first: a file whose levels are the wrong size can still
+			# hold self-consistent samples.
+			grep '^#' "$WORK/t.dump" >"$WORK/t.structure"
+			if ! diff -u "$TDIR/$name.structure" "$WORK/t.structure" >"$WORK/t.gdiff" 2>&1; then
+				fail "$label geometry: the reference computes different levels than this library
+$(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
+				continue
+			fi
+
+			tilecmp "$TDIR/$name.expect" "$WORK/t.dump"
+			if [ "$CMP_MISSING" != "0" ] || [ "$CMP_EXTRA" != "0" ]; then
+				fail "$label the reference read $CMP_SAMPLES samples, $CMP_MISSING missing and $CMP_EXTRA unexpected ($note)"
+			else
+				case "$expect" in
+				exact)
+					if le "$CMP_MAXERR" 0; then
+						pass "$label exact: $CMP_SAMPLES samples over $levels levels, bit-identical ($note)"
+					else
+						fail "$label exact by specification, but the reference reads $CMP_MAXERR at (lx,ly,x,y,ch)=$CMP_AT ($note)"
+					fi
+					;;
+				lossy)
+					tol=$(tiletol "$codec")
+					if [ -z "$tol" ]; then
+						fail "$label lossy with no documented tolerance; derive one in scripts/validate.sh"
+					elif le "$CMP_MAXERR" "$tol"; then
+						pass "$label lossy: $CMP_SAMPLES samples over $levels levels, max error $CMP_MAXERR <= $tol ($note)"
+					else
+						fail "$label lossy: max error $CMP_MAXERR exceeds the derived bound $tol, at (lx,ly,x,y,ch)=$CMP_AT"
+					fi
+					;;
+				*)
+					fail "$label manifest says $expect; expected exact or lossy"
+					;;
+				esac
+			fi
+
+			# A second reader, over a different code path: OpenImageIO is asked
+			# whether the tiled file holds the same level-0 image as the
+			# scanline twin the gate above already vouches for.
+			if command -v oiiotool >/dev/null 2>&1; then
+				oiio_seen=$((oiio_seen + 1))
+				out=$(oiiotool --fail 0 --failpercent 0 --hardfail 0 \
+					--warn 0 --warnpercent 0 --hardwarn 0 \
+					--diff "$TDIR/${name}_twin.exr" "$TDIR/$file" 2>&1)
+				verdict=$(printf '%s\n' "$out" | grep -oE '^(PASS|FAILURE)' | head -1)
+				maxerr=$(printf '%s\n' "$out" | sed -n 's/.*Max error *= *\([^ ]*\).*/\1/p' | head -1)
+				[ -n "$maxerr" ] || maxerr=0
+				tol=$(tiletol "$codec")
+				[ -n "$tol" ] || tol=0
+				if [ -z "$verdict" ]; then
+					oiio_bad="$oiio_bad $name(unreadable)"
+				elif ! le "$maxerr" "$tol"; then
+					oiio_bad="$oiio_bad $name($maxerr>$tol)"
+				fi
+			fi
+		done <"$TDIR/manifest.tsv"
+
+		if [ "$oiio_seen" -gt 0 ]; then
+			if [ -z "$oiio_bad" ]; then
+				pass "oiiotool agrees with the scanline twin on level 0 of all $oiio_seen tiled fixtures"
+			else
+				fail "oiiotool disagrees with the scanline twin on:$oiio_bad"
+			fi
+		fi
+
+		# --- the format forbids subsampled channels in a tiled image ---------
+		#
+		# OpenEXR's sanity check refuses them outright:
+		#   "channel 'BY': x subsampling factor is not 1 (2) for a tiled image"
+		# so a header this library is willing to tile with one produces a file
+		# no reader can open. scripts/testdata/tiled_subsampled_invalid.exr is
+		# such a file, written by this library at 5e793a5 before the guard
+		# existed; the reference must still refuse it, which is what keeps the
+		# guard below honest rather than a comment about a rule nobody checks.
+		INVALID=scripts/testdata/tiled_subsampled_invalid.exr
+		if "$TILEDUMP" -info "$INVALID" >"$WORK/inv.log" 2>&1; then
+			fail "the reference now opens a tiled file with subsampled channels; re-derive the guard below, its premise has changed"
+		else
+			# exrinfo reports the reason rather than just the refusal, so quote
+			# it when it is installed: a refusal for some unrelated reason (a
+			# truncated fixture, say) would otherwise look like agreement.
+			why=$(head -1 "$WORK/inv.log")
+			if command -v exrinfo >/dev/null 2>&1; then
+				exrinfo -v "$INVALID" >"$WORK/inv2.log" 2>&1
+				detail=$(grep -m1 -i 'subsampling' "$WORK/inv2.log")
+				[ -z "$detail" ] || why=$detail
+			fi
+			pass "the reference refuses a tiled file with subsampled channels: $(printf '%s' "$why" | cut -c1-120)"
+		fi
+
+		while IFS=$'\t' read -r guard result detail; do
+			case "$guard" in \#* | "") continue ;; esac
+			if [ "$result" = "rejected" ]; then
+				pass "guard $guard: this library refuses it ($detail)"
+			else
+				fail "guard $guard: this library accepts a header the reference cannot read; it will write a file nothing can open"
+			fi
+		done <"$TDIR/guards.tsv"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
 section "result"
 echo "checks run: $checked, failures: $failures, skipped: $skips"
 if [ "$failures" -ne 0 ]; then

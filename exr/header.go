@@ -47,6 +47,19 @@ var (
 	ErrInvalidHeader            = errors.New("exr: invalid header")
 	ErrEmptyDataWindow          = errors.New("exr: data window is empty")
 	ErrNoChannels               = errors.New("exr: no channels defined")
+
+	// ErrTiledSubsampling reports a tiled header carrying a channel whose x or
+	// y sampling is not 1. The format forbids it — a tile has no way to say how
+	// many samples of a subsampled channel it holds — and the reference
+	// implementation refuses to open such a file:
+	//
+	//	(EXR_ERR_INVALID_ATTR) channel 'BY': x subsampling factor is not 1 (2)
+	//	for a tiled image
+	//
+	// scripts/testdata/tiled_subsampled_invalid.exr is one this library wrote
+	// before this check existed; scripts/validate.sh confirms every run that
+	// the reference still refuses it.
+	ErrTiledSubsampling = errors.New("exr: tiled images require x and y sampling of 1 on every channel")
 )
 
 // CompressionOptions contains compression-related settings that are not
@@ -439,6 +452,19 @@ func (h *Header) Validate() error {
 	cl := h.Channels()
 	if cl == nil || cl.Len() == 0 {
 		return ErrNoChannels
+	}
+
+	// A tiled image cannot carry subsampled channels. Writing one produces a
+	// file no reader will open, so refuse it here rather than at the far end of
+	// somebody's pipeline.
+	if h.IsTiled() {
+		for i := 0; i < cl.Len(); i++ {
+			ch := cl.At(i)
+			if ch.XSampling != 1 || ch.YSampling != 1 {
+				return fmt.Errorf("%w: channel %q has sampling %dx%d",
+					ErrTiledSubsampling, ch.Name, ch.XSampling, ch.YSampling)
+			}
+		}
 	}
 
 	return nil

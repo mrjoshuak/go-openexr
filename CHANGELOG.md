@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Tiled images are now gated by the reference implementation, level by level, in
+the write direction. Two defects fell out of the first run; both produced files
+the reference refuses to open, and both were invisible to the existing suite
+because a round trip reads a file back with the same assumption that wrote it.
+
+### Fixed
+- **A tile's offset was recorded in the slot the write arrived in, not the slot
+  its coordinates name.** The format indexes a tiled part's chunk offset table
+  by tile coordinate — level major, for a ripmap y level major, then tile row,
+  then tile column — and a reader looks a tile up by coordinate, so any write
+  order other than the canonical one produced a file the reference rejects
+  outright: `(EXR_ERR_BAD_CHUNK_LEADER) Corrupt tile (0, 0), level (0, 0)
+  (chunk 0): bad tile x coordinate (2, expect 0)`. The reference's own writer
+  documents that tiles may be written in any order. `Writer.WriteTileChunkPart`
+  now computes the slot from the coordinates (`tileChunkIndex`), so `TiledWriter`
+  and `MultiPartOutputFile` accept any order, and `scripts/validate.sh` writes
+  three fixtures — one level, mipmap and ripmap — in reverse order to hold them
+  to it.
+- **`Header.Validate` accepted a tiled header with subsampled channels.** The
+  format forbids them, and the reference refuses to open such a file: `channel
+  'BY': x subsampling factor is not 1 (2) for a tiled image`. This library wrote
+  one happily. `Validate` now returns `ErrTiledSubsampling`, so both the tiled
+  and the deep tiled paths refuse it before a byte is written. This is also what
+  makes the nearby `XSampling`/`YSampling` divides that `TiledWriter` and
+  `MultiPartOutputFile` omit when building a `PIZChannel` unreachable rather than
+  merely untested: the file is illegal before the codec sees it.
+
+### Added
+- `scripts/tiledgen` writes 24 tiled fixtures — one level, mipmap and ripmap;
+  tile sizes that divide the image, that leave partial tiles on both edges, and
+  that are larger than the image; both rounding modes; a data window that does
+  not start at the origin; `none`, `rle`, `zip`, `zips`, `piz`, `pxr24`, `b44`,
+  `dwaa` and `dwab`; and both `WriteMipmapTiledImage` and
+  `WriteRipmapTiledImage` — and beside each one the samples it must hold and the
+  geometry it must claim.
+- `scripts/exrtiledump` reads those files with the OpenEXR reference
+  implementation itself and prints every sample of every level, so nothing in
+  this library participates in checking them. `scripts/validate.sh` gained 32
+  checks that compare all 456,220 samples, diff the reference's level arithmetic
+  against this library's, cross-check level 0 with `oiiotool`, and run three
+  controls first: the reference's own `exrmaketiled` output must satisfy the same
+  expectation, `oiiotool` must round-trip its own tiled output, and the
+  comparator must report a difference it is given deliberately.
+- `ErrTiledSubsampling`, and `scripts/testdata/tiled_subsampled_invalid.exr` —
+  a file this library wrote before the guard existed, kept so the gate can
+  confirm every run that the reference still refuses it.
+
 ## [1.4.2] - 2026-08-19
 
 ### Fixed

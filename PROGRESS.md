@@ -1,5 +1,44 @@
 # go-openexr Progress Tracker
 
+## Tiled, mipmapped and ripmapped writing: gated by the reference
+
+### Date: August 19, 2026
+
+Branch: none (worked directly, patch staged against 5e793a5)
+
+`TiledWriter`, `WriteMipmapTiledImage` and `WriteRipmapTiledImage` had never
+been read by anything but this library. Following the v1.4.0 pattern — a defect
+applied identically to a writer and its reader is invisible to a round trip —
+the gate was written before the code was touched: `scripts/tiledgen` writes 24
+fixtures plus, for each, the samples and the geometry the file must have, and
+`scripts/exrtiledump` (linked against libOpenEXR) reads every level back.
+
+Found on the first run, both fatal to the file, neither visible to the suite:
+
+- [x] The chunk offset table was indexed by write order, not by tile
+      coordinate. Any order other than the canonical one produced a file the
+      reference refuses outright. `Writer.WriteTileChunkPart` now derives the
+      slot from the coordinates; three reverse-order fixtures gate it.
+- [x] `Header.Validate` accepted subsampled channels on a tiled header. The
+      format forbids them and the reference will not open such a file; the
+      library wrote one. Now `ErrTiledSubsampling`, with the illegal file kept
+      at `scripts/testdata/tiled_subsampled_invalid.exr` so the gate can confirm
+      the reference still rejects it.
+
+Everything else the fixtures reach was already correct and is now held there:
+partial edge tiles, a tile larger than the image, a non-zero data window origin,
+both rounding modes, seven-level mipmaps and 7x6 ripmaps down to the 1x1 tip,
+and `none`/`rle`/`zip`/`zips`/`piz`/`pxr24`/`b44`/`dwaa`/`dwab` over tiles.
+456,220 samples compared per run, all 32 tiled checks green.
+
+Measured gaps, recorded rather than omitted:
+
+- The *contents* of a generated mipmap or ripmap level cannot be checked against
+  the reference: the format does not specify a downsampling filter, so only the
+  container — where those samples land, and how they are encoded — is gated for
+  `WriteMipmapTiledImage` and `WriteRipmapTiledImage`.
+- Deep tiled files are not covered here; `DeepTiledWriter` remains ungated.
+
 ## Codec Interoperability: issue #4 and the defects it uncovered
 
 ### Date: August 17, 2026

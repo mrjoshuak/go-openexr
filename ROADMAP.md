@@ -110,27 +110,50 @@ the reporter real time.
 Done when a missing `Close` is either impossible or produces an error, and a
 test proves the file is not silently short.
 
-### `PIZChannel` subsampling in tiled and multi-part writers
+### ~~`PIZChannel` subsampling in tiled and multi-part writers~~ — moot, measured
 
 `TiledWriter` and `MultiPartOutputFile` omit the XSampling/YSampling divides the
-scanline path performs. Latent — it only bites subsampled channels — but it is
-the same class of geometry defect that made go-jpeg2000's odd-width images
-non-conformant, and it is unexercised.
+scanline path performs when building a `PIZChannel`. The divides turn out to be
+unreachable: the format forbids subsampled channels in a tiled image, and the
+reference refuses to open one — `channel 'BY': x subsampling factor is not 1 (2)
+for a tiled image`. This library used to write such a file happily; since
+`Header.Validate` returns `ErrTiledSubsampling` it cannot, and the file is
+illegal before the codec ever sees it.
 
-Done when subsampled channels round-trip through the reference in tiled and
-multi-part files.
+`scripts/validate.sh` keeps both halves measured every run: that the reference
+still rejects `scripts/testdata/tiled_subsampled_invalid.exr`, and that this
+library still refuses to write another. The multi-part tiled path inherits the
+same guard through `Validate`; multi-part *scanline* parts are unaffected, since
+subsampling is legal there and the scanline path does divide.
 
 ## Next
 
-### Tiled and multi-resolution write coverage
+### Tiled and multi-resolution coverage — write direction done, read direction open
 
-`validate.sh` writes scanline images only. `exrmaketiled`-style mipmap and
-ripmap levels, and tiled files generally, are untested against the reference.
+The write direction is now gated. `scripts/tiledgen` writes 24 fixtures — one
+level, mipmap and ripmap, both rounding modes, tile sizes that divide the image
+and tile sizes that leave partial tiles, a tile larger than the image, a
+non-origin data window, and nine codecs — and `scripts/exrtiledump`, linked
+against libOpenEXR, reads every level of every one back. It found two defects on
+its first run, both of which produced files the reference refuses to open (see
+CHANGELOG). Controls run first: the reference's own `exrmaketiled` output must
+satisfy the same expectation, and the comparator must fail when it is given a
+mismatched pair.
+
+What remains open:
+
+- **The read direction.** No reference-written tiled fixture is read by this
+  library in the gate; the tiled read path is still only exercised by round
+  trips and by the mipmapped files in the conformance corpus.
+- **Generated level contents.** The format specifies no downsampling filter, so
+  for `WriteMipmapTiledImage` and `WriteRipmapTiledImage` only the container is
+  gated — that each generated level lands where it belongs and encodes
+  correctly. Nothing external can say what level 3 *should* contain.
+- **Deep tiled files**, which the section below covers.
 
 This is also the compatibility half of the strategy above: mipmapped output is
 what readers that do not know the codestream trick will use, and mipmapped input
-is how this library serves proxies from files other tools wrote. Both directions
-want covering.
+is how this library serves proxies from files other tools wrote.
 
 ### Finish the false-assurance backlog
 

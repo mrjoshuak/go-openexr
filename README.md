@@ -69,16 +69,16 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 
 | Category                                   | Status                                     |
 | ------------------------------------------ | ------------------------------------------ |
-| Storage types (scanline, tiled, deep)      | ✅ Complete                                 |
+| Storage types (scanline, tiled, deep)      | ✅ Complete                                |
 | All compression types (12 IDs, 11 methods) | See [support matrix](#compression-support) |
-| All pixel types (UINT, HALF, FLOAT)        | ✅ Complete                                 |
-| Mipmap/Ripmap levels                       | ✅ Complete                                 |
-| Multi-part files                           | ✅ Complete                                 |
-| Deep scanline/tiled images                 | ✅ Complete                                 |
-| Standard attributes                        | ✅ Complete                                 |
-| Preview images                             | ✅ Complete                                 |
-| Luminance/Chroma (YC)                      | ✅ Complete                                 |
-| Multi-view/Stereo                          | ✅ Complete                                 |
+| All pixel types (UINT, HALF, FLOAT)        | ✅ Complete                                |
+| Mipmap/Ripmap levels                       | ✅ Complete                                |
+| Multi-part files                           | ✅ Complete                                |
+| Deep scanline/tiled images                 | ✅ Complete                                |
+| Standard attributes                        | ✅ Complete                                |
+| Preview images                             | ✅ Complete                                |
+| Luminance/Chroma (YC)                      | ✅ Complete                                |
+| Multi-view/Stereo                          | ✅ Complete                                |
 
 Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records the per-codec detail; every row is now covered in both directions.
 
@@ -239,8 +239,11 @@ by mutating the code under them. Coverage counted every one of those as covered.
 
 What the guarantees actually rest on:
 
-1. `scripts/validate.sh` — 43 checks against the OpenEXR reference
-   implementation, both directions, failing the build on any regression.
+1. `scripts/validate.sh` — 76 checks against the OpenEXR reference
+   implementation, both directions, failing the build on any regression. That
+   includes tiled writing: 24 plain, mipmapped and ripmapped fixtures are read
+   back level by level by a program linked against libOpenEXR itself, and every
+   sample of every level is compared, not only level 0.
 2. `scripts/mutation/run.py` — deliberately breaks a codec and records whether
    the tests notice. Currently 11 of 20 mutations survive the pre-existing
    tests; all 15 covered by the added spec-anchored tests are killed.
