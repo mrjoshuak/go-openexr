@@ -1539,8 +1539,64 @@ fi
 			fi
 		fi
 	fi
+
+	# --- deep mipmap and ripmap levels -------------------------------------
+	#
+	# DeepTiledWriter wrote LevelModeOne only. Its offset table was sized for
+	# one level and indexed by tileY*tilesX+tileX, so every level after the
+	# first overwrote the first one's slots — while the reader had always
+	# derived the index per level, so the two disagreed the moment a second
+	# level existed. Both now use one derivation, deepTileChunkIndex.
+	#
+	# A second defect sat behind it: the writer captured the tile description
+	# at construction, so a caller who asked for a mipmap through
+	# SetTileDescription got a single-level file and no indication.
+	#
+	# The oracle is scripts/exrdeeptiledump rather than oiiotool, because
+	# --selectmip does not compose with --dumpdata for deep images: every level
+	# but the first comes back with no pixels, so a generator that wrote level
+	# 3 into level 1's slots would pass anything built on it.
+	DEEPTILE="$WORK/exrdeeptiledump"
+	if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists OpenEXR; then
+		gap "deep tiled levels: OpenEXR development files are not installed"
+	elif ! out=$(c++ -std=c++17 -O1 -o "$DEEPTILE" scripts/exrdeeptiledump/exrdeeptiledump.cpp \
+		$(pkg-config --cflags --libs OpenEXR) 2>&1); then
+		fail "deep tiled levels: could not build scripts/exrdeeptiledump: $(printf '%s' "$out" | head -1 | cut -c1-90)"
+	else
+		for mode in mipmap ripmap; do
+			DLV="$WORK/deeplevels_$mode"
+			case $mode in
+			mipmap) arg="" ; stem="deep_mip.exr" ;;
+			ripmap) arg="ripmap"; stem="deep_rip.exr" ;;
+			esac
+			if ! err=$(go run ./scripts/deepmipgen "$DLV" $arg 2>&1); then
+				fail "deep tiled levels ($mode): this library could not write one: $(printf '%s' "$err" | head -1 | cut -c1-90)"
+				continue
+			fi
+			if ! "$DEEPTILE" "$DLV/$stem" >"$DLV/got.dump" 2>"$DLV/err"; then
+				fail "deep tiled levels ($mode): the reference refused it: $(head -1 "$DLV/err" | cut -c1-100)"
+				continue
+			fi
+			if out=$(python3 scripts/deepmipcmp.py "$DLV/got.dump" "$DLV" "$stem" 2>&1); then
+				pass "deep tiled levels ($mode): the reference reads every level exactly ($out)"
+			else
+				fail "deep tiled levels ($mode): $out"
+			fi
+		done
+
+		# Signal: the comparison must reject samples that are wrong. Without
+		# this the checks above are satisfied by a comparator that never fails.
+		DLV="$WORK/deeplevels_mipmap"
+		if [ -f "$DLV/got.dump" ]; then
+			sed 's/A=[0-9.]*/A=9.5/g' "$DLV/got.dump" >"$DLV/bad.dump"
+			if python3 scripts/deepmipcmp.py "$DLV/bad.dump" "$DLV" deep_mip.exr >/dev/null 2>&1; then
+				fail "deep tiled levels signal check: deliberately wrong samples compared clean"
+			else
+				pass "deep tiled levels signal check: the comparison reports wrong samples"
+			fi
+		fi
+	fi
 		# ---- measured gaps ------------------------------------------------
-		note "GAP: deep mipmap and ripmap levels are not gated — DeepTiledWriter writes LevelModeOne only, and no deep mipmapped fixture could be produced with oiiotool 3.1.16 to gate ReadTileLevel above level 0 against"
 		note "GAP: deep sample semantics are not asserted — Z-sorted and non-overlapping ordering, deepImageState and alpha premultiplication; only that samples return in the order written"
 # ---------------------------------------------------------------------------
 # 8. The read direction for tiled files.

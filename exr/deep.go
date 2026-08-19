@@ -1097,37 +1097,41 @@ func (r *DeepTiledReader) SetFrameBuffer(fb *DeepFrameBuffer) {
 	r.fb = fb
 }
 
-// chunkIndex calculates the chunk index for a tile at the given coordinates and level.
+// chunkIndex calculates the chunk index for a tile at the given coordinates and
+// level, through the shared derivation deepTileChunkIndex.
 func (r *DeepTiledReader) chunkIndex(tileX, tileY, levelX, levelY int) int {
-	if r.tileDesc.Mode == LevelModeOne {
-		return tileY*r.tilesX + tileX
+	return deepTileChunkIndex(r.header, r.tileDesc.Mode, r.tilesX, tileX, tileY, levelX, levelY)
+}
+
+// deepTileChunkIndex is where a deep tile's chunk sits in the offset table.
+//
+// The reader has always derived this per level; the writer used
+// tileY*tilesX+tileX and so could only ever produce a single-level file. One
+// definition, consulted from both ends, is what keeps a writer and a reader
+// from drifting — which is the defect the shallow tiled path had.
+func deepTileChunkIndex(header *Header, mode LevelMode, tilesX, tileX, tileY, levelX, levelY int) int {
+	if mode == LevelModeOne {
+		return tileY*tilesX + tileX
 	}
 
 	offset := 0
-	switch r.tileDesc.Mode {
+	switch mode {
 	case LevelModeMipmap:
 		for l := 0; l < levelX; l++ {
-			numX := r.header.NumXTiles(l)
-			numY := r.header.NumYTiles(l)
-			offset += numX * numY
+			offset += header.NumXTiles(l) * header.NumYTiles(l)
 		}
-		numXAtLevel := r.header.NumXTiles(levelX)
-		offset += tileY*numXAtLevel + tileX
+		offset += tileY*header.NumXTiles(levelX) + tileX
 	case LevelModeRipmap:
 		for ly := 0; ly < levelY; ly++ {
-			numY := r.header.NumYTiles(ly)
-			for lx := 0; lx < r.header.NumXLevels(); lx++ {
-				numX := r.header.NumXTiles(lx)
-				offset += numX * numY
+			numY := header.NumYTiles(ly)
+			for lx := 0; lx < header.NumXLevels(); lx++ {
+				offset += header.NumXTiles(lx) * numY
 			}
 		}
 		for lx := 0; lx < levelX; lx++ {
-			numX := r.header.NumXTiles(lx)
-			numY := r.header.NumYTiles(levelY)
-			offset += numX * numY
+			offset += header.NumXTiles(lx) * header.NumYTiles(levelY)
 		}
-		numXAtLevel := r.header.NumXTiles(levelX)
-		offset += tileY*numXAtLevel + tileX
+		offset += tileY*header.NumXTiles(levelX) + tileX
 	}
 	return offset
 }
@@ -1490,6 +1494,18 @@ func (dtw *DeepTiledWriter) initialize() error {
 		return nil
 	}
 
+	// Take the tile description from the header rather than from the one
+	// captured at construction. A caller that asks for a mipmap by calling
+	// SetTileDescription got a single-level file and no indication, because
+	// the level mode used for the offset table came from the constructor's
+	// copy and never changed.
+	if td := dtw.header.TileDescription(); td != nil {
+		dtw.tileDesc = *td
+		dw := dtw.header.DataWindow()
+		dtw.tilesX = (int(dw.Width()) + int(td.XSize) - 1) / int(td.XSize)
+		dtw.tilesY = (int(dw.Height()) + int(td.YSize) - 1) / int(td.YSize)
+	}
+
 	// See DeepScanlineWriter.initialize: the reference implementation refuses
 	// a deep file compressed with anything but NONE, RLE or ZIPS.
 	if !IsDeepCompressionSupported(dtw.header.Compression()) {
@@ -1533,8 +1549,9 @@ func (dtw *DeepTiledWriter) initialize() error {
 		return err
 	}
 
-	// Calculate number of chunks
-	numChunks := dtw.tilesX * dtw.tilesY
+	// A mipmapped or ripmapped deep image holds a chunk for every tile of
+	// every level, not only of level 0.
+	numChunks := deepTileChunkCount(dtw.header, dtw.tileDesc.Mode, dtw.tilesX, dtw.tilesY)
 
 	// Save position of offset table
 	dtw.offsetTablePos, _ = dtw.w.Seek(0, io.SeekCurrent)
@@ -1567,8 +1584,11 @@ func (dtw *DeepTiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) err
 		}
 	}
 
-	// Calculate chunk index
-	chunkIndex := tileY*dtw.tilesX + tileX
+	// Where this tile's chunk sits in the offset table, derived per level by
+	// the same function the reader consults. Using tileY*tilesX+tileX made
+	// every level after the first overwrite the first one's slots.
+	chunkIndex := deepTileChunkIndex(dtw.header, dtw.tileDesc.Mode, dtw.tilesX,
+		tileX, tileY, levelX, levelY)
 
 	// Record chunk offset
 	offset, _ := dtw.w.Seek(0, io.SeekCurrent)
@@ -1763,4 +1783,32 @@ func (dtw *DeepTiledWriter) Finalize() error {
 
 	_, err := dtw.w.Seek(currentPos, io.SeekStart)
 	return err
+}
+
+// deepTileChunkCount is how many chunks a deep tiled image holds: every tile of
+// every level its level mode declares.
+func deepTileChunkCount(header *Header, mode LevelMode, tilesX, tilesY int) int {
+	switch mode {
+	case LevelModeMipmap:
+		// A mipmap's x and y levels advance together, so it has as many levels
+		// as the larger dimension needs.
+		levels := header.NumXLevels()
+		if n := header.NumYLevels(); n > levels {
+			levels = n
+		}
+		n := 0
+		for l := 0; l < levels; l++ {
+			n += header.NumXTiles(l) * header.NumYTiles(l)
+		}
+		return n
+	case LevelModeRipmap:
+		n := 0
+		for ly := 0; ly < header.NumYLevels(); ly++ {
+			for lx := 0; lx < header.NumXLevels(); lx++ {
+				n += header.NumXTiles(lx) * header.NumYTiles(ly)
+			}
+		}
+		return n
+	}
+	return tilesX * tilesY
 }
