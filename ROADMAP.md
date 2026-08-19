@@ -60,55 +60,82 @@ top. This one carries the API that would expose them.
 
 ## Now
 
-### Expose codestream-level decode through the EXR API
+### Codestream-level decode through the EXR API — surfaced, and blocked below
 
-`HTJ2KDecompress(src, expectedSize, channels)` takes no options, which matches
-the reference compressor interface exactly. go-jpeg2000's `Config` underneath it
-carries `ReduceResolution`, `DecodeArea` and `QualityLayers`, and none of the
-three is reachable from this package.
+`HTJ2KDecompressPartial` and `HTJ2KDecodeOptions` expose the codestream's own
+capabilities — resolution, region, quality layers — and document that they are
+an extension beyond the reference compressor interface rather than a format
+feature. Nothing written this way changes a file.
 
-Adding a variant that accepts them is an extension beyond what the reference
-offers, and worth marking as such in its documentation so nobody mistakes it for
-a format feature.
+Two of the three cannot be honoured yet, and building this is what found out
+why. In go-jpeg2000, `Config.DecodeArea` was declared, documented as "specifies
+a region to decode", and read by nothing — a region request returned the whole
+image. `Config.ReduceResolution` was correct for ordinary integer samples and
+returned wavelet-domain values as floats for any codestream carrying an NLT
+point transform, which an EXR HTJ2K chunk always does: dimensions right, samples
+off by 175 on a ramp spanning 0 to 2. Both refuse rather than mislead as of
+go-jpeg2000 v1.5.2, and this package's tests assert the refusal.
 
-Done when a caller can decode an HTJ2K chunk at a chosen resolution and region
-without decompressing the whole chunk, when the bytes read are demonstrably a
-subset of the chunk rather than the whole of it, and when the result matches a
-full decode downsampled to the same resolution.
+So a viewport resolves to byte ranges today — that is `File.ChunkRange` and the
+packet index, which need none of this — but turning those bytes into fewer
+pixels than the chunk holds does not work yet.
 
-### Expose the chunk offset table for indexed reads
+Done when a region or reduced-resolution decode of an HTJ2K chunk reads a
+demonstrable subset of the chunk, and its samples match the same region, or a
+downsample, of a full decode. It depends on the region-decode item in
+go-jpeg2000's roadmap.
 
-An EXR carries a chunk offset table immediately after the header, giving the
-byte offset of every chunk. That is the outer half of the index a sequence
-player needs: the table locates the chunk, and go-jpeg2000's packet length
-markers locate the packets inside it. Together they map a frame's byte ranges
-from a few kilobytes read near the front of the file, which is what makes a
-rolling prefetch across a frame sequence practical rather than chatty.
+### ~~Expose the chunk offset table for indexed reads~~ — done, and it composes
 
-The table is parsed today to find chunks, but nothing exposes it, so a caller
-cannot plan reads without opening and walking the file.
+`File.ChunkRange` gives a chunk's offset and length by reading its header
+alone, `File.ChunkRanges` gives the whole table, and `ChunksForScanlines` and
+`ChunksForRegion` turn a row range or a viewport at a chosen level into the
+chunks that hold it. Nothing is decompressed.
 
-Done when a caller can obtain the offset and length of any chunk without
-decompressing it, and the two indexes compose: a viewport at a chosen
-resolution resolves to a set of byte ranges before any pixel data is read.
+The two indexes compose, which is the point: for a 128x128 image in 32x32 tiles
+under HTJ2K, a 32x32 viewport resolves to 1 of 16 chunks and 674 of 6611 bytes,
+and that chunk's codestream then yields 6 packets each with its own byte range,
+through go-jpeg2000's packet index. A viewport becomes a set of byte ranges
+before any pixel data is read.
 
-### Correct the tests that still deny HTJ2K works
+Closing this also closed a hole it ran straight into: **HTJ2K was not
+implemented for tiles at all**. Both identifiers were missing from the tiled
+compression switch, so a tiled header declaring `htj2k256` or `htj2k32`
+produced "compression not yet implemented" from the writer — the one
+compression a tiled cloud workflow most wants. It is implemented on both sides
+now and gated, half, float and mipmapped, with libOpenEXR reading every level
+back.
 
-`exr.TestHTJ2K_NotSupported` and `TestCompliance_Summary` state that HTJ2K is
-unsupported and assert nothing — they log. Both HTJ2K compressions are now
-verified bit-identical against the reference for half, float and uint at both
-block sizes, so these tests are not merely vacuous, they are wrong.
+### ~~Correct the tests that still deny HTJ2K works~~ — done
 
-Done when they assert the current behaviour and die under mutation.
+`TestHTJ2K_NotSupported` logged "Not supported (intentional limitation)" and
+asserted nothing, and `TestCompliance_Summary` listed HTJ2K as "[ ] Not
+Supported (requires CGO)". Both HTJ2K compressions are implemented, verified
+bit-identical against the reference for half, float and uint at both block
+sizes, and now over tiles as well — so those tests were not merely vacuous,
+they told a reader the opposite of the truth.
 
-### `ScanlineWriter` truncates silently
+`TestHTJ2KIsSupported` replaces them and dies under a mutation that swaps the
+two chunk sizes.
 
-If `Close` is never called the chunk offset table is never written and the file
-is quietly truncated. This is what made issue #4 look like a read bug and cost
-the reporter real time.
+### ~~`ScanlineWriter` truncates silently~~ — done
 
-Done when a missing `Close` is either impossible or produces an error, and a
-test proves the file is not silently short.
+The chunk offset table can only be filled in once the offsets are known, so it
+was written by `Close` alone. A caller who never called `Close` left a file
+whose table was all zeros — and this library's own reader recovered by scanning
+while the reference, which locates every chunk through the table, did not. The
+file looked fine here and was unreadable everywhere else, which is why the
+report read as "float32 scanline reads return zeros".
+
+The table is now written as soon as the last chunk the header promised has been
+written, so a complete image is complete whether or not `Close` follows; the two
+files are byte-identical. `Close` still finalises a deliberately short one.
+
+Worth recording: the first test written for this checked the table through
+`File.Offsets`, which returns what the *reader* worked out — and the reader
+reconstructs a table by scanning when the stored one is unusable. A mutation
+restoring the old behaviour showed the test passing on a file no other
+implementation could open. It reads the file's own bytes now.
 
 ### ~~`PIZChannel` subsampling in tiled and multi-part writers~~ — moot, measured
 
@@ -157,6 +184,37 @@ What remains open:
 This is also the compatibility half of the strategy above: mipmapped output is
 what readers that do not know the codestream trick will use, and mipmapped input
 is how this library serves proxies from files other tools wrote.
+
+### Window-absolute frame buffer coordinates
+
+`Slice` addresses a frame buffer in window-relative coordinates: for a window
+whose minimum is (17, -9), the pixel there is `(0, 0)`. The C++ convention, and
+what this package documented before v1.4.4, is window-absolute — that pixel is
+`(17, -9)` — achieved by biasing the base pointer so the minimum lands at
+`buffer[0]`.
+
+That bias is not expressible in Go. The biased pointer is outside its
+allocation, and the collector rejects it with `found bad pointer in Go heap`,
+intermittently, depending on where the offset happens to land (issue #5). v1.4.4
+fixed it by removing the bias, which made the coordinates relative.
+
+The better fix, and the one a downstream consumer asked for, is to carry the
+origin as data: `OriginX`/`OriginY` on `Slice`, subtracted in `PixelAddr` and
+`RowAddr`, `Base` left pointing at the allocation. That keeps the pointer valid
+*and* the coordinates absolute, so no caller has to change.
+
+It is not a seven-call-site change. Every internal path addresses the buffer
+relative to the window — `ScanlineWriter` computes `bufY := y - minY`, the tiled
+path indexes each level from zero, and the deep, multi-part, mipmap and
+colour-transform paths do the same — so making the accessors absolute makes all
+of them wrong for a non-zero-origin window. Attempted once: the reference-image
+tests hung and `TestMultiPartTilesWrittenOutOfOrder` failed, and it was reverted
+rather than shipped half-converted.
+
+Done when every internal call site passes window-absolute coordinates, `Base` is
+inside its allocation for every window, `go test -race ./...` is clean with
+`checkptr` for non-zero-origin windows, and the gate's off-origin tiled fixtures
+still read exactly.
 
 ### Finish the false-assurance backlog
 
