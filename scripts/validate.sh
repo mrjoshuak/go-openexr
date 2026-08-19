@@ -1176,7 +1176,6 @@ else
 		# ---- measured gaps ------------------------------------------------
 		# Recorded rather than omitted: a row nobody writes down is a row
 		# nobody notices is missing.
-		note "GAP: deep parts in a multi-part file are not gated — MultiPartOutputFile exposes only WritePixels and WriteTile, so this library cannot write a deepscanline or deeptiled part into a multi-part file at all"
 	fi
 fi
 
@@ -1474,9 +1473,74 @@ fi
 				esac
 			done
 		fi
+
+	# --- deep parts inside a multi-part file -------------------------------
+	#
+	# This library could not write one at all: MultiPartOutputFile exposed only
+	# WritePixels and WriteTile, so the gap was in the writer rather than in the
+	# fixtures. It now has SetDeepFrameBuffer and WriteDeepPixels, and the
+	# multi-part version field sets the deep flag when any part is deep, which
+	# it previously hardcoded false.
+	#
+	# The deep part is extracted with exrmultipart -separate before comparison,
+	# because oiiotool's --dumpdata reads subimage 0 whatever --subimage is
+	# given. The extraction is the reference copying its own chunks, so nothing
+	# this library wrote does the reading.
+	if ! command -v exrmultipart >/dev/null 2>&1; then
+		gap "deep multi-part: exrmultipart is not installed"
+	else
+		MPD="$WORK/mpdeep"
+		if ! err=$(go run ./scripts/mpdeepgen "$MPD" 2>&1); then
+			fail "deep multi-part: this library could not write one: $(printf '%s' "$err" | head -1 | cut -c1-95)"
+		elif ! exrmultipart -separate -i "$MPD/mp_deep.exr" -o "$MPD/sep" >/dev/null 2>&1; then
+			fail "deep multi-part: the reference could not read the file back"
+		elif [ ! -f "$MPD/sep.2.exr" ]; then
+			fail "deep multi-part: the reference did not produce the deep part"
+		else
+			# Every part must survive, not only the deep one: a file whose flat
+			# part is broken fails the same way and would otherwise look like a
+			# deep problem.
+			flat_ok=1
+			for si in 0 1; do
+				if oiiotool -i "$MPD/mp_deep.exr" --subimage "$si" --printinfo:verbose=1 2>&1 |
+					grep -qiE 'corrupt|error'; then
+					flat_ok=0
+				fi
+			done
+			if [ "$flat_ok" = "1" ]; then
+				pass "deep multi-part: the reference reads both the flat and the deep part"
+			else
+				fail "deep multi-part: the reference refuses a part of the file"
+			fi
+
+			dump_deep "$MPD/sep.2.exr" >"$MPD/got.dump"
+			pix=$(grep -c 'Pixel' "$MPD/got.dump")
+			if [ "${pix:-0}" -lt 100 ]; then
+				fail "deep multi-part: the reference read $pix pixels from the deep part; it holds 117"
+			elif sed -e 's/[():,]/ /g' "$MPD/mp_deep.txt" >"$MPD/want.dump" &&
+				out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+					"$MPD/want.dump" "$MPD/got.dump" 2>&1); then
+				pass "deep multi-part: every sample of the deep part reads back as written ($pix pixels)"
+			else
+				fail "deep multi-part: $(printf '%s' "$out" | head -2 | tr '\n' ' ' | cut -c1-110)"
+			fi
+
+			# Signal: the comparison must reject a dump that is wrong. A deep
+			# chunk with no channels set produced exactly this shape — a well
+			# formed chunk holding no samples, packed and unpacked sizes both
+			# zero — and the reference reported only "Some scanline chunks were
+			# missing or corrupted", naming neither the part nor the cause.
+			sed 's/A=[0-9.]*/A=9.5/g' "$MPD/got.dump" >"$MPD/bad.dump"
+			if awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+				"$MPD/want.dump" "$MPD/bad.dump" >/dev/null 2>&1; then
+				fail "deep multi-part signal check: deliberately wrong samples compared clean"
+			else
+				pass "deep multi-part signal check: the comparison reports wrong samples"
+			fi
+		fi
+	fi
 		# ---- measured gaps ------------------------------------------------
 		note "GAP: deep mipmap and ripmap levels are not gated — DeepTiledWriter writes LevelModeOne only, and no deep mipmapped fixture could be produced with oiiotool 3.1.16 to gate ReadTileLevel above level 0 against"
-		note "GAP: writing deep parts into a multi-part file is not gated — MultiPartOutputFile has no deep entry point; reading multi-part deep is gated, scanline and tiled"
 		note "GAP: deep sample semantics are not asserted — Z-sorted and non-overlapping ordering, deepImageState and alpha premultiplication; only that samples return in the order written"
 # ---------------------------------------------------------------------------
 # 8. The read direction for tiled files.
@@ -1736,7 +1800,6 @@ else
 				esac
 			fi
 
-			note "GAP: deep parts inside a multi-part file are not read-gated here — a PFM cannot carry a varying sample count; the deep section gates deep reads, including multi-part deep"
 		fi
 	fi
 fi

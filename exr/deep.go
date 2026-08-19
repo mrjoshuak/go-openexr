@@ -719,7 +719,24 @@ func (dsw *DeepScanlineWriter) WritePixels(numScanlines int) error {
 }
 
 // writeChunk writes a single deep chunk
-func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, channels []Channel, comp Compression) error {
+// deepChunkBody packs one deep scanline chunk's two payloads: the compressed
+// pixel offset (sample count) table and the compressed sample data, with the
+// sample data's unpacked size, which the chunk header carries and which nothing
+// else in the chunk implies.
+//
+// It is separate from writing so a deep part of a multi-part file can produce
+// the same bytes and hand them to the multi-part writer, which prefixes each
+// chunk with its part number and records the offset in that part's table. A
+// second copy of this packing is how the deep chunk header came to be eight
+// bytes short in the first place, so there is one.
+func (dsw *DeepScanlineWriter) deepChunkBody(chunkY, linesInChunk, width int, channels []Channel, comp Compression) (countTable, pixelData []byte, unpacked uint64, err error) {
+	// A caller that passes no channels gets a chunk with a sample count table
+	// and no sample data — well formed, entirely empty, and rejected by the
+	// reference with a message that names neither the part nor the cause.
+	// Refuse instead.
+	if len(channels) == 0 {
+		return nil, nil, 0, errors.New("exr: deep chunk has no channels")
+	}
 	yMin := int(dsw.dataWindow.Min.Y)
 	numPixels := width * linesInChunk
 
@@ -794,11 +811,21 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 	// Compress sample count table and pixel data
 	compressedSampleCount, err := dsw.compressData(sampleCountTable, comp)
 	if err != nil {
-		return err
+		return nil, nil, 0, err
 	}
 
 	uncompressedPixelData := writer.Bytes()
 	compressedPixelData, err := dsw.compressData(uncompressedPixelData, comp)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	return compressedSampleCount, compressedPixelData, uint64(len(uncompressedPixelData)), nil
+}
+
+func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, channels []Channel, comp Compression) error {
+	compressedSampleCount, compressedPixelData, unpackedSize, err := dsw.deepChunkBody(
+		chunkY, linesInChunk, width, channels, comp)
 	if err != nil {
 		return err
 	}
@@ -818,7 +845,7 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 	xdr.ByteOrder.PutUint32(chunkHeader[0:4], uint32(chunkY))
 	xdr.ByteOrder.PutUint64(chunkHeader[4:12], uint64(len(compressedSampleCount)))
 	xdr.ByteOrder.PutUint64(chunkHeader[12:20], uint64(len(compressedPixelData)))
-	xdr.ByteOrder.PutUint64(chunkHeader[20:28], uint64(len(uncompressedPixelData)))
+	xdr.ByteOrder.PutUint64(chunkHeader[20:28], unpackedSize)
 
 	if _, err := dsw.w.Write(chunkHeader); err != nil {
 		return err

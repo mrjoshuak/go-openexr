@@ -212,6 +212,9 @@ type partWriter struct {
 	// pending counts scanlines the caller has declared written that do not
 	// yet complete a chunk.
 	pending int
+	// deepFB is set for a deep part, which takes a different frame buffer
+	// from a flat one and a different chunk layout.
+	deepFB *DeepFrameBuffer
 }
 
 // NewMultiPartOutputFile creates a new multi-part output file.

@@ -304,11 +304,20 @@ of a multi-part file containing one — which would have measured nothing while
 appearing to pass. Measured: 6912 samples across 1x, 2x and 4x channels in one
 part, all exact.
 
-One case remains outside it, and `validate.sh` prints it as a gap on every run
-rather than leaving it unsaid:
+Deep parts are handled and gated. `MultiPartOutputFile` exposed only
+`WritePixels` and `WriteTile`, so this library could not write one at all — a
+gap in the writer rather than in the fixtures. It has `SetDeepFrameBuffer` and
+`WriteDeepPixels` now, sharing the single-part writer's chunk packing rather
+than repeating it, and the multi-part version field sets the deep flag when any
+part is deep, which it previously hardcoded false.
 
-- Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
-  `WritePixels` and `WriteTile`, so this library cannot write one at all.
+The first attempt produced a file the reference refused for *every* part, with
+"Some scanline chunks were missing or corrupted" naming neither the part nor the
+cause. The chunks were well formed and entirely empty: `getSortedChannels` reads
+a field the packer had not been given, returned nil, and the sample loop wrote
+nothing — packed and unpacked sizes both zero. Comparing the bytes against a
+file `exrmultipart` assembled from the same data is what found it. The packing
+now refuses a chunk with no channels rather than producing one.
 
 
 ## Later

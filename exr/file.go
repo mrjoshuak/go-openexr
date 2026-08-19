@@ -715,7 +715,19 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 	// (isTiled() in ImfVersion.h is defined as "tiled and not multi-part" for
 	// the same reason.) Setting the flag because some part happened to be
 	// tiled made every multi-part file with a tiled part unreadable.
-	writer.versionField = MakeVersionField(2, false, false, false, true)
+	// A multi-part file states each part's storage in that part's own type
+	// attribute, so the tiled flag stays clear — the two are mutually
+	// exclusive and OpenEXR rejects the combination. The deep flag is
+	// different: it is set when any part is deep, which is what the reference
+	// writes and what a reader checks before expecting deep chunk headers.
+	anyDeep := false
+	for _, h := range headers {
+		if headerIsDeep(h) {
+			anyDeep = true
+			break
+		}
+	}
+	writer.versionField = MakeVersionField(2, false, false, anyDeep, true)
 
 	// Write magic number and version
 	if _, err := w.Write(MagicNumber); err != nil {
