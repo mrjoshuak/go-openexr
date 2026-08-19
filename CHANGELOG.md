@@ -29,6 +29,20 @@ under `oiiotool --diff`**, with no excused rows.
 - The `HTJ2KCompress` block-size parameter is named `blockWidth`, matching what
   it is. Documentation only; the signature's types and arity are unchanged.
 
+### Documentation
+- The README stated the opposite of what is now true in its most load-bearing
+  places: HTJ2K was recorded as having no external oracle in either direction,
+  OpenImageIO was said to be unable to read our HTJ2K output, PXR24 write was
+  listed as uncovered, and the status section referenced a gap that no longer
+  exists. All corrected against measurements.
+- The codec count was given three different ways. OpenEXR has 11 compression
+  methods across 12 IDs, because HTJ2K appears as both HTJ2K256 and HTJ2K32;
+  the README now says that once and consistently.
+- Line coverage is no longer the headline verification claim. It is listed
+  last, behind the reference-implementation gate and the mutation harness, with
+  the reason stated: 90%+ coverage coexisted with 125 candidate
+  false-assurance tests, 21 of them proven unable to fail.
+
 ### Added
 - `ROADMAP.md`, listing what OpenEXR supports that this library does not yet
   verify, with the acceptance standard for each.

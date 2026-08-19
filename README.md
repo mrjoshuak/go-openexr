@@ -11,6 +11,18 @@ A pure Go implementation of the OpenEXR image file format.
 
 go-openexr provides native Go support for reading and writing OpenEXR (.exr) files, the professional-grade HDR image format used in motion picture production, visual effects, and computer graphics.
 
+**Every pixel type and compression combination this library writes is read back
+correctly by the OpenEXR reference implementation, and every combination the
+reference writes is read correctly by this library — all 36, with no excused
+rows.**
+
+Lossless codecs are compared bit-identically against the uncompressed twin;
+lossy ones against a bound derived from the format rather than from whatever we
+happened to measure. `scripts/validate.sh` re-runs all of it on every release
+and fails the build on any regression. See the
+[compression support matrix](#compression-support) for per-codec detail, and
+[ROADMAP.md](ROADMAP.md) for what is not covered yet.
+
 ### Why go-openexr?
 
 **Zero CGO Dependencies** — This is a 100% pure Go implementation with no C/C++ bindings. This matters because:
@@ -22,7 +34,7 @@ go-openexr provides native Go support for reading and writing OpenEXR (.exr) fil
 
 **Full Read/Write Support** — Unlike read-only alternatives, go-openexr provides complete write capabilities for generating EXR files in your pipelines.
 
-**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and eleven compression codecs including HTJ2K with progressive decode.
+**Production-Ready Feature Set** — Implements all major OpenEXR capabilities including deep data, multi-part files, tiled storage with mipmap/ripmap support, and every OpenEXR compression type — eleven methods across twelve compression IDs, HTJ2K appearing as both HTJ2K256 and HTJ2K32 — including progressive HTJ2K decode.
 
 ### Features
 
@@ -40,22 +52,22 @@ go-openexr provides native Go support for reading and writing OpenEXR (.exr) fil
 
 go-openexr implements the complete [OpenEXR specification](https://openexr.com/):
 
-| Category                              | Status      |
-| ------------------------------------- | ----------- |
-| Storage types (scanline, tiled, deep) | ✅ Complete |
-| All compression codecs (12 types incl. HTJ2K) | See [support matrix](#compression-support) |
-| All pixel types (UINT, HALF, FLOAT)   | ✅ Complete |
-| Mipmap/Ripmap levels                  | ✅ Complete |
-| Multi-part files                      | ✅ Complete |
-| Deep scanline/tiled images            | ✅ Complete |
-| Standard attributes                   | ✅ Complete |
-| Preview images                        | ✅ Complete |
-| Luminance/Chroma (YC)                 | ✅ Complete |
-| Multi-view/Stereo                     | ✅ Complete |
+| Category                                   | Status                                     |
+| ------------------------------------------ | ------------------------------------------ |
+| Storage types (scanline, tiled, deep)      | ✅ Complete                                |
+| All compression types (12 IDs, 11 methods) | See [support matrix](#compression-support) |
+| All pixel types (UINT, HALF, FLOAT)        | ✅ Complete                                |
+| Mipmap/Ripmap levels                       | ✅ Complete                                |
+| Multi-part files                           | ✅ Complete                                |
+| Deep scanline/tiled images                 | ✅ Complete                                |
+| Standard attributes                        | ✅ Complete                                |
+| Preview images                             | ✅ Complete                                |
+| Luminance/Chroma (YC)                      | ✅ Complete                                |
+| Multi-view/Stereo                          | ✅ Complete                                |
 
-Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records exactly which codecs that covers.
+Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records the per-codec detail; every row is now covered in both directions.
 
-## What's New in v1.1.0
+## Selected features
 
 ### PIZ Float32 Channel Support
 
@@ -63,7 +75,7 @@ PIZ compression now fully supports float32 and uint32 channels. Previous version
 
 ### Progressive HTJ2K Decoding
 
-The headline feature of v1.1.0: extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images.
+Extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images. Introduced in v1.1.0; see [CHANGELOG.md](CHANGELOG.md) for what each release changed.
 
 Each wavelet packet represents one quality layer at one resolution level of one component -- the atomic unit for progressive quality improvement. Lower-resolution packets produce a coarse image instantly; higher-resolution and higher-quality-layer packets refine detail progressively. Packets can be delivered in any order, so applications can prioritize by resolution, component, or quality layer based on their needs.
 
@@ -101,7 +113,7 @@ for _, pkt := range packets {
 
 ### HTJ2K FLOAT Channel Compression
 
-HTJ2K now fully supports FLOAT (32-bit) channels. Float values are encoded with bitwise lossless precision using NLT Type 3 markers -- the same approach used by the C++ OpenEXR 3.4 + OpenJPH implementation. This enables HTJ2K compression of depth maps, world-position passes, and other float-precision EXR channels.
+HTJ2K supports FLOAT (32-bit) channels. Float values are encoded with bitwise lossless precision using NLT Type 3 markers -- the same approach used by the C++ OpenEXR 3.4 + OpenJPH implementation. This enables HTJ2K compression of depth maps, world-position passes, and other float-precision EXR channels.
 
 ### Dependency
 
@@ -109,23 +121,26 @@ The HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-
 
 ## Compression support
 
-The table records what is actually covered by the automated conformance suite,
-which compares against files written by the OpenEXR reference implementation
-(via OpenImageIO's `oiiotool`) sample for sample. "not covered" means exactly
-that — no claim either way, not a known failure:
+Every row is covered in both directions, and `scripts/validate.sh` re-runs the
+whole matrix on each release. Comparisons are against the OpenEXR reference
+implementation via OpenImageIO's `oiiotool`, sample for sample: bit-identical
+for a lossless codec, and within a bound derived from the format for a lossy
+one. There is no "not covered" row left, and if one returns it will say so
+rather than being omitted:
 
-| Codec           | Reads reference files       | Output read by reference    |
-| --------------- | --------------------------- | --------------------------- |
-| None            | verified, every sample      | verified, every sample      |
-| RLE             | verified, every sample      | verified, every sample      |
-| ZIPS            | verified, every sample      | verified, every sample      |
-| ZIP             | verified, every sample      | verified, every sample      |
-| PIZ             | verified, every sample      | verified, every sample      |
-| PXR24           | verified, every sample      | not covered                 |
-| B44 / B44A      | verified, every sample      | verified via oiiotool       |
-| DWAA / DWAB     | verified, every sample      | verified (96 cases)         |
-| HTJ2K (FLOAT)   | no oracle available         | no oracle available         |
-| HTJ2K (HALF)    | no oracle available         | no oracle available         |
+| Codec         | Reads reference files  | Output read by reference                                  |
+| ------------- | ---------------------- | --------------------------------------------------------- |
+| None          | verified, every sample | verified, every sample                                    |
+| RLE           | verified, every sample | verified, every sample                                    |
+| ZIPS          | verified, every sample | verified, every sample                                    |
+| ZIP           | verified, every sample | verified, every sample                                    |
+| PIZ           | verified, every sample | verified, every sample                                    |
+| PXR24         | verified, every sample | verified (half/uint exact, float within the 24-bit bound) |
+| B44 / B44A    | verified, every sample | verified via oiiotool                                     |
+| DWAA / DWAB   | verified, every sample | verified (96 cases)                                       |
+| HTJ2K (UINT)  | verified, every sample | verified, bit-identical                                   |
+| HTJ2K (FLOAT) | verified, every sample | verified, bit-identical                                   |
+| HTJ2K (HALF)  | verified, every sample | verified, bit-identical                                   |
 
 None, RLE, ZIPS, ZIP and PIZ are covered in **both** directions by
 `exr/conformance_test.go` over `exr/testdata/conformance/`. The read side is
@@ -141,12 +156,19 @@ with the reference. B44's FLOAT and UINT passthrough channels are compared
 exactly, since the format stores them uncompressed. PXR24 has no automated
 write-side coverage yet.
 
-**HTJ2K has no external oracle.** OpenImageIO 3.1.16 can neither write an HTJ2K
-EXR nor read one this library produces, so "no oracle available" above means
-exactly that — not "verified" and not "known broken". Both FLOAT and HALF
-channels round-trip losslessly within this library; all 65536 half bit patterns
-survive exactly. Interoperability with OpenJPH-based readers, which is what
-OpenEXR 3.4+ uses, is not yet established.
+**HTJ2K now has an external oracle, and passes it.** OpenImageIO 3.1.16 still
+cannot *write* an HTJ2K EXR, so the read direction is checked against files this
+library writes and the reference then reads, plus the raw codestreams compared
+against OpenJPH directly in the go-jpeg2000 gate. All six rows — half, float and
+uint at both block sizes — are bit-identical to the uncompressed twin, held to
+the same standard as ZIP or PIZ with no tolerance.
+
+This required go-jpeg2000 v1.5.0. Earlier versions could not emit a codestream
+OpenJPH would accept: v1.3.0 ignored `HighThroughput` in `EncodeHalf`/
+`EncodeFloat`, so Rsiz bit 14 was never set, and wrote the NLT segment short.
+`scripts/validate.sh` excuses these rows only for a build resolved at exactly
+v1.3.0, and reports a row that passes while excused as a closed gap, so the
+excuse cannot outlive the defect.
 
 **Subsampled channels.** Channels with `ySampling > 1` are refused by the B44
 and DWA paths rather than silently misread. The chunk layout code assumes one
@@ -158,10 +180,12 @@ why round-trip tests alone are not sufficient.
 
 ## Status
 
-**Production Ready** — This project implements the OpenEXR specification, with
-the single known gap noted in [Compression support](#compression-support):
+**Production Ready** — This project implements the OpenEXR specification. Every
+compression type is verified against the reference implementation in both
+directions; [ROADMAP.md](ROADMAP.md) lists what is implemented but not yet
+verified that way.
 
-- 11 compression codecs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K)
+- 11 compression methods across 12 IDs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K256, HTJ2K32)
 - Deep scanline and tiled images
 - Multi-part files with mixed storage types
 - Preview images and thumbnails
@@ -170,7 +194,23 @@ the single known gap noted in [Compression support](#compression-support):
 - All standard metadata attributes
 - ID Manifest / Cryptomatte support
 
-Test coverage averages 90%+ across all packages. See [PROGRESS.md](PROGRESS.md) for detailed implementation status.
+Line coverage averages 90%+ across all packages, but that is the weakest of the
+three signals here and is listed last deliberately. An audit found 125 candidate
+false-assurance tests in this repository — assertions that could not fail because
+they compared the library against itself — of which 21 were proven unable to fail
+by mutating the code under them. Coverage counted every one of those as covered.
+
+What the guarantees actually rest on:
+
+1. `scripts/validate.sh` — 43 checks against the OpenEXR reference
+   implementation, both directions, failing the build on any regression.
+2. `scripts/mutation/run.py` — deliberately breaks a codec and records whether
+   the tests notice. Currently 11 of 20 mutations survive the pre-existing
+   tests; all 15 covered by the added spec-anchored tests are killed.
+3. Line coverage, which says only that a line ran.
+
+See [PROGRESS.md](PROGRESS.md) for detailed implementation status and
+[ROADMAP.md](ROADMAP.md) for what is still unverified.
 
 ## Security
 
@@ -533,18 +573,18 @@ hashFloat := exrid.CryptomatteHashFloat("Hero") // As float32 for pixel comparis
 
 Supported compression methods (11 codecs):
 
-| Method             | ID  | Description             |
-| ------------------ | --- | ----------------------- |
-| `CompressionNone`  | 0   | No compression          |
-| `CompressionRLE`   | 1   | Run-length encoding     |
-| `CompressionZIPS`  | 2   | ZIP, single scanline    |
-| `CompressionZIP`   | 3   | ZIP, 16 scanlines       |
-| `CompressionPIZ`   | 4   | Wavelet + Huffman       |
-| `CompressionPXR24` | 5   | Lossy 24-bit float      |
-| `CompressionB44`   | 6   | 4x4 block, fixed rate   |
-| `CompressionB44A`  | 7   | B44 with flat detection |
-| `CompressionDWAA`  | 8   | DCT, 32 scanlines       |
-| `CompressionDWAB`  | 9   | DCT, 256 scanlines      |
+| Method                | ID  | Description                                            |
+| --------------------- | --- | ------------------------------------------------------ |
+| `CompressionNone`     | 0   | No compression                                         |
+| `CompressionRLE`      | 1   | Run-length encoding                                    |
+| `CompressionZIPS`     | 2   | ZIP, single scanline                                   |
+| `CompressionZIP`      | 3   | ZIP, 16 scanlines                                      |
+| `CompressionPIZ`      | 4   | Wavelet + Huffman                                      |
+| `CompressionPXR24`    | 5   | Lossy 24-bit float                                     |
+| `CompressionB44`      | 6   | 4x4 block, fixed rate                                  |
+| `CompressionB44A`     | 7   | B44 with flat detection                                |
+| `CompressionDWAA`     | 8   | DCT, 32 scanlines                                      |
+| `CompressionDWAB`     | 9   | DCT, 256 scanlines                                     |
 | `CompressionHTJ2K256` | 10  | HTJ2K wavelet, 128x128 code blocks, progressive decode |
 | `CompressionHTJ2K32`  | 11  | HTJ2K wavelet, 32x32 code blocks, progressive decode   |
 
@@ -682,17 +722,17 @@ currently fail to decode.
 
 Current test coverage by package:
 
-| Package              | Coverage | Notes                                      |
-| -------------------- | -------- | ------------------------------------------ |
-| `half`               | 96.7%    | Core float16 operations                    |
-| `compression`        | 90.6%    | All codecs including HTJ2K                 |
-| `exr`                | 90.0%    | Core I/O, scanline, tiled, deep, multipart |
-| `exrmeta`            | 97.3%    | Attribute accessors                        |
-| `exrutil`            | 91.0%    | Utility functions                          |
-| `exrid`              | 91.2%    | ID manifest and Cryptomatte support        |
-| `internal/xdr`       | 93.0%    | XDR encoding/decoding                      |
-| `internal/interleave`| 90.5%    | Byte interleaving                          |
-| `internal/predictor` | 89.8%    | Predictor operations                       |
+| Package               | Coverage | Notes                                      |
+| --------------------- | -------- | ------------------------------------------ |
+| `half`                | 96.7%    | Core float16 operations                    |
+| `compression`         | 90.6%    | All codecs including HTJ2K                 |
+| `exr`                 | 90.0%    | Core I/O, scanline, tiled, deep, multipart |
+| `exrmeta`             | 97.3%    | Attribute accessors                        |
+| `exrutil`             | 91.0%    | Utility functions                          |
+| `exrid`               | 91.2%    | ID manifest and Cryptomatte support        |
+| `internal/xdr`        | 93.0%    | XDR encoding/decoding                      |
+| `internal/interleave` | 90.5%    | Byte interleaving                          |
+| `internal/predictor`  | 89.8%    | Predictor operations                       |
 
 ## Documentation
 
