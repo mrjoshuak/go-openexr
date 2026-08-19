@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-08-19
+
+### Fixed
+- **B44 encoding produced non-conforming output on amd64.** The SSE2 pack
+  routine computed `(tMax - t[i]) << 1` in 16-bit lanes (`PSUBW`, `PADDW`,
+  `PSRLW`), so it wrapped at 65536 whenever that difference exceeded 32767 —
+  reachable for any block spanning a wide enough range once the ordered
+  transform has flipped the negatives. `ImfB44Compressor.cpp` does the same
+  arithmetic in `int`. amd64 builds therefore wrote B44 blocks the reference
+  decodes differently, while arm64 builds were correct.
+
+  Every conformance run had been on arm64, where this path has always been
+  scalar, so nothing local caught it; CI did. The vectorised routine is removed
+  rather than patched — fixing it means widening to 32-bit lanes, and shipping
+  assembly that cannot be verified on the machine at hand is what produced the
+  defect. amd64 now uses the same scalar path as arm64, at the cost of roughly
+  the 23% B44 encode win the assembly bought. See ROADMAP.md.
+
+### Added
+- `scripts/validate.sh` runs the test suite under the other `GOARCH` as well,
+  so an architecture-specific defect is caught locally rather than by CI.
+- `ROADMAP.md`, ordered around what codestream-level access to HTJ2K chunks
+  makes possible, with the reasoning recorded.
+
+### Documentation
+- The README stated the opposite of what is now true in its most load-bearing
+  places: HTJ2K was recorded as having no external oracle in either direction,
+  OpenImageIO was said to be unable to read our HTJ2K output, and PXR24 write
+  was listed as uncovered. All corrected against measurements.
+- The HTJ2K read direction is stated honestly rather than claimed: OpenImageIO
+  cannot write an HTJ2K EXR, so no reference-written file exists for us to read.
+  Thirty of the thirty-six combinations are verified both ways; the six HTJ2K
+  ones are verified writing only, and the table says so.
+- The overview leads with what the library does rather than what was fixed, and
+  opens with a short description of the format for readers who have not used
+  OpenEXR before.
+- The codec count was given three different ways. OpenEXR has 11 compression
+  methods across 12 IDs, because HTJ2K appears as both HTJ2K256 and HTJ2K32; the
+  README now says that once and consistently.
+- Line coverage is no longer the headline verification claim. It is listed last,
+  behind the reference-implementation gate and the mutation harness, with the
+  reason: 90%+ coverage coexisted with 125 candidate false-assurance tests, 21
+  of them proven unable to fail.
+
 ## [1.4.1] - 2026-08-18
 
 HTJ2K now interoperates. All six HTJ2K rows in the validation gate are
@@ -29,34 +73,6 @@ under `oiiotool --diff`**, with no excused rows.
 - The `HTJ2KCompress` block-size parameter is named `blockWidth`, matching what
   it is. Documentation only; the signature's types and arity are unchanged.
 
-### Fixed
-- **B44 encoding produced non-conforming output on amd64.** The SSE2 pack
-  routine computed `(tMax - t[i]) << 1` in 16-bit lanes (`PSUBW`, `PADDW`,
-  `PSRLW`), so it wrapped at 65536 whenever that difference exceeded 32767 —
-  reachable for any block spanning a wide enough range once the ordered
-  transform has flipped the negatives. `ImfB44Compressor.cpp` does the same
-  arithmetic in `int`. The result was that amd64 builds wrote B44 blocks the
-  reference decodes differently, while arm64 builds were correct.
-
-  Nothing caught it because every conformance run had been on arm64, where this
-  path has always been scalar. The vectorised routine is removed rather than
-  patched: fixing it means widening to 32-bit lanes, and shipping assembly that
-  cannot be verified on the machine at hand is what produced the defect.
-  `scripts/validate.sh` now runs the suite under the other GOARCH as well.
-
-### Documentation
-- The README stated the opposite of what is now true in its most load-bearing
-  places: HTJ2K was recorded as having no external oracle in either direction,
-  OpenImageIO was said to be unable to read our HTJ2K output, PXR24 write was
-  listed as uncovered, and the status section referenced a gap that no longer
-  exists. All corrected against measurements.
-- The codec count was given three different ways. OpenEXR has 11 compression
-  methods across 12 IDs, because HTJ2K appears as both HTJ2K256 and HTJ2K32;
-  the README now says that once and consistently.
-- Line coverage is no longer the headline verification claim. It is listed
-  last, behind the reference-implementation gate and the mutation harness, with
-  the reason stated: 90%+ coverage coexisted with 125 candidate
-  false-assurance tests, 21 of them proven unable to fail.
 
 ### Added
 - `ROADMAP.md`, listing what OpenEXR supports that this library does not yet
@@ -224,21 +240,6 @@ were fast paths that had dropped a bound their slower twin still had.
 - Spec-anchored tests for the predictor, the byte reorder and the wavelet,
   asserting against independent transcriptions of the OpenEXR reference rather
   than against other implementations in this repository.
-
-### Fixed
-- **B44 encoding produced non-conforming output on amd64.** The SSE2 pack
-  routine computed `(tMax - t[i]) << 1` in 16-bit lanes (`PSUBW`, `PADDW`,
-  `PSRLW`), so it wrapped at 65536 whenever that difference exceeded 32767 —
-  reachable for any block spanning a wide enough range once the ordered
-  transform has flipped the negatives. `ImfB44Compressor.cpp` does the same
-  arithmetic in `int`. The result was that amd64 builds wrote B44 blocks the
-  reference decodes differently, while arm64 builds were correct.
-
-  Nothing caught it because every conformance run had been on arm64, where this
-  path has always been scalar. The vectorised routine is removed rather than
-  patched: fixing it means widening to 32-bit lanes, and shipping assembly that
-  cannot be verified on the machine at hand is what produced the defect.
-  `scripts/validate.sh` now runs the suite under the other GOARCH as well.
 
 ### Documentation
 - **The three README code examples did not compile.** All of them referenced
