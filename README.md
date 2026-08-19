@@ -16,12 +16,11 @@ every pixel type — no cgo, no C++ toolchain, no shared libraries to ship.
 implementation — all 36 pixel-type and compression combinations, checked on
 every release.**
 
-<details>
-<summary><b>New to OpenEXR?</b> — what the format is, and why you might want it</summary>
+### About the format
 
-It is the image format the film industry runs on — created at Industrial Light &
-Magic, and the reason a render can be graded, composited and re-exposed without
-falling apart. Two things make it worth reaching for outside VFX too.
+OpenEXR is the high-dynamic-range image format the film industry runs on,
+created at Industrial Light & Magic. Two things make it worth reaching for
+outside VFX as well.
 
 **Real floating point.** Channels hold 16- or 32-bit floats rather than bytes,
 or 32-bit integers where you want exact IDs. Nothing clips at white, nothing
@@ -38,7 +37,6 @@ On top of that: tiled storage for random access into huge images, mipmaps,
 multi-part files, deep images with several samples per pixel, and eleven
 compression methods from lossless to aggressive.
 
-</details>
 
 ### Why go-openexr?
 
