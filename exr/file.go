@@ -833,7 +833,7 @@ func (w *Writer) WriteChunkPart(part int, y int32, data []byte) error {
 	}
 
 	w.chunkIndex[part]++
-	return nil
+	return w.finalizeIfComplete()
 }
 
 // WriteTileChunk writes a tile chunk of pixel data to part 0.
@@ -970,6 +970,62 @@ func (w *Writer) WriteTileChunkPart(part, tileX, tileY, levelX, levelY int, data
 	}
 
 	w.chunkIndex[part]++
+	return w.finalizeIfComplete()
+}
+
+// finalizeIfComplete writes the offset table as soon as every chunk the header
+// promised has been written.
+//
+// The table lives immediately after the header and can only be filled in once
+// the chunk offsets are known, so it used to be written by Close alone. A
+// caller who never called Close left a file whose table was all zeros: this
+// library's own reader recovered by scanning, and the reference implementation
+// did not, which is what made issue #4 look like a read bug and cost the
+// reporter real time.
+//
+// Writing it here means a file holding every chunk it declares is complete the
+// moment the last one lands, whether or not Close follows. Close still exists,
+// and still finalizes a file that is deliberately short.
+func (w *Writer) finalizeIfComplete() error {
+	if w.finalized {
+		return nil
+	}
+	for part, offsets := range w.offsets {
+		if part >= len(w.chunkIndex) || w.chunkIndex[part] < len(offsets) {
+			return nil
+		}
+	}
+	pos, err := w.writer.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	if err := w.writeOffsetTable(); err != nil {
+		return err
+	}
+	// Writing the table leaves the position inside the header; put it back, so
+	// a caller that keeps writing is not silently redirected there. Close is
+	// not used for this: it also drops the writer's references, which would
+	// break a writer that is still in use.
+	_, err = w.writer.Seek(pos, io.SeekStart)
+	return err
+}
+
+// writeOffsetTable seeks to the table's place after the header and fills in
+// every chunk offset recorded so far.
+func (w *Writer) writeOffsetTable() error {
+	if _, err := w.writer.Seek(w.dataStart, io.SeekStart); err != nil {
+		return err
+	}
+	buf := make([]byte, 8)
+	for _, offsets := range w.offsets {
+		for _, offset := range offsets {
+			xdr.ByteOrder.PutUint64(buf, uint64(offset))
+			if _, err := w.writer.Write(buf); err != nil {
+				return err
+			}
+		}
+	}
+	w.finalized = true
 	return nil
 }
 
@@ -980,23 +1036,9 @@ func (w *Writer) Close() error {
 		return nil
 	}
 
-	// Seek to offset table position
-	if _, err := w.writer.Seek(w.dataStart, io.SeekStart); err != nil {
+	if err := w.writeOffsetTable(); err != nil {
 		return err
 	}
-
-	// Write offset table
-	for _, offsets := range w.offsets {
-		for _, offset := range offsets {
-			buf := make([]byte, 8)
-			xdr.ByteOrder.PutUint64(buf, uint64(offset))
-			if _, err := w.writer.Write(buf); err != nil {
-				return err
-			}
-		}
-	}
-
-	w.finalized = true
 
 	// Sync the data to ensure it's flushed to disk
 	if syncer, ok := w.writer.(interface{ Sync() error }); ok {

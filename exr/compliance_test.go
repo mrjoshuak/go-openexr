@@ -3,6 +3,7 @@
 package exr
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -325,35 +326,31 @@ func TestKeyCode_Validation(t *testing.T) {
 // HTJ2K Status
 // =============================================================================
 
-// TestHTJ2K_NotSupported documents that HTJ2K is not supported.
-// This is an intentional limitation - no pure-Go JPEG2000 library exists.
-func TestHTJ2K_NotSupported(t *testing.T) {
-	t.Log("HTJ2K (High-Throughput JPEG2000) Compression")
-	t.Log("STATUS: Not supported (intentional limitation)")
-	t.Log("REASON: No pure-Go JPEG2000 implementation exists")
-}
+// TestHTJ2KIsSupported replaces a test that logged "HTJ2K: Not supported
+// (intentional limitation)" and asserted nothing.
+//
+// Both HTJ2K compressions are implemented and verified bit-identical against
+// the reference implementation for half, float and uint at both block sizes, so
+// the old test was not merely vacuous — it stated the opposite of the truth,
+// and a reader looking for whether this package could write HTJ2K would have
+// been told no.
+func TestHTJ2KIsSupported(t *testing.T) {
+	for _, c := range []Compression{CompressionHTJ2K256, CompressionHTJ2K32} {
+		if got := c.String(); got == "" || strings.Contains(strings.ToLower(got), "unknown") {
+			t.Errorf("%d has no name, so it is not a compression this package knows", int(c))
+		}
+		if n := c.ScanlinesPerChunk(); n <= 0 {
+			t.Errorf("%v claims %d scanlines per chunk", c, n)
+		}
+		if c.IsLossy() {
+			t.Errorf("%v reports itself lossy; both HTJ2K compressions in the format are lossless", c)
+		}
+	}
 
-// =============================================================================
-// Compliance Summary
-// =============================================================================
-
-// TestCompliance_Summary provides an overview of compliance status.
-func TestCompliance_Summary(t *testing.T) {
-	t.Log("go-openexr C++ Compliance Status")
-	t.Log("=================================")
-	t.Log("")
-	t.Log("TimeCode (SMPTE 12M-1999):")
-	t.Log("  [x] BCD encoding for time values")
-	t.Log("  [x] All flags: dropFrame, colorFrame, fieldPhase, bgf0-2")
-	t.Log("  [x] Packing variants: TV60, TV50, Film24")
-	t.Log("  [x] Range validation with errors")
-	t.Log("  [x] Binary group accessors (1-8)")
-	t.Log("")
-	t.Log("KeyCode:")
-	t.Log("  [x] Field storage (matches C++ - no validation)")
-	t.Log("")
-	t.Log("HTJ2K Compression:")
-	t.Log("  [ ] Not supported (requires CGO)")
-	t.Log("")
-	t.Log("Legend: [x] = Implemented, [ ] = Not Supported")
+	// The chunk size is the difference between the two, and it is what a caller
+	// chooses between them for.
+	if a, b := CompressionHTJ2K256.ScanlinesPerChunk(), CompressionHTJ2K32.ScanlinesPerChunk(); a <= b {
+		t.Errorf("HTJ2K256 packs %d scanlines per chunk and HTJ2K32 packs %d; "+
+			"the first must pack more, or the two names mean nothing", a, b)
+	}
 }

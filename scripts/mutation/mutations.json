@@ -1049,6 +1049,72 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "htj2k-chunk-size-swap",
+      "codec": "HTJ2K",
+      "description": "HTJ2K256 reports 32 scanlines per chunk, the size that belongs to the other compression",
+      "spec": "OpenEXR assigns 256 scanlines per chunk to HTJ2K256 and 32 to HTJ2K32; the chunk size is the only difference between the two identifiers and is what a caller chooses between them for.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/attribute.go",
+          "count": 1,
+          "old": "\tcase CompressionHTJ2K256:\n\t\treturn 256",
+          "new": "\tcase CompressionHTJ2K256:\n\t\treturn 32"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestCompression"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestHTJ2KIsSupported"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "offset-table-close-only",
+      "codec": "Scanline",
+      "description": "the chunk offset table is written by Close alone, so a writer that is never closed leaves it as zeros",
+      "spec": "The chunk offset table sits immediately after the header and is how the reference implementation locates every chunk. A table of zeros makes the file unreadable outside this package, while this package's own reader recovers by scanning \u2014 which is why the defect behind issue #4 looked like a read bug.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/file.go",
+          "count": 2,
+          "old": "\tw.chunkIndex[part]++\n\treturn w.finalizeIfComplete()",
+          "new": "\tw.chunkIndex[part]++\n\treturn nil"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteReadRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestUnclosedWriterOffsetTableIsPopulated"
+        },
+        {
+          "pkg": "./exr/",
+          "run": "TestUnclosedWriterStillProducesACompleteFile"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }
