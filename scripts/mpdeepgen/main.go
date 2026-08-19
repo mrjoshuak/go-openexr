@@ -82,6 +82,11 @@ func main() {
 	flat.SetChannels(fcl)
 
 	deep := header(deepW, deepH, display, "deep", exr.PartTypeDeepScanline, exr.CompressionZIPS)
+	// Declare what the samples promise, so the reference can be asked whether
+	// it reads the claim back. The samples below are written front to back and
+	// do not overlap, and VerifyDeepImageState checks that before the claim is
+	// made rather than after.
+	deep.SetDeepImageState(exr.DeepImageStateTidy)
 	dcl := exr.NewChannelList()
 	dcl.Add(exr.Channel{Name: "A", Type: exr.PixelTypeFloat, XSampling: 1, YSampling: 1})
 	dcl.Add(exr.Channel{Name: "Z", Type: exr.PixelTypeFloat, XSampling: 1, YSampling: 1})
@@ -137,6 +142,14 @@ func main() {
 			}
 			total += n
 		}
+	}
+
+	// The claim has to be true. Nothing in the format checks it and no reader
+	// complains; the consequence is a composite that is subtly wrong, much
+	// later and somewhere else.
+	if err := exr.VerifyDeepImageState(dfb, exr.DeepImageStateTidy, "Z"); err != nil {
+		fmt.Fprintln(os.Stderr, "the fixture does not satisfy the state it declares:", err)
+		os.Exit(1)
 	}
 
 	if err := mp.SetDeepFrameBuffer(1, dfb); err != nil {

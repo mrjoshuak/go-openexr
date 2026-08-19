@@ -232,7 +232,7 @@ and half test files are where they concentrate.
 Done when every mutation in `scripts/mutation/mutations.json` is killed, and the
 manifest has grown to cover each codec's core invariants.
 
-### Deep coverage — done in both directions, with three named gaps
+### ~~Deep coverage~~ — done in both directions, levels and semantics included
 
 Deep is now gated both ways: `scripts/deepgen` writes deep scanline and deep
 tiled fixtures with 0 to 4 samples per pixel, including an entirely empty
@@ -243,20 +243,28 @@ deep file this library produced and this library rejected every deep file the
 reference produced — while `go test ./...` was green, because writer and reader
 shared every one of them.
 
-What remains open:
+Deep mipmap and ripmap levels are written and gated. `DeepTiledWriter` sized its
+offset table for one level and indexed it by `tileY*tilesX + tileX`, so every
+level after the first overwrote the first one's slots — while the reader had
+always derived the index per level, so the two disagreed the moment a second
+level existed. Both now use one derivation. A second defect sat behind it: the
+writer captured the tile description at construction, so a caller who asked for
+a mipmap through `SetTileDescription` got a single-level file and no indication.
+`scripts/exrdeeptiledump` reads all 6 mipmap levels and all 36 ripmap levels
+back through libOpenEXR; oiiotool cannot, because `--selectmip` does not compose
+with `--dumpdata` for deep images and every level but the first comes back
+empty.
 
-- **Deep mipmap and ripmap levels.** `DeepTiledWriter` writes `LevelModeOne`
-  only, and `DeepTiledReader.tileExtent` does not fold the level size into its
-  clipping, so `ReadTileLevel` above level 0 is unmeasured. `oiiotool` 3.1.16
-  could not be made to produce a deep mipmapped fixture to gate it against.
-  Note that `DeepTiledWriter` *does* index its offset table by tile coordinate
-  (`tileY*tilesX + tileX`), so it never had the write-order defect the shallow
-  tiled writer did — its limit is levels, not ordering.
-- **Writing deep parts into a multi-part file**, which the section below covers
-  from the other side. Reading them is gated, scanline and tiled.
-- **Deep sample semantics** — Z-sorted and non-overlapping ordering,
-  `deepImageState`, alpha premultiplication. Nothing here asserts more than that
-  samples come back in the order they were written.
+Deep parts in multi-part files are written and gated, which the section below
+covers from the other side.
+
+Deep sample semantics are asserted as far as they can be. `deepImageState` is a
+typed attribute now — the reference reads back what this library writes — and
+`VerifyDeepImageState` checks that the samples actually satisfy the claim, since
+nothing in the format does: a file declaring "tidy" over unsorted or overlapping
+samples is accepted by every reader and shows up much later as a composite that
+is subtly wrong. Alpha premultiplication remains a convention this library
+neither imposes nor checks, which is what the reference does too.
 
 ### The multi-part cases the gate still does not reach
 

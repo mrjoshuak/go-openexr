@@ -1513,6 +1513,23 @@ fi
 				fail "deep multi-part: the reference refuses a part of the file"
 			fi
 
+			# deepImageState: a claim about the samples that nothing in the
+			# format checks. The fixture declares "tidy" and
+			# VerifyDeepImageState confirms the samples satisfy it before the
+			# claim is written, so what is asserted here is that the reference
+			# reads the attribute back as a typed attribute rather than
+			# dropping or mangling it.
+			if exrheader "$MPD/mp_deep.exr" 2>&1 | grep -q "deepImageState (type deepImageState)"; then
+				pass "deep multi-part: the reference reads the deepImageState attribute this library wrote"
+			else
+				fail "deep multi-part: the reference does not see a deepImageState attribute"
+			fi
+			if go test ./exr/ -run 'TestVerifyDeepImageState|TestDeepImageStateRoundTrips' >/dev/null 2>&1; then
+				pass "deep sample semantics: a false deepImageState claim is caught rather than written"
+			else
+				fail "deep sample semantics: VerifyDeepImageState does not catch a false claim"
+			fi
+
 			dump_deep "$MPD/sep.2.exr" >"$MPD/got.dump"
 			pix=$(grep -c 'Pixel' "$MPD/got.dump")
 			if [ "${pix:-0}" -lt 100 ]; then
@@ -1597,7 +1614,6 @@ fi
 		fi
 	fi
 		# ---- measured gaps ------------------------------------------------
-		note "GAP: deep sample semantics are not asserted — Z-sorted and non-overlapping ordering, deepImageState and alpha premultiplication; only that samples return in the order written"
 # ---------------------------------------------------------------------------
 # 8. The read direction for tiled files.
 #

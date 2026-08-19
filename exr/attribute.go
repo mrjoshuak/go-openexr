@@ -195,6 +195,7 @@ const (
 	AttrTypeInt            AttributeType = "int"
 	AttrTypeKeycode        AttributeType = "keycode"
 	AttrTypeLineOrder      AttributeType = "lineOrder"
+	AttrTypeDeepImageState AttributeType = "deepImageState"
 	AttrTypeM33d           AttributeType = "m33d"
 	AttrTypeM33f           AttributeType = "m33f"
 	AttrTypeM44d           AttributeType = "m44d"
@@ -278,6 +279,9 @@ func ReadAttribute(r *xdr.Reader) (*Attribute, error) {
 	case AttrTypeLineOrder:
 		b, e := r.ReadByte()
 		attr.Value, err = LineOrder(b), e
+	case AttrTypeDeepImageState:
+		b, e := r.ReadByte()
+		attr.Value, err = DeepImageState(b), e
 	case AttrTypeM33f:
 		attr.Value, err = ReadM33f(r)
 	case AttrTypeM44f:
@@ -378,6 +382,8 @@ func writeAttributeValue(w *xdr.BufferWriter, attr *Attribute) error {
 		WriteKeyCode(w, attr.Value.(KeyCode))
 	case AttrTypeLineOrder:
 		w.WriteByte(byte(attr.Value.(LineOrder)))
+	case AttrTypeDeepImageState:
+		w.WriteByte(byte(attr.Value.(DeepImageState)))
 	case AttrTypeM33f:
 		WriteM33f(w, attr.Value.(M33f))
 	case AttrTypeM44f:

@@ -16,6 +16,7 @@ const (
 	AttrNameDataWindow          = "dataWindow"
 	AttrNameDisplayWindow       = "displayWindow"
 	AttrNameLineOrder           = "lineOrder"
+	AttrNameDeepImageState      = "deepImageState"
 	AttrNamePixelAspectRatio    = "pixelAspectRatio"
 	AttrNameScreenWindowCenter  = "screenWindowCenter"
 	AttrNameScreenWindowWidth   = "screenWindowWidth"
