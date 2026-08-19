@@ -269,6 +269,11 @@ func (r *TiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error {
 		if err != nil {
 			return err
 		}
+	case CompressionHTJ2K256, CompressionHTJ2K32:
+		decompressedData, err = r.decompressTileHTJ2K(data, tileWidth, tileHeight)
+		if err != nil {
+			return err
+		}
 	default:
 		return errors.New("exr: compression not yet implemented: " + compression.String())
 	}
@@ -681,6 +686,11 @@ func (w *TiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) error {
 		}
 	case CompressionDWAA, CompressionDWAB:
 		data, err = w.compressTileDWA(rawData, tileX, tileY, tileWidth, tileHeight)
+		if err != nil {
+			return err
+		}
+	case CompressionHTJ2K256, CompressionHTJ2K32:
+		data, err = w.compressTileHTJ2K(rawData, tileWidth, tileHeight, htj2kBlockWidth(compression))
 		if err != nil {
 			return err
 		}

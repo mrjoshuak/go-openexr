@@ -152,8 +152,6 @@ What remains open:
   for `WriteMipmapTiledImage` and `WriteRipmapTiledImage` only the container is
   gated — that each generated level lands where it belongs and encodes
   correctly. Nothing external can say what level 3 *should* contain.
-- **Codecs not exercised over tiles.** `b44a` and both HTJ2K compressions are
-  covered by the scanline matrix but not by the tiled chunk path.
 - **Deep tiled files**, which the section below covers.
 
 This is also the compatibility half of the strategy above: mipmapped output is

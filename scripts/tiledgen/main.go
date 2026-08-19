@@ -537,6 +537,33 @@ func fixtures() []fixture {
 			mode: exr.LevelModeOne, pt: exr.PixelTypeHalf, codec: exr.CompressionDWAB,
 			codecTag: "dwab", typeTag: "half", api: "manual", lossy: true, expect: "lossy",
 			note: "one level, DWAB over partial tiles"},
+		{name: "t_one_partial_half_b44a", w: imgW, h: imgH, tw: 32, th: 32,
+			mode: exr.LevelModeOne, pt: exr.PixelTypeHalf, codec: exr.CompressionB44A,
+			codecTag: "b44a", typeTag: "half", api: "manual", lossy: true, expect: "lossy",
+			note: "one level, B44A over partial tiles"},
+
+		// HTJ2K over tiles. Both identifiers were missing from the tiled
+		// compression switch entirely, so a tiled header declaring either
+		// produced "compression not yet implemented" from the writer — the one
+		// compression a tiled cloud workflow most wants, since an HTJ2K chunk
+		// is a JPEG 2000 codestream whose packets are individually
+		// addressable. Lossless, so these are exact rather than toleranced.
+		{name: "t_one_half_htj2k256", w: imgW, h: imgH, tw: 32, th: 32,
+			mode: exr.LevelModeOne, pt: exr.PixelTypeHalf, codec: exr.CompressionHTJ2K256,
+			codecTag: "htj2k256", typeTag: "half", api: "manual", expect: "exact",
+			note: "one level, HTJ2K 256 over partial tiles"},
+		{name: "t_one_half_htj2k32", w: imgW, h: imgH, tw: 32, th: 32,
+			mode: exr.LevelModeOne, pt: exr.PixelTypeHalf, codec: exr.CompressionHTJ2K32,
+			codecTag: "htj2k32", typeTag: "half", api: "manual", expect: "exact",
+			note: "one level, HTJ2K 32 over partial tiles"},
+		{name: "t_one_float_htj2k256", w: imgW, h: imgH, tw: 32, th: 32,
+			mode: exr.LevelModeOne, pt: exr.PixelTypeFloat, codec: exr.CompressionHTJ2K256,
+			codecTag: "htj2k256", typeTag: "float", api: "manual", expect: "exact",
+			note: "one level, HTJ2K 256 over float, partial tiles"},
+		{name: "t_mip_half_htj2k256", w: imgW, h: imgH, tw: 16, th: 16,
+			mode: exr.LevelModeMipmap, pt: exr.PixelTypeHalf, codec: exr.CompressionHTJ2K256,
+			codecTag: "htj2k256", typeTag: "half", api: "manual", expect: "exact",
+			note: "mipmap, HTJ2K 256, every level"},
 
 		// Mipmaps, every level written with content that differs per level.
 		{name: "t_mip_half_zip", w: imgW, h: imgH, tw: 16, th: 16,

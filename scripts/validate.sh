@@ -676,7 +676,6 @@ $(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
 
 		# ---- measured gaps ------------------------------------------------
 		note "GAP: the contents of generated mipmap/ripmap levels are not gated — the format specifies no downsampling filter, so only level placement and encoding are checked; nothing external can say what level 3 should contain"
-		note "GAP: b44a and both htj2k compressions are not exercised over tiles — the scanline matrix covers them, the tiled chunk path does not"
 	fi
 fi
 
