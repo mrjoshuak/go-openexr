@@ -2,6 +2,7 @@ package exr
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 
 	"github.com/mrjoshuak/go-openexr/half"
@@ -59,6 +60,20 @@ type Slice struct {
 	// When true, pixel coordinates are relative to tile origin.
 	XTileCoords bool
 	YTileCoords bool
+
+	// Width and Height are how many pixels the storage behind Base actually
+	// holds, so that a read or write aimed outside it can be refused instead
+	// of running off the end of the allocation.
+	//
+	// Zero means undeclared, and nothing is checked — which is what a Slice
+	// built as a struct literal gets, and what every Slice got before v1.4.7.
+	// Every constructor in this package sets them, including AllocateChannels,
+	// so a frame buffer that disagrees with the file's data window is now an
+	// error rather than a write past the end of four planes. That was measured
+	// on v1.4.6: a buffer allocated for a window at (0, 0) and read against a
+	// data window at (5, 3) overwrote 30 float32 words past the end of every
+	// plane, and ReadPixels returned nil.
+	Width, Height int
 }
 
 // NewSlice creates a Slice for a flat memory buffer.
@@ -72,6 +87,8 @@ func NewSlice(pixelType PixelType, data []byte, width, height int) Slice {
 		YStride:   width * pixelSize,
 		XSampling: 1,
 		YSampling: 1,
+		Width:     width,
+		Height:    height,
 	}
 }
 
@@ -84,6 +101,8 @@ func NewSliceFromFloat32(data []float32, width, height int) Slice {
 		YStride:   width * 4,
 		XSampling: 1,
 		YSampling: 1,
+		Width:     width,
+		Height:    height,
 	}
 }
 
@@ -112,6 +131,8 @@ func NewSliceFromHalf(data []half.Half, width, height int) Slice {
 		YStride:   width * 2,
 		XSampling: 1,
 		YSampling: 1,
+		Width:     width,
+		Height:    height,
 	}
 }
 
@@ -124,7 +145,78 @@ func NewSliceFromUint32(data []uint32, width, height int) Slice {
 		YStride:   width * 4,
 		XSampling: 1,
 		YSampling: 1,
+		Width:     width,
+		Height:    height,
 	}
+}
+
+// ErrFrameBufferTooSmall is returned when a frame buffer's storage does not
+// cover the pixels a read or write was asked for.
+//
+// It exists because the alternative is what v1.4.6 did: write past the end of
+// every plane and return nil. The message names the channel, the storage it
+// declares and the rectangle asked for, because the usual cause is a frame
+// buffer allocated for a window at the origin while the file's data window is
+// somewhere else, and that is not obvious from a wrong pixel.
+var ErrFrameBufferTooSmall = errors.New("exr: frame buffer does not cover the requested pixels")
+
+// CheckCoverage reports an error naming the first channel whose storage does
+// not cover the rectangle, in window-absolute coordinates and inclusive of both
+// corners. Channels the frame buffer does not hold are not an error here: a
+// caller may legitimately ask for a subset, and the readers fill the rest.
+func (fb *FrameBuffer) CheckCoverage(b Box2i) error {
+	for _, name := range fb.Names() {
+		s := fb.Get(name)
+		if s == nil || !s.HasExtent() || s.CoversBox(b) {
+			continue
+		}
+		return fmt.Errorf("%w: channel %q holds %dx%d pixels from (%d,%d), "+
+			"which does not cover (%d,%d)-(%d,%d); a frame buffer is addressed in "+
+			"the data window's own coordinates, so allocate it for that window",
+			ErrFrameBufferTooSmall, name, s.Width, s.Height, s.OriginX, s.OriginY,
+			b.Min.X, b.Min.Y, b.Max.X, b.Max.Y)
+	}
+	return nil
+}
+
+// HasExtent reports whether the slice declares how much storage it has, which
+// is what makes a bounds check possible at all.
+func (s *Slice) HasExtent() bool { return s.Width > 0 && s.Height > 0 }
+
+// Covers reports whether the pixel at (x, y), in window-absolute coordinates,
+// lies inside the slice's declared storage. A slice with no declared extent
+// covers everything, which is what it did before extents existed.
+func (s *Slice) Covers(x, y int) bool {
+	if !s.HasExtent() {
+		return true
+	}
+	sx := (x - s.OriginX) / s.XSampling
+	sy := (y - s.OriginY) / s.YSampling
+	return sx >= 0 && sx < s.Width && sy >= 0 && sy < s.Height
+}
+
+// CoversBox reports whether every pixel of a rectangle, in window-absolute
+// coordinates and inclusive of both corners, lies inside the slice's storage.
+//
+// This is what a reader checks before it starts writing rows: a frame buffer
+// that does not cover the rows being read is a caller error worth naming, and
+// finding out row by row means finding out after the damage.
+func (s *Slice) CoversBox(b Box2i) bool {
+	return s.Covers(int(b.Min.X), int(b.Min.Y)) && s.Covers(int(b.Max.X), int(b.Max.Y))
+}
+
+// coversRow reports whether row y and columns [xStart, xStart+width) of that
+// row, measured from the window's left edge as the row functions measure them,
+// lie inside the storage.
+func (s *Slice) coversRow(y, xStart, width int) bool {
+	if !s.HasExtent() {
+		return true
+	}
+	sy := (y - s.OriginY) / s.YSampling
+	if sy < 0 || sy >= s.Height {
+		return false
+	}
+	return xStart >= 0 && xStart+width <= s.Width
 }
 
 // PixelAddr returns the address of the pixel at (x, y).
@@ -276,6 +368,13 @@ func (s *Slice) IsContiguous() bool {
 // WriteRowHalfBytes writes a row of half values directly from raw bytes (little-endian).
 // This is the fastest path for uncompressed data on little-endian systems.
 func (s *Slice) WriteRowHalfBytes(y int, data []byte, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeHalf && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
@@ -301,6 +400,13 @@ func (s *Slice) WriteRowHalfBytes(y int, data []byte, xStart, width int) {
 // WriteRowHalf writes a row of half values from raw uint16 data.
 // This is an optimized path for the common case of half-precision data.
 func (s *Slice) WriteRowHalf(y int, data []uint16, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeHalf && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
@@ -324,6 +430,13 @@ func (s *Slice) WriteRowHalf(y int, data []uint16, xStart, width int) {
 
 // WriteRowFloat writes a row of float32 values from raw bytes (little-endian).
 func (s *Slice) WriteRowFloat(y int, data []byte, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeFloat && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
@@ -348,6 +461,13 @@ func (s *Slice) WriteRowFloat(y int, data []byte, xStart, width int) {
 
 // WriteRowUint writes a row of uint32 values from raw bytes (little-endian).
 func (s *Slice) WriteRowUint(y int, data []byte, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeUint && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
@@ -372,6 +492,13 @@ func (s *Slice) WriteRowUint(y int, data []byte, xStart, width int) {
 
 // ReadRowHalf reads a row of half values into raw uint16 data.
 func (s *Slice) ReadRowHalf(y int, data []uint16, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeHalf && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 2 {
@@ -395,6 +522,13 @@ func (s *Slice) ReadRowHalf(y int, data []uint16, xStart, width int) {
 
 // ReadRowFloat reads a row of float32 values into raw bytes (little-endian).
 func (s *Slice) ReadRowFloat(y int, data []byte, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeFloat && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
@@ -419,6 +553,13 @@ func (s *Slice) ReadRowFloat(y int, data []byte, xStart, width int) {
 
 // ReadRowUint reads a row of uint32 values into raw bytes (little-endian).
 func (s *Slice) ReadRowUint(y int, data []byte, xStart, width int) {
+	// A row outside the slice's declared storage is refused rather than
+	// written past the end of it; the reader validates the whole range up front
+	// and names the mismatch, and this is the backstop for any path that does
+	// not.
+	if !s.coversRow(y, xStart, width) {
+		return
+	}
 	if s.Type == PixelTypeUint && s.XSampling == 1 {
 		base, stride := s.RowAddr(y)
 		if stride == 4 {
@@ -620,11 +761,23 @@ func AllocateChannelsLimit(cl *ChannelList, dataWindow Box2i, maxBytes int64) (*
 }
 
 // RGBAFrameBuffer is a convenience wrapper for RGBA images.
+//
+// GetPixel and SetPixel index the buffer from zero, as they always have.
+// OriginX and OriginY say where that zero sits in the image, which is what the
+// readers and writers need: they address a frame buffer in the data window's
+// own coordinates, so a buffer for a window at (10, 10) whose origin is left at
+// zero does not cover the pixels being read into it.
 type RGBAFrameBuffer struct {
 	R, G, B, A []float32
 	Width      int
 	Height     int
 	HasAlpha   bool
+
+	// OriginX and OriginY are the image coordinates of the buffer's (0, 0),
+	// which is the data window's minimum corner for a buffer covering a whole
+	// data window. Zero for a window at the origin, which is what
+	// NewRGBAFrameBuffer produces.
+	OriginX, OriginY int
 }
 
 // NewRGBAFrameBuffer creates an RGBA frame buffer of the given dimensions.
@@ -643,14 +796,31 @@ func NewRGBAFrameBuffer(width, height int, hasAlpha bool) *RGBAFrameBuffer {
 	return fb
 }
 
+// NewRGBAFrameBufferForWindow creates an RGBA frame buffer covering a data
+// window, with its origin set to that window's minimum corner.
+//
+// This is the form to use for a file whose data window does not start at
+// (0, 0) — a cropped render, most often. NewRGBAFrameBuffer leaves the origin
+// at zero, which is right only when the window does too.
+func NewRGBAFrameBufferForWindow(dataWindow Box2i, hasAlpha bool) *RGBAFrameBuffer {
+	fb := NewRGBAFrameBuffer(int(dataWindow.Width()), int(dataWindow.Height()), hasAlpha)
+	fb.OriginX = int(dataWindow.Min.X)
+	fb.OriginY = int(dataWindow.Min.Y)
+	return fb
+}
+
 // ToFrameBuffer converts to a generic FrameBuffer.
 func (rgba *RGBAFrameBuffer) ToFrameBuffer() *FrameBuffer {
 	fb := NewFrameBuffer()
-	fb.Set("R", NewSliceFromFloat32(rgba.R, rgba.Width, rgba.Height))
-	fb.Set("G", NewSliceFromFloat32(rgba.G, rgba.Width, rgba.Height))
-	fb.Set("B", NewSliceFromFloat32(rgba.B, rgba.Width, rgba.Height))
+	set := func(name string, data []float32) {
+		fb.Set(name, NewSliceFromFloat32(data, rgba.Width, rgba.Height).
+			WithOrigin(rgba.OriginX, rgba.OriginY))
+	}
+	set("R", rgba.R)
+	set("G", rgba.G)
+	set("B", rgba.B)
 	if rgba.HasAlpha {
-		fb.Set("A", NewSliceFromFloat32(rgba.A, rgba.Width, rgba.Height))
+		set("A", rgba.A)
 	}
 	return fb
 }

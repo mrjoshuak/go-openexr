@@ -297,6 +297,17 @@ func (r *ScanlineReader) ReadPixels(y1, y2 int) error {
 		return ErrScanlineOutOfRange
 	}
 
+	// The frame buffer must be able to hold what is about to be written into
+	// it. Checking here rather than row by row is the point: a buffer
+	// allocated for the wrong window used to be found out one plane at a time,
+	// after the writes had already run past the end of each.
+	if err := r.frameBuffer.CheckCoverage(Box2i{
+		Min: V2i{X: r.dataWindow.Min.X, Y: int32(y1)},
+		Max: V2i{X: r.dataWindow.Max.X, Y: int32(y2)},
+	}); err != nil {
+		return err
+	}
+
 	comp := r.header.Compression()
 	linesPerChunk := comp.ScanlinesPerChunk()
 
@@ -897,6 +908,16 @@ func (w *ScanlineWriter) WritePixels(y1, y2 int) error {
 
 	if y1 < minY || y2 > maxY || y1 > y2 {
 		return ErrScanlineOutOfRange
+	}
+
+	// The same check the reader makes, for the same reason: a frame buffer
+	// that does not cover these rows would otherwise be read past its end and
+	// the file written from whatever followed it.
+	if err := w.frameBuffer.CheckCoverage(Box2i{
+		Min: V2i{X: w.dataWindow.Min.X, Y: int32(y1)},
+		Max: V2i{X: w.dataWindow.Max.X, Y: int32(y2)},
+	}); err != nil {
+		return err
 	}
 
 	comp := w.header.Compression()

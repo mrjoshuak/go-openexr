@@ -434,6 +434,17 @@ func (r *TiledReader) decodeTileLevel(tileX, tileY, levelX, levelY, tileWidth, t
 	startX := int(dw.Min.X) + tileX*int(r.tileDesc.XSize)
 	startY := int(dw.Min.Y) + tileY*int(r.tileDesc.YSize)
 
+	// The samples below go in through the per-pixel accessors, which do not
+	// bounds-check — checking once per tile costs nothing and is what turns a
+	// frame buffer that cannot hold this tile into an error rather than a
+	// write past the end of a plane.
+	if err := r.frameBuffer.CheckCoverage(Box2i{
+		Min: V2i{X: int32(startX), Y: int32(startY)},
+		Max: V2i{X: int32(startX + tileWidth - 1), Y: int32(startY + tileHeight - 1)},
+	}); err != nil {
+		return err
+	}
+
 	// Channels are sorted by name
 	sortedChannels := r.channelList.SortedByName()
 

@@ -1239,6 +1239,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "framebuffer-coverage-check",
+      "codec": "core",
+      "description": "ScanlineReader.ReadPixels skips the frame buffer coverage check, as it did before v1.4.7",
+      "spec": "Not a format clause but a memory-safety invariant: this library addresses a frame buffer in the data window's own coordinates and writes through unchecked pointer arithmetic, so a buffer that does not cover the requested rectangle is written past its end. Measured on v1.4.6 with a buffer allocated for a window at (0,0) against a data window at (5,3): 30 float32 words overwritten past each of four planes, and ReadPixels returned nil. Reported as issue #7. The mutation removes the check; the guard-band test is what notices, which is the point — an error-message assertion alone would pass against a version that still corrupted memory afterwards.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/scanline.go",
+          "count": 1,
+          "old": "\tif err := r.frameBuffer.CheckCoverage(Box2i{\n\t\tMin: V2i{X: r.dataWindow.Min.X, Y: int32(y1)},\n\t\tMax: V2i{X: r.dataWindow.Max.X, Y: int32(y2)},\n\t}); err != nil {\n\t\treturn err\n\t}",
+          "new": "\tif false {\n\t\treturn nil\n\t}"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestFrameBufferThatCannotHoldTheReadIsRefused"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

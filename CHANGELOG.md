@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.7] - 2026-08-19
+
+Fixes [#7](https://github.com/mrjoshuak/go-openexr/issues/7). A frame buffer
+that does not cover the pixels being read or written is now an error naming the
+mismatch, instead of a write past the end of every plane.
+
+### Fixed
+- **A mismatched frame buffer corrupted memory silently.** This library
+  addresses a frame buffer in the data window's own coordinates, and wrote
+  through unchecked pointer arithmetic. A buffer allocated for a window at the
+  origin, against a file whose data window is somewhere else, therefore did not
+  cover the rectangle being read — and the reader wrote outside it and returned
+  nil. Measured on v1.4.6 with a 10x8 buffer at (0, 0) against a data window at
+  (5, 3): **30 float32 words overwritten past the end of each of four planes**,
+  no error. The report described it as wrong pixels; wrong pixels were the
+  visible part.
+
+  `Slice` now declares how much storage it has, every constructor in this
+  package sets it, and `ScanlineReader.ReadPixels`, `ScanlineWriter.WritePixels`
+  and the tiled decode path check coverage before touching anything. The row
+  functions clip as a backstop for any path that does not check.
+
+  **What this means for callers.** A read or write that was quietly landing
+  outside its buffer now returns `ErrFrameBufferTooSmall`, wrapped with the
+  channel, the storage it declares and the rectangle asked for. That is a
+  behaviour change for code that was already wrong, and it is the point: the
+  error says what to fix. Nothing that was correct changes.
+
+  Correct usage was, and remains, `AllocateChannels(channels, dataWindow)` — or
+  any buffer whose window is stated with `Slice.WithOrigin`. Band-shaped buffers
+  work and are gated: allocate for the absolute rows you intend to read, and
+  read those rows.
+
+  A `Slice` built as a struct literal declares no extent and is checked as
+  before, which is to say not at all. Nothing existing breaks.
+
+### Added
+- `ErrFrameBufferTooSmall`, `FrameBuffer.CheckCoverage`, `Slice.Width`,
+  `Slice.Height`, `Slice.HasExtent`, `Slice.Covers` and `Slice.CoversBox`.
+- `NewRGBAFrameBufferForWindow`, and `OriginX`/`OriginY` on `RGBAFrameBuffer`.
+  `NewRGBAFrameBuffer` leaves the origin at zero, which is right only when the
+  data window starts there; the existing test for an offset window used it and
+  was one of the paths writing out of bounds.
+
+### Gate
+- 243 checks, 0 failures, 0 skipped. A new block asserts both halves: a covering
+  buffer reads exactly — the whole window and a band of it — and a short one is
+  refused with a guard band proving nothing past the planes was touched.
+- A 33rd mutation, `framebuffer-coverage-check`, removes the coverage check. The
+  guard-band test is what kills it, which is deliberate: an assertion on the
+  error message alone would pass against a version that still corrupted memory.
+
 ## [1.4.6] - 2026-08-19
 
 A rectangle of a tiled file can now be read without reading or decompressing the

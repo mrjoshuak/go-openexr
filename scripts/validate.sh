@@ -255,6 +255,31 @@ else
 		n=$(find exr/testdata/conformance -name '*.exr' | wc -l | tr -d ' ')
 		note "corpus: $n files written by the reference implementation"
 	fi
+
+	# ---- frame buffers that do not cover the window (issue #7) -------------
+	#
+	# This library addresses a frame buffer in the data window's own
+	# coordinates. A buffer allocated for a window at the origin against a file
+	# whose window is elsewhere therefore does not cover the pixels being read,
+	# and until v1.4.7 that wrote past the end of every plane and returned nil
+	# — measured at 30 float32 words past each of four planes. The tests below
+	# check both halves: a covering buffer reads exactly, including a
+	# band-shaped one, and a buffer that cannot hold the read is refused with
+	# nothing written past it.
+	#
+	# There is no external oracle for this one and it is not pretending
+	# otherwise: libOpenEXR biases the base pointer instead, so it has no
+	# equivalent API to disagree with. What the reference does gate is the
+	# offset window itself, in the tiled and multi-part read sections below.
+	wr=$(go test ./exr/ -run 'TestReadThroughAnOffsetWindow|TestFrameBufferThatCannotHoldTheReadIsRefused|TestWriteThroughAFrameBufferThatIsTooSmallIsRefused|TestTiledReadRefusesAFrameBufferThatCannotHoldATile' -v 2>&1)
+	wrran=$(printf '%s\n' "$wr" | grep -cE '^\s*--- PASS')
+	if printf '%s\n' "$wr" | grep -qE '^\s*--- FAIL'; then
+		fail "offset-window frame buffers: $(printf '%s\n' "$wr" | grep -E '^\s*--- FAIL' | head -1)"
+	elif [ "$wrran" -lt 6 ]; then
+		fail "offset-window frame buffers: only $wrran assertions ran; the guard is not being exercised"
+	else
+		pass "offset-window frame buffers: $wrran assertions — a covering buffer reads exactly, a short one is refused and writes nothing past its planes"
+	fi
 fi
 
 # ---------------------------------------------------------------------------

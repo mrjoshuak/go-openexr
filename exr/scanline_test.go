@@ -323,9 +323,12 @@ func TestScanlineDataWindow(t *testing.T) {
 	ws := newMockWriteSeeker()
 	sw, _ := NewScanlineWriter(ws, h)
 
-	fb := NewRGBAFrameBuffer(10, 10, false)
+	// The buffer covers the data window, so its (0,0) is image (10,10). A
+	// buffer left at the origin does not cover those pixels, and since v1.4.7
+	// says so rather than writing past its end.
+	fb := NewRGBAFrameBufferForWindow(dw, false)
 	// Set test pattern
-	fb.SetPixel(0, 0, 1.0, 0.0, 0.0, 1.0) // Will be at (10,10) in image coords
+	fb.SetPixel(0, 0, 1.0, 0.0, 0.0, 1.0) // at (10,10) in image coords
 
 	sw.SetFrameBuffer(fb.ToFrameBuffer())
 
