@@ -27,7 +27,9 @@
 #include <ImfFrameBuffer.h>
 #include <ImfHeader.h>
 #include <ImfTileDescription.h>
+#include <ImfMultiPartInputFile.h>
 #include <ImfTiledInputFile.h>
+#include <ImfTiledInputPart.h>
 
 #include <cstdio>
 #include <cstring>
@@ -51,7 +53,8 @@ const char* modeName (Imf::LevelMode m)
 // dumpLevel reads one resolution level in full and prints it. Every channel is
 // requested as FLOAT; half converts to float exactly, so no information the
 // file holds is lost on the way to the comparison.
-void dumpLevel (Imf::TiledInputFile& in, int lx, int ly, bool samples)
+template <class Reader>
+void dumpLevel (Reader& in, int lx, int ly, bool samples)
 {
     const Imf::Header& h  = in.header ();
     Imath::Box2i       dw = in.dataWindowForLevel (lx, ly);
@@ -95,55 +98,90 @@ void dumpLevel (Imf::TiledInputFile& in, int lx, int ly, bool samples)
                         names[c].c_str (), data[c][(size_t) y * w + x]);
 }
 
+// dumpAll walks whichever levels the file declares. Templated for the same
+// reason as dumpLevel: a part and a whole file present the same interface
+// without sharing a type.
+template <class Reader>
+int dumpAll (Reader& in, bool samples)
+{
+    const Imf::Header&          h  = in.header ();
+    const Imf::TileDescription& td = h.tileDescription ();
+
+    printf ("# mode %s\n", modeName (in.levelMode ()));
+    printf ("# tile %u %u %s\n", td.xSize, td.ySize,
+            td.roundingMode == Imf::ROUND_DOWN ? "down" : "up");
+    printf ("# levels %d %d\n", in.numXLevels (), in.numYLevels ());
+
+    switch (in.levelMode ())
+    {
+        case Imf::ONE_LEVEL: dumpLevel (in, 0, 0, samples); break;
+        case Imf::MIPMAP_LEVELS:
+            for (int l = 0; l < in.numLevels (); ++l)
+                dumpLevel (in, l, l, samples);
+            break;
+        case Imf::RIPMAP_LEVELS:
+            for (int ly = 0; ly < in.numYLevels (); ++ly)
+                for (int lx = 0; lx < in.numXLevels (); ++lx)
+                    dumpLevel (in, lx, ly, samples);
+            break;
+        default: fprintf (stderr, "unknown level mode\n"); return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int
 main (int argc, char** argv)
 {
     bool samples = true;
+    int  part    = -1;
     int  argi    = 1;
-    if (argc > 1 && strcmp (argv[1], "-info") == 0)
+    while (argi < argc && argv[argi][0] == '-')
     {
-        samples = false;
-        argi    = 2;
+        if (strcmp (argv[argi], "-info") == 0)
+        {
+            samples = false;
+            ++argi;
+        }
+        else if (strcmp (argv[argi], "-part") == 0 && argi + 1 < argc)
+        {
+            part = atoi (argv[argi + 1]);
+            argi += 2;
+        }
+        else
+            break;
     }
     if (argi >= argc)
     {
-        fprintf (stderr, "usage: exrtiledump [-info] file.exr\n");
+        fprintf (stderr, "usage: exrtiledump [-info] [-part N] file.exr\n");
         return 2;
     }
 
     try
     {
-        Imf::TiledInputFile in (argv[argi]);
-        const Imf::Header&  h  = in.header ();
-        const Imf::TileDescription& td = h.tileDescription ();
-
-        printf ("# mode %s\n", modeName (in.levelMode ()));
-        printf ("# tile %u %u %s\n", td.xSize, td.ySize,
-                td.roundingMode == Imf::ROUND_DOWN ? "down" : "up");
-        printf ("# levels %d %d\n", in.numXLevels (), in.numYLevels ());
-
-        switch (in.levelMode ())
+        // A part index opens the file as multi-part and addresses one tiled
+        // part. Without it the file is opened as a single-part tiled file,
+        // which is what every existing caller wants and what TiledInputFile
+        // refuses to do for a multi-part file.
+        if (part >= 0)
         {
-            case Imf::ONE_LEVEL: dumpLevel (in, 0, 0, samples); break;
-            case Imf::MIPMAP_LEVELS:
-                for (int l = 0; l < in.numLevels (); ++l)
-                    dumpLevel (in, l, l, samples);
-                break;
-            case Imf::RIPMAP_LEVELS:
-                for (int ly = 0; ly < in.numYLevels (); ++ly)
-                    for (int lx = 0; lx < in.numXLevels (); ++lx)
-                        dumpLevel (in, lx, ly, samples);
-                break;
-            default: fprintf (stderr, "unknown level mode\n"); return 1;
+            Imf::MultiPartInputFile mp (argv[argi]);
+            if (part >= mp.parts ())
+            {
+                fprintf (stderr, "ERROR %s: part %d of %d\n", argv[argi], part,
+                         mp.parts ());
+                return 1;
+            }
+            Imf::TiledInputPart in (mp, part);
+            return dumpAll (in, samples);
         }
+        Imf::TiledInputFile in (argv[argi]);
+        return dumpAll (in, samples);
     }
     catch (const std::exception& e)
     {
         fprintf (stderr, "ERROR %s: %s\n", argv[argi], e.what ());
         return 1;
     }
-
-    return 0;
 }

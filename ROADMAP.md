@@ -275,14 +275,17 @@ find. Writing the fixture measured something on its own: the reference refuses
 parts that disagree about the display window, which is the rule
 `NewMultiPartWriter` enforces as `ErrConflictingAttributes`.
 
-Four cases remain outside it, and `validate.sh` prints them as gaps on every run
-rather than leaving them unsaid:
+Ripmapped tiled parts are gated too: `scripts/mpripgen` writes a scanline master
+beside a ripmapped tiled part, and `scripts/exrtiledump -part 1` — libOpenEXR
+addressing one part of a multi-part file — reads all 49 of its independent x and
+y levels, 48387 samples, exactly. oiiotool cannot serve as the oracle there,
+because `--selectmip` addresses levels by a single index and a ripmap has none.
+
+Three cases remain outside it, and `validate.sh` prints them as gaps on every
+run rather than leaving them unsaid:
 
 - Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
   `WritePixels` and `WriteTile`, so this library cannot write one at all.
-- Ripmapped tiled parts inside a multi-part file. The mipmapped part in
-  `mp_mipmap.exr` is gated level by level; a ripmap's independent x and y
-  levels are a different offset table and are unexercised.
 - Subsampled channels in multi-part parts — the same `XSampling`/`YSampling`
   gap listed above for the tiled and multi-part writers.
 - Multi-level parts in the read direction. oiiotool 3.1.16 writes a one-level

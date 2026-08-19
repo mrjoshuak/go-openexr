@@ -1056,11 +1056,60 @@ else
 		sig_check mp_codecs.exr 0 R mp_codecs.p1.R.pfm "one part's samples put where another part's belong"
 		sig_check mp_channels.exr 0 R mp_channels.p0.G.pfm "one channel's samples put where another channel's belong"
 
+		# ---- ripmapped tiled part inside a multi-part file -----------------
+		#
+		# A ripmap's x and y levels are independent, so its chunk offset table
+		# has a different layout from a mipmap's; the mipmapped part above
+		# walks one level per step and never exercises it.
+		#
+		# The oracle is scripts/exrtiledump with -part, which opens the file as
+		# multi-part and addresses one tiled part through libOpenEXR. oiiotool
+		# cannot serve here: --selectmip addresses levels by a single index,
+		# which a ripmap does not have.
+		if [ ! -x "$TILEDUMP" ]; then
+			gap "ripmapped multi-part part: exrtiledump could not be built against the reference"
+		else
+			RPDIR="$WORK/mprip"
+			if ! err=$(go run ./scripts/mpripgen "$RPDIR" 2>&1); then
+				fail "ripmapped multi-part part: this library could not write one: $(printf '%s' "$err" | head -1 | cut -c1-90)"
+			elif ! "$TILEDUMP" -part 1 "$RPDIR/mp_ripmap.exr" >"$RPDIR/rip.dump" 2>"$RPDIR/rip.err"; then
+				fail "ripmapped multi-part part: the reference refused it: $(head -1 "$RPDIR/rip.err" | cut -c1-100)"
+			else
+				line=$(awk -f "$REPO/scripts/tilecmp.awk" "$RPDIR/mp_ripmap.expect" "$RPDIR/rip.dump")
+				lvls=$(grep -c '^# level' "$RPDIR/rip.dump")
+				case "$line" in
+				*"missing=0 extra=0 maxerr=0 "*)
+					pass "ripmapped multi-part part: the reference reads all $lvls levels exactly ($line)" ;;
+				*)
+					fail "ripmapped multi-part part: $line" ;;
+				esac
+
+				# The scanline part beside it must still read, or the check
+				# above is satisfied by a file whose other part is broken.
+				# oiiotool pads the dimensions, so match them loosely; what is
+				# being asserted is that the file opens and reports two
+				# subimages at the master's size, not the exact spacing.
+				if info=$(oiiotool --info "$RPDIR/mp_ripmap.exr" 2>&1) &&
+					printf '%s' "$info" | grep -qE "96 +x +64" &&
+					printf '%s' "$info" | grep -q "2 subimages"; then
+					pass "ripmapped multi-part control: the scanline master beside it still opens"
+				else
+					fail "ripmapped multi-part control: the scanline master is not readable: $(printf '%s' "$info" | head -1 | cut -c1-90)"
+				fi
+
+				# Signal: the comparison must reject a dump that is wrong.
+				sed 's/ \([0-9.eE+-]*\)$/ 12345/' "$RPDIR/rip.dump" >"$RPDIR/rip.wrong"
+				sig=$(awk -f "$REPO/scripts/tilecmp.awk" "$RPDIR/mp_ripmap.expect" "$RPDIR/rip.wrong")
+				case "$sig" in
+				*maxerr=0*) fail "ripmapped multi-part signal check: deliberately wrong values compared clean ($sig)" ;;
+				*) pass "ripmapped multi-part signal check: the comparison reports wrong values" ;;
+				esac
+			fi
+		fi
 		# ---- measured gaps ------------------------------------------------
 		# Recorded rather than omitted: a row nobody writes down is a row
 		# nobody notices is missing.
 		note "GAP: deep parts in a multi-part file are not gated — MultiPartOutputFile exposes only WritePixels and WriteTile, so this library cannot write a deepscanline or deeptiled part into a multi-part file at all"
-		note "GAP: ripmapped tiled parts inside a multi-part file are not gated — the mipmapped part above covers one level per step, but a ripmap's independent x and y levels are a different chunk offset table and are unexercised"
 		note "GAP: subsampled channels (XSampling or YSampling above 1) are not gated in multi-part parts"
 	fi
 fi
