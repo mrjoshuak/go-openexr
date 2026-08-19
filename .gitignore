@@ -63,3 +63,13 @@ fuzz-logs/
 .docket-claims/
 /exrtileread
 /exrmpread
+/tiledgen
+/mipcmp
+/mpripgen
+/mpdeepgen
+/deepmipgen
+/exrtileread
+/exrmpread
+/subsampcmp
+/subsampgen
+/layercmp
