@@ -5,13 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.3] - 2026-08-19
 
 Tiled, multi-part and deep images are now gated by the reference implementation
-in the write direction, and deep images in both. Fifteen defects fell out of the
-first runs. Every one of them produced a file the reference refuses to open or
+in the write direction, and deep images in both. Thirteen defects fell out of
+the first runs. Every one of them produced a file the reference refuses to open or
 reads wrongly, and every one was invisible to the existing suite, because a round
-trip reads a file back with the same assumption that wrote it.
+trip reads a file back with the same assumption that wrote it. The gate grew
+from 44 checks to 157, and prints ten measured gaps on every run.
 
 ### Fixed
 - **A tile's offset was recorded in the slot the write arrived in, not the slot
