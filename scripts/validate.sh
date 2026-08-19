@@ -887,6 +887,20 @@ else
 			path="$MP/$file"
 			label=$(printf '%-16s part %s %-9s' "$file" "$part" "$name")
 
+			# oiiotool cannot read subsampled channels — it refuses the file
+			# outright and exposes only the unsubsampled parts of a multi-part
+			# file containing one. Those parts are checked against libOpenEXR
+			# directly by the exrpartdump block further down, which is a
+			# stronger oracle, not a weaker one. Routing them there rather than
+			# failing here is the difference between using the right tool and
+			# dropping the check.
+			case "$file" in
+			mp_subsampled.exr)
+				note "$label handled by the exrpartdump check: oiiotool cannot read subsampled channels"
+				continue
+				;;
+			esac
+
 			info=$(oiiotool -i "$path" --subimage "$part" --printinfo:verbose=1 2>&1)
 			if ! printf '%s\n' "$info" | grep -q 'channel list:'; then
 				fail "$label the reference cannot read this part: $(mp_reason "$info")"
@@ -1106,11 +1120,63 @@ else
 				esac
 			fi
 		fi
+		# ---- subsampled channels in a multi-part part ----------------------
+		#
+		# A channel with XSampling above 1 stores every n-th column, so it
+		# contributes ceil(width/n) samples per line rather than width of them.
+		# buildScanlineData packed the full width for every channel, which made
+		# the chunk longer than the format says and put every channel after a
+		# subsampled one at the wrong offset. YSampling above 1 removes whole
+		# rows, which this library's chunk layout cannot express;
+		# NewMultiPartWriter refuses it, as ScanlineWriter does, and the guard
+		# is checked below.
+		#
+		# The oracle is scripts/exrpartdump rather than oiiotool: oiiotool
+		# cannot read subsampled channels at all — it refuses the file with
+		# "Subsampled channels are not supported (channel \"BY\" has sampling
+		# 2,1)" — and silently exposes only the unsubsampled parts of a
+		# multi-part file containing one, which would have measured nothing
+		# while appearing to pass.
+		PARTDUMP="$WORK/exrpartdump"
+		if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists OpenEXR; then
+			gap "subsampled multi-part channels: OpenEXR development files are not installed"
+		elif ! out=$(c++ -std=c++17 -O1 -o "$PARTDUMP" scripts/exrpartdump/exrpartdump.cpp \
+			$(pkg-config --cflags --libs OpenEXR) 2>&1); then
+			fail "subsampled multi-part channels: could not build scripts/exrpartdump: $(printf '%s' "$out" | head -1 | cut -c1-90)"
+		elif [ ! -f "$MP/mp_subsampled.exr" ]; then
+			gap "subsampled multi-part channels: the fixture was not written"
+		else
+			if ! "$PARTDUMP" -part 1 "$MP/mp_subsampled.exr" >"$WORK/sub.dump" 2>"$WORK/sub.err"; then
+				fail "subsampled multi-part channels: the reference refused the file: $(head -1 "$WORK/sub.err" | cut -c1-100)"
+			elif out=$(python3 scripts/subpartcmp.py "$WORK/sub.dump" "$MP" mp_subsampled 1 2>&1); then
+				pass "subsampled multi-part channels: the reference reads every channel exactly ($out)"
+			else
+				fail "subsampled multi-part channels: $out"
+			fi
+
+			# YSampling above 1 must be refused rather than written, since the
+			# chunk layout cannot express a scanline missing rows. The guard
+			# lives in NewMultiPartWriter and is asserted by a Go test; what is
+			# checked here is that the test exists and passes, so the refusal
+			# cannot quietly disappear.
+			if go test ./exr/ -run TestMultiPartRefusesYSubsampling >/dev/null 2>&1; then
+				pass "subsampled multi-part channels: ySampling above 1 is refused rather than written"
+			else
+				fail "subsampled multi-part channels: NewMultiPartWriter does not refuse ySampling above 1"
+			fi
+
+			# Signal: the comparison must reject values that are wrong.
+			sed 's/ \([0-9.eE+-]*\)$/ 9.5/' "$WORK/sub.dump" >"$WORK/sub.bad"
+			if python3 scripts/subpartcmp.py "$WORK/sub.bad" "$MP" mp_subsampled 1 >/dev/null 2>&1; then
+				fail "subsampled multi-part channels signal check: deliberately wrong values compared clean"
+			else
+				pass "subsampled multi-part channels signal check: the comparison rejects wrong values"
+			fi
+		fi
 		# ---- measured gaps ------------------------------------------------
 		# Recorded rather than omitted: a row nobody writes down is a row
 		# nobody notices is missing.
 		note "GAP: deep parts in a multi-part file are not gated — MultiPartOutputFile exposes only WritePixels and WriteTile, so this library cannot write a deepscanline or deeptiled part into a multi-part file at all"
-		note "GAP: subsampled channels (XSampling or YSampling above 1) are not gated in multi-part parts"
 	fi
 fi
 

@@ -289,13 +289,26 @@ and `exrmultipart -combine` assembles the file, both from OpenEXR itself, so the
 fixture is reference-written end to end — and this library reads all 7 mipmap
 levels and all 49 ripmap levels of it exactly.
 
-Two cases remain outside it, and `validate.sh` prints them as gaps on every run
-rather than leaving them unsaid:
+Subsampled channels are handled and gated. `buildScanlineData` packed the full
+width for every channel, so a channel with `XSampling` 2 — which stores every
+second column and contributes half as many samples per line — made the chunk
+longer than the format says and put every channel after it at the wrong offset.
+It now packs each channel at its own width, and `NewMultiPartWriter` refuses
+`YSampling` above 1, which removes whole rows and which this library's chunk
+layout cannot express, exactly as `ScanlineWriter` refuses it.
+
+The oracle there is `scripts/exrpartdump`, linked against libOpenEXR, because
+oiiotool cannot read subsampled channels at all: it refuses the file with
+"Subsampled channels are not supported" and exposes only the unsubsampled parts
+of a multi-part file containing one — which would have measured nothing while
+appearing to pass. Measured: 6912 samples across 1x, 2x and 4x channels in one
+part, all exact.
+
+One case remains outside it, and `validate.sh` prints it as a gap on every run
+rather than leaving it unsaid:
 
 - Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
   `WritePixels` and `WriteTile`, so this library cannot write one at all.
-- Subsampled channels in multi-part parts — the same `XSampling`/`YSampling`
-  gap listed above for the tiled and multi-part writers.
 
 
 ## Later

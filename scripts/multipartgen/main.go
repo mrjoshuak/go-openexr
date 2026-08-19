@@ -33,6 +33,20 @@ import (
 type chanSpec struct {
 	name string
 	pt   exr.PixelType
+	// xs is the channel's XSampling: it stores every xs-th column, so it
+	// contributes ceil(width/xs) samples per row rather than width of them.
+	// Zero means 1. YSampling is not varied because it removes whole rows
+	// from a scanline, which this library's chunk layout cannot express and
+	// NewMultiPartWriter refuses.
+	xs int
+}
+
+// sampling returns the channel's XSampling, treating the zero value as 1.
+func (c chanSpec) sampling() int {
+	if c.xs < 1 {
+		return 1
+	}
+	return c.xs
 }
 
 // partSpec is one part of one multi-part file. A zero tile means the part is
@@ -135,11 +149,11 @@ func typeName(pt exr.PixelType) string {
 }
 
 func rgb(pt exr.PixelType) []chanSpec {
-	return []chanSpec{{"R", pt}, {"G", pt}, {"B", pt}}
+	return []chanSpec{{"R", pt, 1}, {"G", pt, 1}, {"B", pt, 1}}
 }
 
 func rgba(pt exr.PixelType) []chanSpec {
-	return []chanSpec{{"R", pt}, {"G", pt}, {"B", pt}, {"A", pt}}
+	return []chanSpec{{"R", pt, 1}, {"G", pt, 1}, {"B", pt, 1}, {"A", pt, 1}}
 }
 
 var files = []fileSpec{
@@ -213,16 +227,16 @@ var files = []fileSpec{
 			{name: "rgba", comp: exr.CompressionZIP, compName: "zip",
 				dw: [4]int{0, 0, 63, 47}, chans: rgba(exr.PixelTypeHalf)},
 			{name: "depth", comp: exr.CompressionZIPS, compName: "zips",
-				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{{"Z", exr.PixelTypeFloat}}},
+				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{{"Z", exr.PixelTypeFloat, 1}}},
 			{name: "aov", comp: exr.CompressionPIZ, compName: "piz",
 				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{
-					{"diffuse.R", exr.PixelTypeFloat},
-					{"diffuse.G", exr.PixelTypeFloat},
-					{"diffuse.B", exr.PixelTypeFloat},
-					{"mask", exr.PixelTypeHalf},
+					{"diffuse.R", exr.PixelTypeFloat, 1},
+					{"diffuse.G", exr.PixelTypeFloat, 1},
+					{"diffuse.B", exr.PixelTypeFloat, 1},
+					{"mask", exr.PixelTypeHalf, 1},
 				}},
 			{name: "id", comp: exr.CompressionZIP, compName: "zip",
-				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{{"id", exr.PixelTypeUint}}},
+				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{{"id", exr.PixelTypeUint, 1}}},
 		},
 	},
 	{
@@ -240,6 +254,33 @@ var files = []fileSpec{
 			{name: "tilecrop", comp: exr.CompressionNone, compName: "none",
 				dw: [4]int{11, 5, 74, 52}, chans: rgb(exr.PixelTypeHalf), tile: 16,
 				scrambleTiles: true},
+		},
+	},
+	{
+		// Subsampled channels. XSampling above 1 narrows each row, so a
+		// channel with xs=2 contributes half as many samples per line as its
+		// neighbours; packing the full width for it makes the chunk longer
+		// than the format says and reads every channel after it at the wrong
+		// offset. Chroma-style 2x and 4x sit beside full-resolution channels
+		// in one part, which is the case that fails when the packer uses one
+		// width for all of them.
+		//
+		// YSampling is not varied: it removes whole rows from a scanline,
+		// which this library's chunk layout cannot express and
+		// NewMultiPartWriter refuses, as ScanlineWriter does.
+		file:    "mp_subsampled.exr",
+		display: [4]int{0, 0, 63, 47},
+		note:    "a part mixing full-resolution and 2x and 4x subsampled channels",
+		parts: []partSpec{
+			{name: "full", comp: exr.CompressionZIP, compName: "zip",
+				dw: [4]int{0, 0, 63, 47}, chans: rgb(exr.PixelTypeHalf)},
+			{name: "chroma", comp: exr.CompressionZIPS, compName: "zips",
+				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{
+					{"Y", exr.PixelTypeHalf, 1},
+					{"BY", exr.PixelTypeHalf, 2},
+					{"RY", exr.PixelTypeHalf, 2},
+					{"quarter", exr.PixelTypeFloat, 4},
+				}},
 		},
 	},
 	{
@@ -369,7 +410,7 @@ func buildHeader(fs fileSpec, p partSpec) *exr.Header {
 
 	cl := exr.NewChannelList()
 	for _, c := range p.chans {
-		cl.Add(exr.Channel{Name: c.name, Type: c.pt, XSampling: 1, YSampling: 1})
+		cl.Add(exr.Channel{Name: c.name, Type: c.pt, XSampling: int32(c.sampling()), YSampling: 1})
 	}
 	h.SetChannels(cl)
 	return h
@@ -383,10 +424,15 @@ func partPixels(partIdx int, p partSpec, level int) [][]float32 {
 	w, h := p.levelDims(level)
 	planes := make([][]float32, len(p.chans))
 	for ci, c := range p.chans {
-		plane := make([]float32, w*h)
+		// A subsampled channel's plane is its own size: ceil(w/xs) columns.
+		// The sample it holds at column x is the one at full-resolution column
+		// x*xs, which is what the reference reads back for it.
+		xs := c.sampling()
+		cw := (w + xs - 1) / xs
+		plane := make([]float32, cw*h)
 		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				plane[y*w+x] = quantise(c.pt, sample(partIdx, ci, level, x, y, w, h))
+			for x := 0; x < cw; x++ {
+				plane[y*cw+x] = quantise(c.pt, sample(partIdx, ci, level, x*xs, y, w, h))
 			}
 		}
 		planes[ci] = plane
@@ -397,6 +443,10 @@ func partPixels(partIdx int, p partSpec, level int) [][]float32 {
 func frameBuffer(p partSpec, w, h int, planes [][]float32) *exr.FrameBuffer {
 	fb := exr.NewFrameBuffer()
 	for ci, c := range p.chans {
+		// The slice is the channel's own width; Slice divides the caller's x
+		// by XSampling, so the reader and writer address it the same way.
+		xs := c.sampling()
+		w := (w + xs - 1) / xs
 		switch c.pt {
 		case exr.PixelTypeHalf:
 			hv := make([]half.Half, w*h)
@@ -568,6 +618,10 @@ func writeFile(outDir string, fs fileSpec) (parts, chans []string, err error) {
 		for level := 0; level < p.levels(); level++ {
 			lw, lh := p.levelDims(level)
 			for ci, c := range p.chans {
+				// The truth raster is the channel's own size: a subsampled
+				// channel holds ceil(width/XSampling) columns, and that is
+				// what the reference reads back for it.
+				cw := (lw + c.sampling() - 1) / c.sampling()
 				stem := fmt.Sprintf("%s.p%d.%s", strings.TrimSuffix(fs.file, ".exr"), i,
 					strings.ReplaceAll(c.name, ".", "_"))
 				if level > 0 {
@@ -582,11 +636,11 @@ func writeFile(outDir string, fs fileSpec) (parts, chans []string, err error) {
 					for k, v := range allPlanes[i][level][ci] {
 						u[k] = uint32(v)
 					}
-					if err := writeUintTable(filepath.Join(outDir, truth), lw, lh, u); err != nil {
+					if err := writeUintTable(filepath.Join(outDir, truth), cw, lh, u); err != nil {
 						return nil, nil, err
 					}
 				} else {
-					if err := writePFM(filepath.Join(outDir, truth), lw, lh, allPlanes[i][level][ci]); err != nil {
+					if err := writePFM(filepath.Join(outDir, truth), cw, lh, allPlanes[i][level][ci]); err != nil {
 						return nil, nil, err
 					}
 				}

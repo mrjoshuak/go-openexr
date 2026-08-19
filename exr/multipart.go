@@ -425,22 +425,47 @@ func (m *MultiPartOutputFile) Close() error {
 // coordinates here shifted every part whose data window did not start at y=0
 // and ran off the end of the caller's buffer.
 func buildScanlineData(fb *FrameBuffer, cl *ChannelList, width, startY, numLines int) []byte {
-	// Calculate size
-	bytesPerPixel := 0
-	for i := 0; i < cl.Len(); i++ {
-		bytesPerPixel += cl.At(i).Type.Size()
-	}
-	size := width * numLines * bytesPerPixel
-	data := make([]byte, size)
-
-	// Sort channels by name
+	// A channel with XSampling n stores every n-th column, so it contributes
+	// ceil(width/n) samples per row rather than width of them. Packing the
+	// full width for a subsampled channel makes the chunk longer than the
+	// format says it is, and every channel after it in the line is read at the
+	// wrong offset — which the scanline path has always got right and this one
+	// did not.
+	//
+	// YSampling above 1 removes whole rows from a scanline and is refused by
+	// NewMultiPartWriter, as ScanlineWriter refuses it, so only the column
+	// direction is handled here.
 	sortedChannels := cl.SortedByName()
+	sampled := make([]int, len(sortedChannels))
+	bytesPerLine := 0
+	for i, ch := range sortedChannels {
+		xs := int(ch.XSampling)
+		if xs < 1 {
+			xs = 1
+		}
+		sampled[i] = (width + xs - 1) / xs
+		bytesPerLine += sampled[i] * ch.Type.Size()
+	}
+	data := make([]byte, bytesPerLine*numLines)
 
 	offset := 0
 	for y := startY; y < startY+numLines; y++ {
-		for _, ch := range sortedChannels {
+		for ci, ch := range sortedChannels {
 			slice := fb.Get(ch.Name)
-			for x := 0; x < width; x++ {
+			// How many samples the chunk holds for this channel comes from the
+			// channel; how to reach the xi-th of them comes from the slice.
+			// The two can disagree: AllocateChannels records the real sampling
+			// factor and PixelAddr divides by it, so the caller passes
+			// full-resolution coordinates; a slice built over an
+			// already-narrowed buffer carries XSampling 1 and is indexed
+			// directly. Multiplying by the slice's own factor is right for
+			// both, and picking either convention outright is right for one.
+			step := 1
+			if slice != nil && slice.XSampling > 0 {
+				step = slice.XSampling
+			}
+			for xi := 0; xi < sampled[ci]; xi++ {
+				x := xi * step
 				if slice == nil {
 					switch ch.Type {
 					case PixelTypeHalf:

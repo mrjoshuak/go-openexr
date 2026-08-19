@@ -664,6 +664,17 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 		if err := h.Validate(); err != nil {
 			return nil, fmt.Errorf("exr: header %d validation failed: %w", i, err)
 		}
+		// The same subsampling contract the scanline writer keeps: a channel
+		// with XSampling above 1 narrows each row, which the chunk layout can
+		// express, and one with YSampling above 1 removes whole rows from a
+		// scanline, which it cannot. A tiled part refuses both through
+		// Validate, since the format forbids subsampling in a tiled image
+		// entirely.
+		if !h.IsTiled() {
+			if err := checkNoYSubsampling(h.Channels().Channels()); err != nil {
+				return nil, fmt.Errorf("exr: header %d: %w", i, err)
+			}
+		}
 		// Multi-part files require "name" and "type" attributes
 		if !h.Has(AttrNameName) {
 			return nil, ErrMissingName
