@@ -9,22 +9,13 @@ A pure Go implementation of the OpenEXR image file format.
 
 ## Overview
 
-go-openexr provides native Go support for reading and writing OpenEXR (.exr) files, the professional-grade HDR image format used in motion picture production, visual effects, and computer graphics.
+Read and write OpenEXR in pure Go. Every storage type, every compression codec,
+every pixel type — no cgo, no C++ toolchain, no shared libraries to ship.
 
-**All 36 pixel-type and compression combinations this library writes are read
-back correctly by the OpenEXR reference implementation.** Thirty of those are
-verified in the read direction too. The six HTJ2K combinations cannot be:
-OpenImageIO cannot write an HTJ2K EXR, so there is no reference-written file for
-us to read. Nothing is exempted from the table on the grounds of being
-difficult — that one gap exists because the fixture cannot be produced, and it
-is listed as such.
-
-Lossless codecs are compared bit-identically against the uncompressed twin;
-lossy ones against a bound derived from the format rather than from whatever we
-happened to measure. `scripts/validate.sh` re-runs all of it on every release
-and fails the build on any regression. See the
-[compression support matrix](#compression-support) for per-codec detail, and
-[ROADMAP.md](ROADMAP.md) for what is not covered yet.
+**Files go-openexr writes are read back correctly by the OpenEXR reference
+implementation — all 36 pixel-type and compression combinations, checked on
+every release.** That is the bar the whole project is held to, and
+[`scripts/validate.sh`](scripts/validate.sh) enforces it.
 
 ### Why go-openexr?
 
@@ -70,21 +61,20 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 
 Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records the per-codec detail; every row is now covered in both directions.
 
-## Selected features
+## Highlights
 
-### PIZ Float32 Channel Support
+### Progressive HTJ2K decoding
 
-PIZ compression now fully supports float32 and uint32 channels. Previous versions were limited to half-float and uint16 channel types. The implementation uses proper Haar wavelet transforms and Huffman coding for all channel widths, with canonical code assignment matching the C++ OpenEXR reference.
+Show something on screen before the file finishes arriving. Pull wavelet packets
+out of an HTJ2K EXR and feed them to a decoder that produces a better image with
+every one.
 
-### Progressive HTJ2K Decoding
+A packet is one quality layer, at one resolution, for one component. The
+low-resolution ones give you a coarse image immediately; the rest sharpen it.
+Deliver them in whatever order suits you — by resolution for a fast preview, by
+component to get luminance first, by quality layer to trade detail for speed.
 
-Extract wavelet packets from HTJ2K-compressed EXR tiles and feed them to a progressive decoder that produces continuously improving float32 images. See [CHANGELOG.md](CHANGELOG.md) for release history.
-
-Each wavelet packet represents one quality layer at one resolution level of one component -- the atomic unit for progressive quality improvement. Lower-resolution packets produce a coarse image instantly; higher-resolution and higher-quality-layer packets refine detail progressively. Packets can be delivered in any order, so applications can prioritize by resolution, component, or quality layer based on their needs.
-
-This enables progressive rendering workflows in VFX and post-production pipelines where fast visual feedback matters more than waiting for a complete decode.
-
-Key APIs in the `compression` package:
+The APIs, in the `compression` package:
 
 - `HTJ2KNewProgressiveDecoder()` -- create a decoder that accepts packets via `FeedPacket()` and produces images via `Reconstruct()`
 - `HTJ2KExtractPackets()` -- extract all wavelet packets from HTJ2K data
@@ -106,21 +96,33 @@ for _, pkt := range packets {
 }
 ```
 
-### Float Image Output
+### Float straight out of the decoder
 
-`HTJ2KDecompressFloat()` decompresses HTJ2K data directly to float32 component images instead of raw byte buffers. For HALF (float16) channels, the returned float32 values exactly represent the original half-float values. This simplifies processing workflows that operate on floating-point data.
+`HTJ2KDecompressFloat()` hands you float32 component images, not raw byte
+buffers. HALF channels come back as the exact float32 values they represent, so
+there is nothing to unpack before the maths starts.
 
-### Packet-Level Access
+### Random access without the copy
 
-`HTJ2KExtractPackets()` and `HTJ2KBuildPacketIndex()` provide random access to individual wavelet packets within HTJ2K-compressed data. The packet index variant references byte ranges in the original codestream without copying, making it suitable for large images where memory is a concern.
+`HTJ2KBuildPacketIndex()` indexes wavelet packets by byte range in the original
+codestream. Address any packet in a large image without holding a second copy of
+it in memory.
 
-### HTJ2K FLOAT Channel Compression
+### Full-precision float compression
 
-HTJ2K supports FLOAT (32-bit) channels. Float values are encoded with bitwise lossless precision using NLT Type 3 markers -- the same approach used by the C++ OpenEXR 3.4 + OpenJPH implementation. This enables HTJ2K compression of depth maps, world-position passes, and other float-precision EXR channels.
+HTJ2K carries FLOAT (32-bit) channels bit-for-bit, using the same NLT Type 3
+markers as OpenEXR 3.4 with OpenJPH. Depth maps, world-position passes and
+anything else where a rounded value is a wrong value.
 
-### Dependency
+### PIZ at every channel width
 
-The HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000), which provides float encoding/decoding, progressive decode, and packet extraction APIs that go-openexr builds on.
+Haar wavelet plus Huffman across half, uint16, float32 and uint32, with
+canonical code assignment matching the C++ reference.
+
+### Built on go-jpeg2000
+
+The HTJ2K support comes from [go-jpeg2000](https://github.com/mrjoshuak/go-jpeg2000),
+a pure Go JPEG 2000 codec whose output OpenJPH and OpenJPEG both decode exactly.
 
 ## Compression support
 
