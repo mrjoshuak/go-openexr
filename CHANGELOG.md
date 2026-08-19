@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-08-18
+
+HTJ2K now interoperates. All six HTJ2K rows in the validation gate are
+bit-identical to the reference, closing the last gap in the pixel-type by
+compression matrix: **all 36 combinations now agree with the OpenEXR reference
+under `oiiotool --diff`**, with no excused rows.
+
+### Fixed
+- `htj2kCompressFloat` never set `Options.HighThroughput`, so the float path
+  emitted a baseline Part 1 codestream under an OpenEXR compression id that
+  declares HTJ2K. OpenJPH rejected the result with "Rsiz bit 14 is not set (this
+  is not a JPH file)".
+- Requires go-jpeg2000 v1.5.0. Earlier versions could not emit a codestream the
+  reference accepts: v1.3.0's `EncodeHalf`/`EncodeFloat` ignored
+  `HighThroughput` and its NLT segment was written short. Those are fixed
+  upstream, and with them the six HTJ2K rows are gated as hard checks rather
+  than excused.
+- `TestHTJ2KExtractPackets` and `TestHTJ2KBuildPacketIndex` asserted properties
+  of go-jpeg2000's former private tile container. Re-anchored to the conforming
+  packet model, with the packet count derived from the codestream's own COD
+  marker rather than from the container layout.
+- The `HTJ2KCompress` block-size parameter is named `blockWidth`, matching what
+  it is. Documentation only; the signature's types and arity are unchanged.
+
+### Added
+- `ROADMAP.md`, listing what OpenEXR supports that this library does not yet
+  verify, with the acceptance standard for each.
+- `scripts/mutation/`, a repeatable harness that breaks a codec deliberately and
+  records whether the tests notice. Current state: 11 of 20 mutations survive
+  the pre-existing tests, and all 15 covered by the added spec-anchored tests
+  are killed.
+- `scripts/validate.sh` and PXR24 write-side coverage (half and uint
+  bit-identical, float within the bound the 24-bit format implies).
+
 ## [1.4.0] - 2026-08-17
 
 **Every compression codec now interoperates with the OpenEXR reference
