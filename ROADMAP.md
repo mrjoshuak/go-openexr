@@ -27,7 +27,54 @@ So an item below is done when:
 Assertions anchor to the specification or to a reference-written fixture, never
 to our own output.
 
+## Why this order
+
+Most of what follows is conformance hygiene. One item is not, and it sits first
+because it is the only thing here that a wrapping format cannot do for you.
+
+OpenEXR handles multi-resolution entirely at the file level: mipmap and ripmap
+levels in tiled files, with the compressor treated as an opaque per-chunk unit
+that decompresses whole or not at all. The compressor interface takes no
+resolution or quality parameter — `dwaCompressionLevel` is the sole exception in
+the format.
+
+But an HTJ2K chunk is a JPEG 2000 codestream, and that codestream keeps every
+capability the standard gives it: resolution levels, precinct-addressable
+packets, quality layers. `HTJ2KBuildPacketIndex()` already locates packets as
+byte ranges without copying. So a reader that knows the trick can pull a
+viewport, at a chosen resolution, from an ordinary conforming HTJ2K EXR — no
+mipmaps required, no proxy pyramid, and for a file in object storage, an HTTP
+range request rather than a decode service.
+
+This is an extension, not a fork. The files stay byte-identical to what any
+other implementation writes and reads; other readers simply decompress the whole
+chunk, exactly as the format specifies. Mipmapped input stays supported for
+files written by tools that do not know the trick — but that path gives levels
+only, not regions and not progressive quality, so it is a genuine fallback
+rather than an equivalent.
+
+Both halves of the capability live in go-jpeg2000 and are unfinished there:
+precinct partitions are mis-read, and the HT encoder emits the cleanup pass only
+so there is no quality progression to serve. Its roadmap now carries both at the
+top. This one carries the API that would expose them.
+
 ## Now
+
+### Expose codestream-level decode through the EXR API
+
+`HTJ2KDecompress(src, expectedSize, channels)` takes no options, which matches
+the reference compressor interface exactly. go-jpeg2000's `Config` underneath it
+carries `ReduceResolution`, `DecodeArea` and `QualityLayers`, and none of the
+three is reachable from this package.
+
+Adding a variant that accepts them is an extension beyond what the reference
+offers, and worth marking as such in its documentation so nobody mistakes it for
+a format feature.
+
+Done when a caller can decode an HTJ2K chunk at a chosen resolution and region
+without decompressing the whole chunk, when the bytes read are demonstrably a
+subset of the chunk rather than the whole of it, and when the result matches a
+full decode downsampled to the same resolution.
 
 ### Correct the tests that still deny HTJ2K works
 
@@ -59,6 +106,16 @@ multi-part files.
 
 ## Next
 
+### Tiled and multi-resolution write coverage
+
+`validate.sh` writes scanline images only. `exrmaketiled`-style mipmap and
+ripmap levels, and tiled files generally, are untested against the reference.
+
+This is also the compatibility half of the strategy above: mipmapped output is
+what readers that do not know the codestream trick will use, and mipmapped input
+is how this library serves proxies from files other tools wrote. Both directions
+want covering.
+
 ### Finish the false-assurance backlog
 
 The audit's 125 candidates are partly addressed: 15 mutations now die against
@@ -78,10 +135,6 @@ unverified in exactly the way the scanline codecs were before v1.4.0.
 Done when the gate covers deep and multi-part writes the way it covers the 36
 pixel-type by compression combinations.
 
-### Tiled and multi-resolution write coverage
-
-`validate.sh` writes scanline images only. `exrmaketiled`-style mipmap and
-ripmap levels, and tiled files generally, are untested against the reference.
 
 ## Later
 
