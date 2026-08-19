@@ -60,3 +60,4 @@ CLAUDE.md
 /testdata/output/
 fuzz-logs/
 /interopgen
+.docket-claims/
