@@ -674,8 +674,64 @@ $(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
 			fi
 		done <"$TDIR/guards.tsv"
 
+		# ---- generated mipmap levels, against the reference tool's ---------
+		#
+		# The format specifies no downsampling filter, so no implementation's
+		# generated levels are "correct" the way a codec's output is. That does
+		# not make them unmeasurable. exrmaketiled generates levels from the
+		# same source, and four things must hold whatever filter each side
+		# chose: the two agree on which samples exist, level 0 is exact because
+		# it is the source, the 1x1 level is exact because it is the image's
+		# mean and every 2x2-supported filter preserves it, and the per-level
+		# difference never grows with depth — a filter difference averages out,
+		# a wrong axis or a wrong scale does not.
+		#
+		# Measured: 0, 0.120, 0.070, 0.026, 0.008, 0.002, 0 across seven levels
+		# of uniform noise in [0,1].
+		if ! command -v exrmaketiled >/dev/null 2>&1; then
+			gap "generated mipmap levels: exrmaketiled is not installed"
+		else
+			MDIR2="$WORK/mipgen"
+			mkdir -p "$MDIR2"
+			if ! go build -o "$MDIR2/mipcmp" ./scripts/mipcmp/ 2>"$MDIR2/build.err"; then
+				fail "generated mipmap levels: could not build scripts/mipcmp: $(head -1 "$MDIR2/build.err")"
+			elif ! oiiotool --pattern noise:type=uniform 64x64 1 --chnames Y -d half \
+				-o "$MDIR2/src.exr" >/dev/null 2>&1; then
+				gap "generated mipmap levels: oiiotool could not write the source image"
+			elif ! exrmaketiled -m -t 16 16 "$MDIR2/src.exr" "$MDIR2/ref.exr" >/dev/null 2>&1; then
+				gap "generated mipmap levels: exrmaketiled could not generate a reference mipmap"
+			elif ! "$MDIR2/mipcmp" "$MDIR2/src.exr" "$MDIR2/ours.exr" 16 2>"$MDIR2/gen.err"; then
+				fail "generated mipmap levels: this library could not generate them: $(head -1 "$MDIR2/gen.err" | cut -c1-90)"
+			else
+				"$TILEDUMP" "$MDIR2/ref.exr" >"$MDIR2/ref.dump" 2>/dev/null
+				"$TILEDUMP" "$MDIR2/ours.exr" >"$MDIR2/ours.dump" 2>/dev/null
+				if out=$(python3 scripts/mipdiff.py "$MDIR2/ref.dump" "$MDIR2/ours.dump" 2>&1); then
+					pass "generated mipmap levels agree with exrmaketiled's: $(printf '%s' "$out" | head -1)"
+				else
+					fail "generated mipmap levels: $(printf '%s' "$out" | tail -1 | cut -c1-110)"
+				fi
+
+				# Signal: the comparison must reject values that are wrong.
+				python3 - "$MDIR2/ours.dump" "$MDIR2/shifted.dump" <<'MIPEOF'
+import sys
+out = open(sys.argv[2], 'w')
+for line in open(sys.argv[1]):
+    if line.startswith('#'):
+        out.write(line)
+        continue
+    f = line.split()
+    if len(f) >= 6:
+        f[5] = str(float(f[5]) + 0.5)
+        out.write(' '.join(f) + '\n')
+MIPEOF
+				if python3 scripts/mipdiff.py "$MDIR2/ref.dump" "$MDIR2/shifted.dump" >/dev/null 2>&1; then
+					fail "generated mipmap levels signal check: the comparison accepted every level shifted by 0.5"
+				else
+					pass "generated mipmap levels signal check: the comparison rejects shifted values"
+				fi
+			fi
+		fi
 		# ---- measured gaps ------------------------------------------------
-		note "GAP: the contents of generated mipmap/ripmap levels are not gated — the format specifies no downsampling filter, so only level placement and encoding are checked; nothing external can say what level 3 should contain"
 	fi
 fi
 
@@ -1356,7 +1412,34 @@ else
 				done
 			done
 
-			note "GAP: uint32 tiled fixtures are not read-gated — oiiotool 3.1.16 will not write a uint EXR for exrmaketiled to tile; the write direction covers uint through the pixel-type matrix"
+			# uint32, read direction.
+			#
+			# This was recorded as ungatable because oiiotool will not write a
+			# uint EXR. It named the wrong tool: exrmaketiled tiles one
+			# happily, and the base only has to exist — interopgen has already
+			# written one for the pixel-type matrix. The tiled container and
+			# the truth both still come from the reference; this library
+			# supplies only the source samples, which both sides then read
+			# independently.
+			ubase="$FIX/wr_uint_none.exr"
+			if [ ! -f "$ubase" ]; then
+				gap "read uint tiled: no uint fixture to tile"
+			elif ! exrmaketiled -t 16 16 "$ubase" "$RDIR/uint_one.exr" >/dev/null 2>&1; then
+				gap "read uint tiled: exrmaketiled would not tile the uint fixture"
+			else
+				"$TILEDUMP" "$RDIR/uint_one.exr" >"$RDIR/uint_one.ref" 2>/dev/null
+				if ! "$TILEREAD" "$RDIR/uint_one.exr" >"$RDIR/uint_one.got" 2>"$RDIR/uint_one.err"; then
+					fail "read uint tiled: this library could not read it: $(head -1 "$RDIR/uint_one.err" | cut -c1-100)"
+				else
+					line=$(awk -f "$REPO/scripts/tilecmp.awk" "$RDIR/uint_one.ref" "$RDIR/uint_one.got")
+					case "$line" in
+					*"missing=0 extra=0 maxerr=0 "*)
+						pass "read uint tiled: every sample matches the reference's own reading ($line)" ;;
+					*)
+						fail "read uint tiled: $line" ;;
+					esac
+				fi
+			fi
 		fi
 	fi
 fi

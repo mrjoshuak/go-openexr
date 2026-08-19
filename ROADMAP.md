@@ -155,7 +155,7 @@ subsampling is legal there and the scanline path does divide.
 
 ## Next
 
-### Tiled and multi-resolution coverage — write direction done, read direction open
+### ~~Tiled and multi-resolution coverage~~ — done, both directions, levels included
 
 The write direction is now gated. `scripts/tiledgen` writes 24 fixtures — one
 level, mipmap and ripmap, both rounding modes, tile sizes that divide the image
@@ -174,12 +174,18 @@ not, and a data window at (17, -9) — `scripts/exrtiledump` reads each with
 libOpenEXR, `scripts/exrtileread` reads the same file with this library, and the
 two dumps are compared sample by sample. Nothing this library wrote takes part.
 
-What remains open:
-- **Generated level contents.** The format specifies no downsampling filter, so
-  for `WriteMipmapTiledImage` and `WriteRipmapTiledImage` only the container is
-  gated — that each generated level lands where it belongs and encodes
-  correctly. Nothing external can say what level 3 *should* contain.
-- **Deep tiled files**, which the section below covers.
+Generated level *contents* are gated too, which this file previously called
+unmeasurable — "nothing external can say what level 3 should contain". That is
+true of the values and false of everything else. `exrmaketiled` generates levels
+from the same source, and four things must hold whatever filter either side
+chose: the two agree on which samples exist, level 0 is exact because it is the
+source, the 1x1 level is exact because it is the image's mean and every
+2x2-supported filter preserves it, and the per-level difference never grows with
+depth. Measured across seven levels: 0, 0.120, 0.070, 0.026, 0.008, 0.002, 0. A
+filter difference averages out like that; a wrong axis or a wrong scale does
+not.
+
+Deep tiled files are covered by the deep section below.
 
 This is also the compatibility half of the strategy above: mipmapped output is
 what readers that do not know the codestream trick will use, and mipmapped input
