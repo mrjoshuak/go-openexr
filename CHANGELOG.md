@@ -29,6 +29,21 @@ under `oiiotool --diff`**, with no excused rows.
 - The `HTJ2KCompress` block-size parameter is named `blockWidth`, matching what
   it is. Documentation only; the signature's types and arity are unchanged.
 
+### Fixed
+- **B44 encoding produced non-conforming output on amd64.** The SSE2 pack
+  routine computed `(tMax - t[i]) << 1` in 16-bit lanes (`PSUBW`, `PADDW`,
+  `PSRLW`), so it wrapped at 65536 whenever that difference exceeded 32767 —
+  reachable for any block spanning a wide enough range once the ordered
+  transform has flipped the negatives. `ImfB44Compressor.cpp` does the same
+  arithmetic in `int`. The result was that amd64 builds wrote B44 blocks the
+  reference decodes differently, while arm64 builds were correct.
+
+  Nothing caught it because every conformance run had been on arm64, where this
+  path has always been scalar. The vectorised routine is removed rather than
+  patched: fixing it means widening to 32-bit lanes, and shipping assembly that
+  cannot be verified on the machine at hand is what produced the defect.
+  `scripts/validate.sh` now runs the suite under the other GOARCH as well.
+
 ### Documentation
 - The README stated the opposite of what is now true in its most load-bearing
   places: HTJ2K was recorded as having no external oracle in either direction,
@@ -209,6 +224,21 @@ were fast paths that had dropped a bound their slower twin still had.
 - Spec-anchored tests for the predictor, the byte reorder and the wavelet,
   asserting against independent transcriptions of the OpenEXR reference rather
   than against other implementations in this repository.
+
+### Fixed
+- **B44 encoding produced non-conforming output on amd64.** The SSE2 pack
+  routine computed `(tMax - t[i]) << 1` in 16-bit lanes (`PSUBW`, `PADDW`,
+  `PSRLW`), so it wrapped at 65536 whenever that difference exceeded 32767 —
+  reachable for any block spanning a wide enough range once the ordered
+  transform has flipped the negatives. `ImfB44Compressor.cpp` does the same
+  arithmetic in `int`. The result was that amd64 builds wrote B44 blocks the
+  reference decodes differently, while arm64 builds were correct.
+
+  Nothing caught it because every conformance run had been on arm64, where this
+  path has always been scalar. The vectorised routine is removed rather than
+  patched: fixing it means widening to 32-bit lanes, and shipping assembly that
+  cannot be verified on the machine at hand is what produced the defect.
+  `scripts/validate.sh` now runs the suite under the other GOARCH as well.
 
 ### Documentation
 - **The three README code examples did not compile.** All of them referenced

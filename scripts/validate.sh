@@ -195,6 +195,23 @@ else
 		cp "$WORK/race.log" /tmp/validate_race.log 2>/dev/null &&
 			note "full log: /tmp/validate_race.log"
 	fi
+
+	# The other architecture. This package carries per-architecture assembly for
+	# B44, so a defect can live in one build and not the other: an SSE2 pack
+	# routine computed in 16-bit lanes what the reference computes in int, and
+	# produced non-conforming output on amd64 only. Every gate run had been on
+	# arm64, so CI found it rather than this script. Running the suite for the
+	# other GOARCH here costs a few seconds and closes that hole.
+	OTHER_ARCH=amd64
+	[ "$(go env GOARCH)" = "amd64" ] && OTHER_ARCH=arm64
+	if GOARCH=$OTHER_ARCH go test ./... >"$WORK/cross.log" 2>&1; then
+		pass "go test ./... under GOARCH=$OTHER_ARCH ($(grep -c '^ok' "$WORK/cross.log") packages)"
+	elif grep -qiE "exec format error|cannot execute|bad CPU type" "$WORK/cross.log"; then
+		skip "GOARCH=$OTHER_ARCH: this host cannot run those binaries; CI covers it"
+	else
+		fail "go test ./... under GOARCH=$OTHER_ARCH"
+		grep -E '^(---|FAIL|\s+---)' "$WORK/cross.log" | head -20
+	fi
 fi
 
 # ---------------------------------------------------------------------------

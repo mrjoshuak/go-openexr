@@ -99,6 +99,17 @@ Header attributes round-trip, but the reference has never been asked whether it
 agrees with our serialisation of the less common ones — chromaticities,
 environment maps, deep image state, ID manifests.
 
+### Restore a vectorised B44 pack
+
+The SSE2 inner loop was removed in v1.4.2 because it computed in 16-bit lanes
+what the reference computes in `int`, wrapping for wide-range blocks and
+producing non-conforming output on amd64 only. amd64 now uses the same scalar
+path as arm64, which costs roughly the 23% B44 encode win the assembly bought.
+
+Done when a vector implementation widens to 32-bit lanes, is byte-identical to
+`refPackB44` over the spec-vector corpus, and is verified by running the suite
+under that GOARCH rather than by inspection.
+
 ### Performance
 
 B44 and DWA were profiled before the correctness work; those numbers are stale.

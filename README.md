@@ -11,10 +11,11 @@ A pure Go implementation of the OpenEXR image file format.
 
 go-openexr provides native Go support for reading and writing OpenEXR (.exr) files, the professional-grade HDR image format used in motion picture production, visual effects, and computer graphics.
 
-**Every pixel type and compression combination this library writes is read back
-correctly by the OpenEXR reference implementation, and every combination the
-reference writes is read correctly by this library — all 36, with no excused
-rows.**
+**All 36 pixel-type and compression combinations this library writes are read
+back correctly by the OpenEXR reference implementation, with no excused rows.**
+Thirty of those are verified in the read direction as well; the six HTJ2K
+combinations cannot be, because OpenImageIO cannot write an HTJ2K EXR for us to
+read. That gap is named in the table rather than left out of it.
 
 Lossless codecs are compared bit-identically against the uncompressed twin;
 lossy ones against a bound derived from the format rather than from whatever we
@@ -40,7 +41,7 @@ and fails the build on any regression. See the
 
 - **100% Pure Go**: No CGO dependencies, fully portable across platforms
 - **HDR Support**: Full high-dynamic-range imaging with half-float (float16) precision
-- **Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K — see the [support matrix](#compression-support) for per-codec status and current gaps
+- **Compression Codecs**: None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K — see the [support matrix](#compression-support) for what is verified in each direction
 - **Tiled Images**: Efficient random access with mipmap and ripmap support
 - **Multi-Part Files**: Multiple images in a single file
 - **Deep Data**: Variable samples per pixel for compositing workflows
@@ -121,26 +122,29 @@ The HTJ2K features are powered by [go-jpeg2000](https://github.com/mrjoshuak/go-
 
 ## Compression support
 
-Every row is covered in both directions, and `scripts/validate.sh` re-runs the
-whole matrix on each release. Comparisons are against the OpenEXR reference
-implementation via OpenImageIO's `oiiotool`, sample for sample: bit-identical
-for a lossless codec, and within a bound derived from the format for a lossy
-one. There is no "not covered" row left, and if one returns it will say so
-rather than being omitted:
+Every codec is verified in the write direction — the reference reads what we
+write — and every codec but HTJ2K is verified in the read direction too. The one
+exception is stated in the table rather than omitted from it: OpenImageIO cannot
+write an HTJ2K EXR, so no reference-written file exists to read.
 
-| Codec         | Reads reference files  | Output read by reference                                  |
-| ------------- | ---------------------- | --------------------------------------------------------- |
-| None          | verified, every sample | verified, every sample                                    |
-| RLE           | verified, every sample | verified, every sample                                    |
-| ZIPS          | verified, every sample | verified, every sample                                    |
-| ZIP           | verified, every sample | verified, every sample                                    |
-| PIZ           | verified, every sample | verified, every sample                                    |
-| PXR24         | verified, every sample | verified (half/uint exact, float within the 24-bit bound) |
-| B44 / B44A    | verified, every sample | verified via oiiotool                                     |
-| DWAA / DWAB   | verified, every sample | verified (96 cases)                                       |
-| HTJ2K (UINT)  | verified, every sample | verified, bit-identical                                   |
-| HTJ2K (FLOAT) | verified, every sample | verified, bit-identical                                   |
-| HTJ2K (HALF)  | verified, every sample | verified, bit-identical                                   |
+`scripts/validate.sh` re-runs the whole matrix on each release. Comparisons are
+against the OpenEXR reference implementation via OpenImageIO's `oiiotool`,
+sample for sample: bit-identical for a lossless codec, and within a bound
+derived from the format for a lossy one.
+
+| Codec         | Reads reference files                | Output read by reference                                  |
+| ------------- | ------------------------------------ | --------------------------------------------------------- |
+| None          | verified, every sample               | verified, every sample                                    |
+| RLE           | verified, every sample               | verified, every sample                                    |
+| ZIPS          | verified, every sample               | verified, every sample                                    |
+| ZIP           | verified, every sample               | verified, every sample                                    |
+| PIZ           | verified, every sample               | verified, every sample                                    |
+| PXR24         | verified, every sample               | verified (half/uint exact, float within the 24-bit bound) |
+| B44 / B44A    | verified, every sample               | verified via oiiotool                                     |
+| DWAA / DWAB   | verified, every sample               | verified (96 cases)                                       |
+| HTJ2K (UINT)  | no reference file exists (see below) | verified, bit-identical                                   |
+| HTJ2K (FLOAT) | no reference file exists (see below) | verified, bit-identical                                   |
+| HTJ2K (HALF)  | no reference file exists (see below) | verified, bit-identical                                   |
 
 None, RLE, ZIPS, ZIP and PIZ are covered in **both** directions by
 `exr/conformance_test.go` over `exr/testdata/conformance/`. The read side is
@@ -153,15 +157,23 @@ B44/B44A and DWAA/DWAB are lossy, so their fixtures carry the reference's own
 readback rather than sharing a golden with an uncompressed twin — otherwise the
 test would be measuring the codec's loss instead of this library's agreement
 with the reference. B44's FLOAT and UINT passthrough channels are compared
-exactly, since the format stores them uncompressed. PXR24 has no automated
-write-side coverage yet.
+exactly, since the format stores them uncompressed. PXR24 write-side coverage compares half
+and uint bit-identically and float against the bound implied by keeping 24 of
+32 float bits.
 
-**HTJ2K now has an external oracle, and passes it.** OpenImageIO 3.1.16 still
-cannot *write* an HTJ2K EXR, so the read direction is checked against files this
-library writes and the reference then reads, plus the raw codestreams compared
-against OpenJPH directly in the go-jpeg2000 gate. All six rows — half, float and
-uint at both block sizes — are bit-identical to the uncompressed twin, held to
-the same standard as ZIP or PIZ with no tolerance.
+**HTJ2K is verified in the write direction only, and the asymmetry is real.**
+OpenImageIO 3.1.16 cannot *write* an HTJ2K EXR, so no reference-written file
+exists for us to read — which is why those cells say so rather than claiming a
+check that cannot be performed. What is verified: we write all six combinations
+(half, float and uint at both block sizes) and the reference reads every one
+bit-identically against its uncompressed twin, held to the same standard as ZIP
+or PIZ with no tolerance.
+
+The read direction is covered one level down instead. go-jpeg2000's own gate
+decodes codestreams written by OpenJPH — the library OpenEXR 3.4+ uses for
+HTJ2K — bit-exactly. That establishes the codestream reader against a reference;
+it does not establish the EXR-container read path, because nothing can produce
+that fixture.
 
 This required go-jpeg2000 v1.5.0. Earlier versions could not emit a codestream
 OpenJPH would accept: v1.3.0 ignored `HighThroughput` in `EncodeHalf`/
