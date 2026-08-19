@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2026-08-19
+
+Frame buffer coordinates are window-absolute again, and every storage type in
+the format is now gated in both directions with no measured gaps left.
+
+### Fixed
+- **Frame buffer coordinates are the data window's own again** (issue #5).
+  v1.4.4 stopped the garbage collector throwing `found bad pointer in Go heap`
+  by removing the origin bias from `Slice.Base`, which made coordinates
+  window-relative and moved the problem onto callers holding image coordinates.
+  `Slice` now carries the window's minimum as `OriginX`/`OriginY` and
+  `PixelAddr` subtracts it, so `Base` stays inside its allocation *and*
+  `GetFloat32(x, 4096)` means row 4096 of the image. Code written against
+  v1.4.2 needs no change; code adapted to v1.4.4's relative indexing does.
+
+  Converting the internal paths found four defects, each invisible while every
+  window started at (0, 0): the scanline reader and writer, the tiled reader and
+  writer, and the multi-part scanline and tile packers all indexed relative to
+  the window; `ReadRowHalf` and its siblings held two conventions in one
+  function, the fast path treating `xStart` as window-relative and the
+  per-pixel fallback as absolute, so which was right depended on the pixel
+  type; and `RowAddr` named absolute column zero, seven pixels before the row's
+  own data for a window at x=7.
+- **Subsampled channels in multi-part parts were packed at the full width.** A
+  channel with `XSampling` 2 stores every second column and contributes half as
+  many samples per line; packing the full width made the chunk longer than the
+  format says and put every channel after it at the wrong offset.
+  `NewMultiPartWriter` now also refuses `YSampling` above 1, which removes whole
+  rows and which the chunk layout cannot express, exactly as `ScanlineWriter`
+  refuses it.
+- **`DeepTiledWriter` could only write one resolution level.** Its offset table
+  was sized for one level and indexed by `tileY*tilesX + tileX`, so every level
+  after the first overwrote the first one's slots — while the reader had always
+  derived the index per level. Both now share one derivation. It also captured
+  the tile description at construction, so a caller asking for a mipmap through
+  `SetTileDescription` got a single-level file and no indication.
+- **HTJ2K was not implemented for tiles at all.** Both identifiers were missing
+  from the tiled compression switch, so a tiled header declaring `htj2k256` or
+  `htj2k32` failed at write time.
+- **The chunk offset table was written only by `Close`.** A caller who never
+  called it left a file whose table was all zeros: this library's reader
+  recovered by scanning and the reference, which locates every chunk through
+  the table, did not. The table is now written as soon as the last chunk the
+  header promised has been written, so a complete image is complete either way
+  and the two files are byte-identical.
+
+### Added
+- Deep parts in multi-part files: `MultiPartOutputFile.SetDeepFrameBuffer` and
+  `WriteDeepPixels`, sharing the single-part chunk packing rather than
+  repeating it, with the version field's deep flag set when any part is deep.
+- `DeepImageState`, `Header.SetDeepImageState`/`DeepImageState` and
+  `VerifyDeepImageState`. The attribute is a claim about the samples that
+  nothing in the format checks, so a file declaring "tidy" over unsorted or
+  overlapping samples is accepted everywhere and shows up much later as a
+  subtly wrong composite; the verifier is what makes the claim falsifiable.
+- `File.ChunkRange`, `ChunkRanges`, `NumChunks`, `ChunksForScanlines` and
+  `ChunksForRegion`: a chunk's byte range without decompressing it, and the
+  chunks a row range or a viewport touches. Composed with go-jpeg2000's packet
+  index, a 32x32 viewport of a 128x128 HTJ2K image resolves to 1 of 16 chunks,
+  674 of 6611 bytes, and then to individual packet ranges — before any pixel
+  data is read.
+- `HTJ2KDecompressPartial` and `HTJ2KDecodeOptions`, which expose the
+  codestream's own resolution, region and quality-layer capabilities. Two of
+  the three are refused by the codec today rather than honoured; the tests
+  assert the refusal so this package does not appear to offer more than it
+  delivers.
+- `Slice.WithOrigin`, for a slice built over a bare buffer whose window does not
+  start at the origin.
+
+### Validation
+The gate runs 234 checks with no failures, no skips and no measured gaps, from
+209 at v1.4.4. New oracles were needed twice because oiiotool cannot do the job:
+`scripts/exrpartdump` (oiiotool refuses subsampled channels outright) and
+`scripts/exrdeeptiledump` (`--selectmip` does not compose with `--dumpdata` for
+deep images, so every level but the first comes back empty). Three gap rows
+turned out to name the wrong tool rather than an unmeasurable property —
+`exrmaketiled` tiles a uint file, `exrmultipart -combine` assembles multi-level
+multi-part fixtures, and generated mipmap levels can be checked against the
+reference's own filter by properties that hold whatever filter each side chose.
+
+The mutation manifest holds 31 entries across every codec, each killed by
+something.
+
 ## [1.4.4] - 2026-08-19
 
 Closing the read directions for tiled and multi-part files found a memory-safety
