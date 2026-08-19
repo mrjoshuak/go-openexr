@@ -224,7 +224,9 @@ verified that way.
 
 - 11 compression methods across 12 IDs (None, RLE, ZIPS, ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K256, HTJ2K32)
 - Deep scanline and tiled images
-- Multi-part files with mixed storage types
+- Multi-part files with mixed storage types, verified in the write direction:
+  the reference reads back each part's samples from files whose parts differ in
+  data window, compression, channel layout and scanline-versus-tiled storage
 - Preview images and thumbnails
 - Luminance/Chroma (YC) color space
 - Multi-view/Stereo support
@@ -239,11 +241,13 @@ by mutating the code under them. Coverage counted every one of those as covered.
 
 What the guarantees actually rest on:
 
-1. `scripts/validate.sh` — 76 checks against the OpenEXR reference
+1. `scripts/validate.sh` — CHECKS checks against the OpenEXR reference
    implementation, both directions, failing the build on any regression. That
-   includes tiled writing: 24 plain, mipmapped and ripmapped fixtures are read
-   back level by level by a program linked against libOpenEXR itself, and every
-   sample of every level is compared, not only level 0.
+   covers the pixel-type by compression matrix, tiled writing (plain, mipmapped
+   and ripmapped fixtures read back level by level by a program linked against
+   libOpenEXR itself), and multi-part files read back part by part, level by
+   level and channel by channel — each with a control and a signal check that
+   must fail.
 2. `scripts/mutation/run.py` — deliberately breaks a codec and records whether
    the tests notice. Currently 11 of 20 mutations survive the pre-existing
    tests; all 15 covered by the added spec-anchored tests are killed.

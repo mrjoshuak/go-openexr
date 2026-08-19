@@ -175,42 +175,10 @@ func (r *TiledReader) SetFrameBuffer(fb *FrameBuffer) {
 // For mipmap, levelX and levelY should be the same.
 // For ripmap, levelX and levelY can be different.
 func (r *TiledReader) chunkIndex(tileX, tileY, levelX, levelY int) int {
-	// For LevelModeOne, tiles are stored in row-major order
-	if r.tileDesc.Mode == LevelModeOne {
-		return tileY*r.tilesX + tileX
-	}
-
-	// For multi-level images, we need to calculate the offset into the offset table
-	// The layout is: all tiles at level 0, then all tiles at level 1, etc.
-	offset := 0
-
-	switch r.tileDesc.Mode {
-	case LevelModeMipmap:
-		// For mipmap, levels have the same lx and ly
-		for l := 0; l < levelX; l++ {
-			offset += r.header.NumXTiles(l) * r.header.NumYTiles(l)
-		}
-		// Add offset within current level
-		offset += tileY*r.header.NumXTiles(levelX) + tileX
-
-	case LevelModeRipmap:
-		// For ripmap, iterate over all (lx, ly) pairs that come before (levelX, levelY)
-		// Pairs are ordered as (0,0), (1,0), (2,0), ..., (0,1), (1,1), ...
-		numXLevels := r.header.NumXLevels()
-		for ly := 0; ly < levelY; ly++ {
-			for lx := 0; lx < numXLevels; lx++ {
-				offset += r.header.NumXTiles(lx) * r.header.NumYTiles(ly)
-			}
-		}
-		// Add levels at current ly that come before levelX
-		for lx := 0; lx < levelX; lx++ {
-			offset += r.header.NumXTiles(lx) * r.header.NumYTiles(levelY)
-		}
-		// Add offset within current level
-		offset += tileY*r.header.NumXTiles(levelX) + tileX
-	}
-
-	return offset
+	// One definition of this mapping, shared with the writer: a table the
+	// writer fills in one order and the reader consults in another is the
+	// defect these two used to be able to drift into.
+	return r.header.tileChunkIndex(tileX, tileY, levelX, levelY)
 }
 
 // ReadTile reads a single tile at level 0 into the frame buffer.

@@ -1193,6 +1193,11 @@ func TestScanlineReaderPart(t *testing.T) {
 	h2.Set(&Attribute{Name: AttrNameName, Type: AttrTypeString, Value: "part2"})
 	h2.Set(&Attribute{Name: AttrNameType, Type: AttrTypeString, Value: PartTypeScanline})
 	h2.SetCompression(CompressionNone)
+	// A part may have its own data window; every part of a file shares one
+	// display window, and NewScanlineHeader sets both from its arguments.
+	// Leaving them to disagree produces a file the reference implementation
+	// refuses outright, which is now refused here instead of written.
+	h2.SetDisplayWindow(h1.DisplayWindow())
 
 	var buf bytes.Buffer
 	ws := &seekableWriter{Buffer: &buf}

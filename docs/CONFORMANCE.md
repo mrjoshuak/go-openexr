@@ -83,6 +83,24 @@ So, when adding or changing a codec:
   `t.Skip` a codec because it "may have compatibility issues" — a skip like that
   is a bug report worth acting on, not a workaround.
 
+## Structure, not only samples
+
+The same argument applies above the pixel level. A multi-part file that this
+library writes and reads back can be perfectly self-consistent and still be one
+no other implementation will open: the version field can claim something the
+part headers contradict, the parts can disagree about an attribute the format
+requires them to share, and a chunk offset table can be in the order the caller
+wrote its chunks rather than the order a reader looks them up in. None of that
+changes a single sample, and none of it is visible to a round trip.
+
+`scripts/multipartgen` therefore writes multi-part files whose parts disagree
+on purpose — in data window, compression, channel layout and storage type —
+and `scripts/validate.sh` asks the reference implementation for each part's
+name, storage type, compression, data window, channel list and chunk count
+before it compares any pixels. The samples are carried beside the fixture as
+plain PFMs, a format with no EXR code near it, so what the comparison anchors
+to was never produced by the code under test.
+
 ## Regenerating the corpora
 
 ```bash

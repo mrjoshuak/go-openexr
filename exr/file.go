@@ -607,6 +607,35 @@ func NewWriter(w io.WriteSeeker, h *Header) (*Writer, error) {
 	return writer, nil
 }
 
+// sharedAttributes are the attributes that describe the file rather than one
+// part of it. OpenEXR's MultiPartOutputFile and MultiPartInputFile both walk
+// this list and refuse a file whose parts disagree, so a writer that lets them
+// disagree produces a file the reference cannot open. The list is the one in
+// ImfMultiPartOutputFile.cpp.
+var sharedAttributes = []string{
+	AttrNameDisplayWindow,
+	AttrNamePixelAspectRatio,
+	"timeCode",
+	"chromaticities",
+}
+
+// checkSharedAttributes reports whether part index disagrees with part 0 about
+// any attribute every part must share. Part 0 is compared with itself, which
+// is free and keeps the caller simple.
+func checkSharedAttributes(first, h *Header, index int) error {
+	for _, name := range sharedAttributes {
+		a, b := first.Get(name), h.Get(name)
+		if a == nil && b == nil {
+			continue
+		}
+		if a == nil || b == nil || a.Type != b.Type || a.Value != b.Value {
+			return fmt.Errorf("%w: part %d and part 0 disagree about %q",
+				ErrConflictingAttributes, index, name)
+		}
+	}
+	return nil
+}
+
 // NewMultiPartWriter creates a new writer for a multi-part file.
 // Each header should have a unique "name" attribute and a "type" attribute
 // indicating whether it is a scanline or tiled part.
@@ -632,6 +661,14 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 				h.Set(&Attribute{Name: AttrNameType, Type: AttrTypeString, Value: PartTypeScanline})
 			}
 		}
+		// Every part of a multi-part file has to agree about the attributes
+		// that describe the file rather than the part. The reference
+		// implementation refuses such a file outright, on writing and on
+		// reading ("Conflicting attributes found for header"), so a part list
+		// that disagrees here produces a file nothing else can open.
+		if err := checkSharedAttributes(headers[0], h, i); err != nil {
+			return nil, err
+		}
 	}
 
 	writer := &Writer{
@@ -640,16 +677,19 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 		multiPart: true,
 	}
 
-	// Build version field (multi-part flag set)
-	// Check if any part is tiled
-	hasTiled := false
-	for _, h := range headers {
-		if h.IsTiled() {
-			hasTiled = true
-			break
-		}
-	}
-	writer.versionField = MakeVersionField(2, hasTiled, false, false, true)
+	// The tiled flag in the version field and the multi-part flag are
+	// mutually exclusive. A multi-part file records each part's storage in
+	// that part's own type attribute, so the file-wide tiled flag has nothing
+	// left to say; OpenEXR treats a file with both set as corrupt and refuses
+	// it before reading a single pixel:
+	//
+	//   EXR_ERR_FILE_BAD_HEADER Invalid combination of version flags: single
+	//   part flag found, but also marked as deep (0) or multipart (1)
+	//
+	// (isTiled() in ImfVersion.h is defined as "tiled and not multi-part" for
+	// the same reason.) Setting the flag because some part happened to be
+	// tiled made every multi-part file with a tiled part unreadable.
+	writer.versionField = MakeVersionField(2, false, false, false, true)
 
 	// Write magic number and version
 	if _, err := w.Write(MagicNumber); err != nil {
@@ -660,6 +700,22 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 	xdr.ByteOrder.PutUint32(versionBuf, writer.versionField)
 	if _, err := w.Write(versionBuf); err != nil {
 		return nil, err
+	}
+
+	// Size the offset tables before the headers go out, because each part's
+	// header has to declare its own chunk count. The format lists chunkCount
+	// as required in every part of a multi-part file, and the reference
+	// implementation writes it in every part it produces; a reader that meets
+	// a part type it does not recognise has nothing else to go on.
+	writer.offsets = make([][]int64, len(headers))
+	writer.chunkIndex = make([]int, len(headers))
+
+	totalChunks := 0
+	for i, h := range headers {
+		numChunks := h.ChunksInFile()
+		writer.offsets[i] = make([]int64, numChunks)
+		totalChunks += numChunks
+		h.Set(&Attribute{Name: AttrNameChunkCount, Type: AttrTypeInt, Value: int32(numChunks)})
 	}
 
 	// Write all headers
@@ -676,17 +732,6 @@ func NewMultiPartWriter(w io.WriteSeeker, headers []*Header) (*Writer, error) {
 	// Write empty header to terminate header list
 	if _, err := w.Write([]byte{0}); err != nil {
 		return nil, err
-	}
-
-	// Initialize offset tables for all parts
-	writer.offsets = make([][]int64, len(headers))
-	writer.chunkIndex = make([]int, len(headers))
-
-	totalChunks := 0
-	for i, h := range headers {
-		numChunks := h.ChunksInFile()
-		writer.offsets[i] = make([]int64, numChunks)
-		totalChunks += numChunks
 	}
 
 	// Write placeholder offset tables

@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Tiled images are now gated by the reference implementation, level by level, in
-the write direction. Two defects fell out of the first run; both produced files
-the reference refuses to open, and both were invisible to the existing suite
-because a round trip reads a file back with the same assumption that wrote it.
+Tiled and multi-part images are now gated by the reference implementation, in
+the write direction, level by level and part by part. Eight defects fell out of
+the first runs. Every one of them produced a file the reference refuses to open
+or reads wrongly, and every one was invisible to the existing suite, because a
+round trip reads a file back with the same assumption that wrote it.
 
 ### Fixed
 - **A tile's offset was recorded in the slot the write arrived in, not the slot
@@ -34,6 +35,33 @@ because a round trip reads a file back with the same assumption that wrote it.
   `MultiPartOutputFile` omit when building a `PIZChannel` unreachable rather than
   merely untested: the file is illegal before the codec sees it.
 
+- **A multi-part file containing a tiled part was unreadable.** The version
+  field set the tiled flag whenever any part was tiled, alongside the
+  multi-part flag. The two are mutually exclusive — a multi-part file states
+  each part's storage in that part's own `type` attribute — and OpenEXR
+  rejects the file before reading a pixel:
+  `EXR_ERR_FILE_BAD_HEADER Invalid combination of version flags`. Every
+  multi-part file this library wrote with a tiled part was refused as a whole
+  by the reference implementation.
+- **Parts whose data window did not start at y=0 were written from the wrong
+  scanlines.** `MultiPartOutputFile` addressed the caller's frame buffer in
+  image coordinates while the rest of the package addresses it relative to the
+  data window, so a part with an inset or negative origin was shifted by the
+  origin and read past the end of the caller's buffer. Tiled parts had the
+  same defect in Y. Measured against the reference: 100% of samples differed.
+- **Writing a part a scanline at a time produced an unreadable part or an
+  error.** `WritePixels` emitted a chunk per call, so any codec that packs
+  several scanlines into a chunk got chunks off the grid the format anchors at
+  the data window's first scanline, then failed with "too many chunks
+  written". Chunks are now emitted whole, and lines that do not yet complete
+  one are held.
+- **Parts declaring HTJ2K compression were stored uncompressed.** The
+  multi-part compressor had no HTJ2K case and fell through to a default that
+  returned the samples unchanged. The result still reads back — a chunk no
+  smaller than its unpacked size is raw by definition — so the only symptom
+  was a part that advertised a compression it had never had applied. The
+  default now returns an error instead of silently storing raw.
+
 ### Added
 - `scripts/tiledgen` writes 24 tiled fixtures — one level, mipmap and ripmap;
   tile sizes that divide the image, that leave partial tiles on both edges, and
@@ -53,6 +81,25 @@ because a round trip reads a file back with the same assumption that wrote it.
 - `ErrTiledSubsampling`, and `scripts/testdata/tiled_subsampled_invalid.exr` —
   a file this library wrote before the guard existed, kept so the gate can
   confirm every run that the reference still refuses it.
+- Multi-part files are gated against the reference implementation.
+  `scripts/multipartgen` writes six of them — an embedded-proxy pair, three
+  differing data windows including a negative origin, eight codecs one per
+  part with HTJ2K beside ZIP and PIZ, four unrelated channel layouts, a
+  scanline part beside two tiled parts, and a scanline master beside a
+  mipmapped tiled proxy — with the intended samples beside each part as plain
+  PFMs, one per channel per resolution level, and `scripts/validate.sh` asks
+  the reference, part by part, level by level and channel by channel, whether
+  the file holds them. The gate runs 97 checks, up from 44, and includes a
+  control (the reference reading its own two-part file through the same
+  procedure) and two signal checks (the same comparison against deliberately
+  wrong truth, which must fail).
+- `NewMultiPartWriter` refuses parts that disagree about an attribute every
+  part must share — display window, pixel aspect ratio, time code,
+  chromaticities — with `ErrConflictingAttributes`. OpenEXR rejects such a
+  file on both writing and reading, so it could only ever be opened by this
+  library.
+- Every part of a multi-part file now declares its own `chunkCount`, which the
+  format requires and the reference implementation always writes.
 
 ## [1.4.2] - 2026-08-19
 

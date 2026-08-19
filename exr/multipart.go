@@ -14,6 +14,12 @@ var (
 	ErrNotMultiPart    = errors.New("exr: file is not multi-part")
 	ErrInvalidPartType = errors.New("exr: invalid part type")
 	ErrPartNotFound    = errors.New("exr: part not found")
+
+	// ErrConflictingAttributes reports that the parts of a multi-part file
+	// disagree about an attribute the format requires every part to share.
+	// Such a file is rejected by the reference implementation as a whole, so
+	// it is refused here rather than written.
+	ErrConflictingAttributes = errors.New("exr: parts disagree about a shared attribute")
 )
 
 // PartInfo describes a part in a multi-part file.
@@ -202,7 +208,13 @@ type partWriter struct {
 	index       int
 	header      *Header
 	frameBuffer *FrameBuffer
-	currentY    int
+	// currentY is the first scanline of the next chunk to be emitted, in
+	// image coordinates. It only ever moves by whole chunks, so it stays on
+	// the chunk grid the format anchors at the data window's first scanline.
+	currentY int
+	// pending counts scanlines the caller has declared written that do not
+	// yet complete a chunk.
+	pending int
 }
 
 // NewMultiPartOutputFile creates a new multi-part output file.
@@ -251,6 +263,17 @@ func (m *MultiPartOutputFile) SetFrameBuffer(part int, fb *FrameBuffer) error {
 }
 
 // WritePixels writes scanlines for a specific part.
+//
+// numScanlines is how many further scanlines of the part the caller has
+// filled in, so a part can be written in one call, in groups, or a line at a
+// time. What reaches the file is always a whole chunk. The format anchors a
+// scanline part's chunk grid at the first scanline of its data window and a
+// reader computes a chunk's position from that grid, so a chunk that begins
+// anywhere else makes the part unreadable; scanlines that do not yet complete
+// a chunk are held until a later call completes it, or until the last
+// scanline of the data window, whose chunk may be short. Writing a part one
+// line at a time used to emit one chunk per line and then fail with "too many
+// chunks written" against any codec that packs several lines per chunk.
 func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 	if part < 0 || part >= len(m.parts) {
 		return ErrPartNotFound
@@ -259,10 +282,14 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 	if p.frameBuffer == nil {
 		return ErrInvalidSlice
 	}
+	if numScanlines < 0 {
+		return errors.New("exr: negative scanline count")
+	}
 
 	h := p.header
 	dw := h.DataWindow()
 	width := int(dw.Width())
+	minY, maxY := int(dw.Min.Y), int(dw.Max.Y)
 	comp := h.Compression()
 	linesPerChunk := comp.ScanlinesPerChunk()
 
@@ -271,25 +298,33 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 		return ErrInvalidHeader
 	}
 
-	for i := 0; i < numScanlines; {
+	target := p.currentY + p.pending + numScanlines
+	if target > maxY+1 {
+		target = maxY + 1
+	}
+
+	for p.currentY < target {
 		chunkY := p.currentY
 		linesInChunk := linesPerChunk
-		remaining := numScanlines - i
-		if linesInChunk > remaining {
-			linesInChunk = remaining
-		}
-
-		if chunkY+linesInChunk-1 > int(dw.Max.Y) {
-			linesInChunk = int(dw.Max.Y) - chunkY + 1
+		if chunkY+linesInChunk-1 > maxY {
+			linesInChunk = maxY - chunkY + 1
 		}
 		if linesInChunk <= 0 {
 			break
 		}
+		if chunkY+linesInChunk > target {
+			// The caller has not filled this chunk yet.
+			break
+		}
 
-		// Build uncompressed chunk data
-		uncompressed := buildScanlineData(p.frameBuffer, cl, width, chunkY, linesInChunk)
+		// Build uncompressed chunk data. The frame buffer is addressed
+		// relative to the data window, as everywhere else in this package:
+		// the pixel at (dataWindow.Min.X, dataWindow.Min.Y) is buffer
+		// position (0, 0).
+		uncompressed := buildScanlineData(p.frameBuffer, cl, width, chunkY-minY, linesInChunk)
 
-		// Compress
+		// Compress. The codecs that care about position — DWA — want the
+		// chunk's place in the image, not in the buffer.
 		compressed, err := compressChunkData(uncompressed, int(dw.Min.X), chunkY, width, linesInChunk, cl, comp)
 		if err != nil {
 			return err
@@ -303,9 +338,9 @@ func (m *MultiPartOutputFile) WritePixels(part int, numScanlines int) error {
 		}
 
 		p.currentY += linesInChunk
-		i += linesInChunk
 	}
 
+	p.pending = target - p.currentY
 	return nil
 }
 
@@ -363,13 +398,15 @@ func (m *MultiPartOutputFile) WriteTileLevel(part, tileX, tileY, levelX, levelY 
 	actualW := endX - startX
 	actualH := endY - startY
 
-	absStartY := int(dw.Min.Y) + startY
-
-	// Build uncompressed tile data
-	uncompressed := buildTileData(p.frameBuffer, cl, startX, absStartY, actualW, actualH)
+	// Build uncompressed tile data. The frame buffer holds the level being
+	// written and is addressed from its own origin, as in TiledWriter: the
+	// tile at (0, 0) reads from buffer position (0, 0) whatever the data
+	// window's origin is. Only the codecs are told where the tile sits in the
+	// image.
+	uncompressed := buildTileData(p.frameBuffer, cl, startX, startY, actualW, actualH)
 
 	// Compress
-	compressed, err := compressChunkData(uncompressed, int(dw.Min.X)+startX, absStartY, actualW, actualH, cl, comp)
+	compressed, err := compressChunkData(uncompressed, int(dw.Min.X)+startX, int(dw.Min.Y)+startY, actualW, actualH, cl, comp)
 	if err != nil {
 		return err
 	}
@@ -385,7 +422,11 @@ func (m *MultiPartOutputFile) Close() error {
 	return m.writer.Close()
 }
 
-// buildScanlineData builds uncompressed scanline data.
+// buildScanlineData builds uncompressed scanline data. startY is a frame
+// buffer row, counted from the first row of the data window, not an image
+// coordinate: the caller subtracts the data window's origin. Reading image
+// coordinates here shifted every part whose data window did not start at y=0
+// and ran off the end of the caller's buffer.
 func buildScanlineData(fb *FrameBuffer, cl *ChannelList, width, startY, numLines int) []byte {
 	// Calculate size
 	bytesPerPixel := 0
@@ -582,7 +623,40 @@ func compressChunkData(data []byte, minX, minY, width, height int, cl *ChannelLi
 		return compression.DWACompress(data, dwaChannels(cl),
 			minX, minX+width-1, minY, minY+height-1, DefaultDWACompressionLevel)
 
+	case CompressionHTJ2K256, CompressionHTJ2K32:
+		// Both HTJ2K codecs use the same 128x32 code-blocks; they differ only
+		// in how many scanlines a chunk holds, which the caller has already
+		// decided. Falling through to the default here stored the samples
+		// unchanged. That still reads back — a chunk no smaller than its
+		// unpacked size is raw by definition, whatever the header says — so
+		// the only symptom was a part that advertised HTJ2K and had not been
+		// compressed at all. TestMultiPartCompressionIsApplied measures it.
+		sortedChannels := cl.SortedByName()
+		channels := make([]compression.HTJ2KChannelInfo, len(sortedChannels))
+		for i, ch := range sortedChannels {
+			var htType int
+			switch ch.Type {
+			case PixelTypeUint:
+				htType = compression.HTJ2KPixelTypeUint
+			case PixelTypeHalf:
+				htType = compression.HTJ2KPixelTypeHalf
+			case PixelTypeFloat:
+				htType = compression.HTJ2KPixelTypeFloat
+			}
+			channels[i] = compression.HTJ2KChannelInfo{
+				Type:      htType,
+				Width:     (width + int(ch.XSampling) - 1) / int(ch.XSampling),
+				Height:    (height + int(ch.YSampling) - 1) / int(ch.YSampling),
+				XSampling: int(ch.XSampling),
+				YSampling: int(ch.YSampling),
+				Name:      ch.Name,
+			}
+		}
+		return compression.HTJ2KCompress(data, height, channels, 128)
+
 	default:
-		return data, nil
+		// Never return the samples unchanged for a compression this function
+		// does not implement: the chunk would say one thing and hold another.
+		return nil, errors.New("exr: compression not yet implemented: " + comp.String())
 	}
 }

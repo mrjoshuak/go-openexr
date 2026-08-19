@@ -165,14 +165,30 @@ and half test files are where they concentrate.
 Done when every mutation in `scripts/mutation/mutations.json` is killed, and the
 manifest has grown to cover each codec's core invariants.
 
-### Deep and multi-part coverage against the reference
+### Deep coverage against the reference
 
-Deep scanline and deep tiled images, and multi-part files, are implemented but
-have never been read by the reference implementation. The write side is
-unverified in exactly the way the scanline codecs were before v1.4.0.
+Deep scanline and deep tiled images are implemented but have never been read by
+the reference implementation. The write side is unverified in exactly the way
+the scanline codecs were before v1.4.0.
 
-Done when the gate covers deep and multi-part writes the way it covers the 36
-pixel-type by compression combinations.
+Done when the gate covers deep writes the way it covers the 36 pixel-type by
+compression combinations.
+
+### The multi-part cases the gate still does not reach
+
+Multi-part files are now gated: `scripts/multipartgen` writes parts that differ
+in data window, compression, channel layout and storage type, and the reference
+reads each one back sample for sample. Five defects came out of it, all in
+CHANGELOG. Three cases remain outside it, and `validate.sh` prints them as gaps
+on every run rather than leaving them unsaid:
+
+- Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
+  `WritePixels` and `WriteTile`, so this library cannot write one at all.
+- Ripmapped tiled parts inside a multi-part file. The mipmapped part in
+  `mp_mipmap.exr` is gated level by level; a ripmap's independent x and y
+  levels are a different offset table and are unexercised.
+- Subsampled channels in multi-part parts — the same `XSampling`/`YSampling`
+  gap listed above for the tiled and multi-part writers.
 
 
 ## Later

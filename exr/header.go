@@ -667,6 +667,46 @@ func (h *Header) NumYTiles(ly int) int {
 }
 
 // ChunksInFile calculates the number of chunks needed for this header.
+// tileChunkIndex returns the position of a tile in the chunk offset table.
+//
+// The table is not in the order the tiles happen to be written: a reader turns
+// (tileX, tileY, levelX, levelY) into this index and seeks straight to the
+// entry, so the writer has to put each tile's offset where the reader will
+// look for it. Levels come first — all of level 0, then all of level 1 — and
+// within a level the tiles are in row-major order, which is the same order
+// ChunksInFile counts them in.
+func (h *Header) tileChunkIndex(tileX, tileY, levelX, levelY int) int {
+	td := h.TileDescription()
+	if td == nil {
+		return tileY*h.NumXTiles(0) + tileX
+	}
+
+	switch td.Mode {
+	case LevelModeMipmap:
+		offset := 0
+		for l := 0; l < levelX; l++ {
+			offset += h.NumXTiles(l) * h.NumYTiles(l)
+		}
+		return offset + tileY*h.NumXTiles(levelX) + tileX
+
+	case LevelModeRipmap:
+		offset := 0
+		numXLevels := h.NumXLevels()
+		for ly := 0; ly < levelY; ly++ {
+			for lx := 0; lx < numXLevels; lx++ {
+				offset += h.NumXTiles(lx) * h.NumYTiles(ly)
+			}
+		}
+		for lx := 0; lx < levelX; lx++ {
+			offset += h.NumXTiles(lx) * h.NumYTiles(levelY)
+		}
+		return offset + tileY*h.NumXTiles(levelX) + tileX
+	}
+
+	// LevelModeOne: one level, row-major.
+	return tileY*h.NumXTiles(0) + tileX
+}
+
 func (h *Header) ChunksInFile() int {
 	dw := h.DataWindow()
 	height := int(dw.Height())

@@ -15,6 +15,13 @@
 #      uncompressed twin. A defect applied identically to the encoder and the
 #      decoder is invisible to a round-trip test and fails here.
 #
+#   3. The same oracle on multi-part files, whose parts may each have their own
+#      data window, compression, channel list and storage type.
+#      scripts/multipartgen writes them together with the samples it intended,
+#      as plain PFMs, and the reference is asked part by part and channel by
+#      channel whether the file holds them. Section 5 below says what that
+#      covers and what it does not.
+#
 # Every combination interopgen writes is declared "exact" or "lossy" in its
 # manifest, from the format specification and never from a measurement:
 #
@@ -659,6 +666,337 @@ $(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
 				fail "guard $guard: this library accepts a header the reference cannot read; it will write a file nothing can open"
 			fi
 		done <"$TDIR/guards.tsv"
+	fi
+fi
+
+# 6. The external oracle on multi-part files.
+#
+#    A multi-part file gives each part its own header, so the parts may
+#    disagree about the data window, the compression, the channel list and the
+#    storage type while sharing one display window. Nothing outside this
+#    library had ever read one of these files. scripts/multipartgen writes
+#    six of them — an embedded-proxy pair, three data windows including one
+#    with a negative origin, eight codecs one per part with HTJ2K beside ZIP
+#    and PIZ, four unrelated channel layouts, a scanline part beside two tiled
+#    parts, and a scanline master beside a mipmapped tiled proxy — and beside
+#    every part it writes the samples it intended, as one plain PFM per channel
+#    per resolution level (a header and raw little-endian floats, a format with
+#    no EXR code anywhere near it) and a text table for integer channels.
+#
+#    The reference implementation is then asked, part by part, level by level
+#    and channel by channel, whether the file holds those samples. Every codec
+#    here is lossless for the pixel type it is paired with, so every comparison
+#    is exact: no tolerance, no percentage of allowed outliers.
+#
+#    Three things keep the measurement honest:
+#
+#      control      the reference writes a two-part file with the same two
+#                   data windows from the same PFMs, and the identical
+#                   extract-and-compare procedure runs on it. A broken oracle
+#                   and a broken writer look the same until this passes.
+#      signal       the same procedure is run against deliberately wrong truth
+#                   — one part against another part's samples, one channel
+#                   against another channel's. It has to report a difference.
+#                   A fixture that compares equal to the wrong answer gates
+#                   nothing, and this repository has 21 proven examples of a
+#                   check that could not fail.
+#      structure    the reference is asked for each part's name, storage type,
+#                   compression, data window and channel list, so a file whose
+#                   pixels happen to land in the right place but whose headers
+#                   are wrong still fails.
+# ---------------------------------------------------------------------------
+section "external oracle (multi-part: parts differing in window, codec, channels and storage)"
+
+# mp_extract <file> <part> <level> <channel> <out> — ask the reference for one
+# channel of one resolution level of one part, moved to the origin so it can be
+# compared with a PFM.
+mp_extract() {
+	oiiotool -i "$1" --subimage "$2" --selectmip "$3" --ch "$4" \
+		--origin +0+0 --fullpixels -o "$5" 2>&1
+}
+
+# mp_diff <a> <b> — one diff with every threshold pinned to zero, so PASS
+# means bit-identical.
+mp_diff() {
+	oiiotool --fail 0 --failpercent 0 --hardfail 0 \
+		--warn 0 --warnpercent 0 --hardwarn 0 \
+		--diff "$1" "$2" 2>&1
+}
+
+# mp_verdict <output> — PASS, FAILURE, or empty when the reference errored.
+mp_verdict() { printf '%s\n' "$1" | grep -oE '^(PASS|FAILURE)' | head -1; }
+
+# mp_maxerr <output> — the reported maximum difference, 0 when none.
+mp_maxerr() {
+	m=$(printf '%s\n' "$1" | sed -n 's/.*Max error *= *\([^ ]*\).*/\1/p' | head -1)
+	printf '%s' "${m:-0}"
+}
+
+# mp_field <info> <label> — a quoted scalar from oiiotool's --printinfo.
+mp_field() { printf '%s\n' "$1" | sed -n "s/^ *$2: \"\(.*\)\"\$/\1/p" | head -1; }
+
+# mp_reason <output> — the reference's first complaint, with the scratch
+# directory removed so the message itself survives the line length.
+mp_reason() {
+	printf '%s\n' "$1" | grep -m1 -iE 'error|exception' |
+		sed -e "s|$WORK/multipart/||g" -e 's|(/[^)]*)|()|g' | cut -c1-150
+}
+
+if ! command -v oiiotool >/dev/null 2>&1; then
+	skip "oiiotool not installed; multi-part files cannot be put to the reference (brew install openimageio)"
+elif [ "$build_ok" = "0" ]; then
+	skip "multi-part external oracle (build failed)"
+else
+	MP="$WORK/multipart"
+	mkdir -p "$MP"
+	if ! go run ./scripts/multipartgen "$MP" >"$WORK/multipartgen.log" 2>&1; then
+		fail "scripts/multipartgen could not write every multi-part fixture"
+		grep -E '^FAIL' "$WORK/multipartgen.log" | head -10
+	fi
+	if [ ! -f "$MP/parts.tsv" ]; then
+		fail "scripts/multipartgen wrote no manifest; nothing could be measured"
+	else
+		note "$(tail -1 "$WORK/multipartgen.log") into $MP"
+		note "exact = the reference reads back the samples the writer was given, bit for bit"
+
+		# ---- control ------------------------------------------------------
+		# The reference writes the same two data windows itself, and the same
+		# procedure is run on the result.
+		ctrl_spec=$(awk -F'\t' '$1 == "mp_windows.exr" && ($2 == 0 || $2 == 1) {
+			printf "%s %s %s %s %s\n", $2, $6, $7, $8, $9 }' "$MP/parts.tsv")
+		set -- $ctrl_spec
+		if [ $# -eq 10 ] && [ -f "$MP/mp_windows.p0.R.pfm" ] && [ -f "$MP/mp_windows.p1.R.pfm" ]; then
+			c0w=$4 c0h=$5 c1x=$7 c1y=$8
+			if oiiotool -i "$MP/mp_windows.p0.R.pfm" --chnames R \
+				--fullsize "${c0w}x${c0h}+0+0" --attrib oiio:subimagename c0 \
+				-i "$MP/mp_windows.p1.R.pfm" --chnames R \
+				--origin "+${c1x}+${c1y}" --fullsize "${c0w}x${c0h}+0+0" \
+				--attrib oiio:subimagename c1 \
+				--siappendall -d float -o "$WORK/mpcontrol.exr" >"$WORK/mpcontrol.log" 2>&1; then
+				ctrl_ok=1
+				for cp in 0 1; do
+					err=$(mp_extract "$WORK/mpcontrol.exr" "$cp" 0 R "$WORK/mpctrl_$cp.exr")
+					if [ ! -f "$WORK/mpctrl_$cp.exr" ]; then
+						ctrl_ok=0
+						ctrl_why="the reference could not re-read its own part $cp: $(printf '%s' "$err" | head -1)"
+						break
+					fi
+					out=$(mp_diff "$WORK/mpctrl_$cp.exr" "$MP/mp_windows.p$cp.R.pfm")
+					if [ "$(mp_verdict "$out")" != "PASS" ]; then
+						ctrl_ok=0
+						ctrl_why="the reference's own part $cp does not match the samples it was given (max error $(mp_maxerr "$out"))"
+						break
+					fi
+				done
+				if [ "$ctrl_ok" = "1" ]; then
+					pass "control: the reference round-trips its own two-part file with two different data windows through this exact procedure"
+				else
+					fail "control: $ctrl_why — the oracle or the procedure is broken, so every multi-part measurement below is uninterpretable"
+				fi
+			else
+				fail "control: the reference could not write a two-part file from the fixture's own samples: $(head -1 "$WORK/mpcontrol.log")"
+			fi
+		else
+			fail "control: the fixture for the control is missing; nothing distinguishes a broken oracle from a broken writer"
+		fi
+
+		# ---- files: does the reference accept the file at all -------------
+		while IFS=$'\t' read -r file nparts note_text; do
+			case "$file" in \#* | "") continue ;; esac
+			info=$(oiiotool -i "$MP/$file" --printinfo:verbose=1 2>&1)
+			got=$(printf '%s\n' "$info" | sed -n 's/^ *oiio:subimages: \([0-9]*\).*/\1/p' | head -1)
+			if [ -z "$got" ]; then
+				fail "$(printf '%-16s the reference refuses the file: %s' "$file" \
+					"$(mp_reason "$info")")"
+			elif [ "$got" != "$nparts" ]; then
+				fail "$(printf '%-16s the reference finds %s parts, the writer wrote %s' "$file" "$got" "$nparts")"
+			else
+				pass "$(printf '%-16s %s parts, read by the reference (%s)' "$file" "$got" "$note_text")"
+			fi
+		done <"$MP/files.tsv"
+
+		# ---- parts: headers, then samples ---------------------------------
+		while IFS=$'\t' read -r file part name typ comp minx miny width height chans tile levels; do
+			case "$file" in \#* | "") continue ;; esac
+			path="$MP/$file"
+			label=$(printf '%-16s part %s %-9s' "$file" "$part" "$name")
+
+			info=$(oiiotool -i "$path" --subimage "$part" --printinfo:verbose=1 2>&1)
+			if ! printf '%s\n' "$info" | grep -q 'channel list:'; then
+				fail "$label the reference cannot read this part: $(mp_reason "$info")"
+				continue
+			fi
+
+			gw=$(printf '%s\n' "$info" | sed -n '1s/^ *\([0-9][0-9]*\) *x *\([0-9][0-9]*\).*/\1/p')
+			gh=$(printf '%s\n' "$info" | sed -n '1s/^ *\([0-9][0-9]*\) *x *\([0-9][0-9]*\).*/\2/p')
+			gx=$(printf '%s\n' "$info" | sed -n 's/^ *pixel data origin: x=\(-*[0-9]*\), y=\(-*[0-9]*\).*/\1/p' | head -1)
+			gy=$(printf '%s\n' "$info" | sed -n 's/^ *pixel data origin: x=\(-*[0-9]*\), y=\(-*[0-9]*\).*/\2/p' | head -1)
+			[ -n "$gx" ] || gx=0
+			[ -n "$gy" ] || gy=0
+			gname=$(mp_field "$info" name)
+			gcomp=$(mp_field "$info" compression)
+			gchans=$(printf '%s\n' "$info" | sed -n 's/^ *channel list: //p' | head -1 |
+				tr -d ' ' | tr ',' '\n' | sort | paste -sd, -)
+			want_chans=$(printf '%s' "$chans" | tr ',' '\n' | cut -d: -f1 | sort | paste -sd, -)
+
+			gtile=$(printf '%s\n' "$info" | sed -n 's/^ *tile size: \([0-9]*\) x \([0-9]*\).*/\1x\2/p' | head -1)
+			glevels=$(printf '%s\n' "$info" | sed -n 's/^ *MIP-map levels: //p' | head -1 | wc -w | tr -d ' ')
+			[ "$glevels" != "0" ] || glevels=1
+			want_tile=""
+			[ "$tile" = "-" ] || want_tile="${tile}x${tile}"
+
+			# The storage type, the per-channel pixel types and the name of
+			# any compression OpenImageIO does not have in its own table are
+			# only in the header, and exrheader — the reference's own header
+			# dumper — is what reports them verbatim.
+			blk=""
+			if command -v exrheader >/dev/null 2>&1; then
+				blk=$(exrheader "$path" 2>/dev/null | awk -v p=" part $part:" '
+					/^ part [0-9]+:/ { inblk = ($0 == p) } inblk { print }')
+			fi
+			gtyp=$(printf '%s\n' "$blk" | sed -n 's/^type (type string): "\(.*\)"$/\1/p' | head -1)
+			hcomp=$(printf '%s\n' "$blk" |
+				sed -n 's/^compression (type compression): \([^:]*\):.*/\1/p' | head -1)
+			# oiiotool reports no compression name for codecs it does not know
+			# (htj2k256 and htj2k32 among them), so the header is the
+			# authority and oiiotool is the cross-check.
+			if [ -z "$gcomp" ]; then
+				gcomp="$hcomp"
+				[ -n "$gcomp" ] || note "$label the reference's oiiotool reports no compression name for \"$comp\"; exrheader is not installed, so that field is unmeasured"
+			elif [ -n "$hcomp" ] && [ "$hcomp" != "$gcomp" ]; then
+				gcomp="$hcomp"
+			fi
+
+			why=""
+			[ -n "$gw" ] && [ -n "$gh" ] || why="the reference reported no size for this part"
+			[ -n "$why" ] || [ "$gw/$gh" = "$width/$height" ] || why="data window size ${gw}x${gh}, wrote ${width}x${height}"
+			[ -n "$why" ] || [ "$gtile" = "$want_tile" ] || why="tile size \"${gtile:-none}\", wrote \"${want_tile:-none}\""
+			[ -n "$why" ] || [ "$glevels" = "$levels" ] || why="$glevels resolution levels, wrote $levels"
+			[ -n "$why" ] || [ "$gx/$gy" = "$minx/$miny" ] || why="data window origin ($gx,$gy), wrote ($minx,$miny)"
+			[ -n "$why" ] || [ "$gname" = "$name" ] || why="part named \"$gname\", wrote \"$name\""
+			[ -n "$why" ] || [ -z "$gcomp" ] || [ "$gcomp" = "$comp" ] || why="compression \"$gcomp\", wrote \"$comp\""
+			[ -n "$why" ] || [ "$gchans" = "$want_chans" ] || why="channels $gchans, wrote $want_chans"
+			[ -n "$why" ] || [ -z "$gtyp" ] || [ "$gtyp" = "$typ" ] || why="type \"$gtyp\", wrote \"$typ\""
+			# chunkCount is required in every part of a multi-part file: it is
+			# all a reader has to go on for a part type it does not recognise.
+			[ -n "$why" ] || [ -z "$blk" ] || printf '%s\n' "$blk" | grep -q '^chunkCount ' ||
+				why="no chunkCount attribute, which the format requires in every part of a multi-part file"
+
+			if [ -z "$why" ] && [ -n "$blk" ]; then
+				for pair in $(printf '%s' "$chans" | tr ',' ' '); do
+					cn=${pair%%:*}
+					ct=${pair##*:}
+					case "$ct" in
+					half) want="16-bit floating-point" ;;
+					float) want="32-bit floating-point" ;;
+					uint) want="32-bit unsigned integer" ;;
+					*) want="" ;;
+					esac
+					line=$(printf '%s\n' "$blk" | sed -n "s/^    $cn, \(.*\), sampling.*/\1/p" | head -1)
+					if [ -z "$line" ]; then
+						why="channel $cn is missing from the part's channel list"
+						break
+					fi
+					if [ -n "$want" ] && [ "$line" != "$want" ]; then
+						why="channel $cn is $line, wrote $want"
+						break
+					fi
+				done
+			fi
+
+			if [ -n "$why" ]; then
+				fail "$label header: $why"
+			else
+				pass "$(printf '%s header: %sx%s at (%s,%s), %s, %s, %s' "$label" \
+					"$width" "$height" "$minx" "$miny" "$typ" "$comp" "$want_chans")"
+			fi
+
+			# Samples, channel by channel, against the truth written beside
+			# the fixture.
+			nch=0
+			bad=""
+			while IFS=$'\t' read -r cfile cpart cname kind truth level; do
+				case "$cfile" in \#* | "") continue ;; esac
+				[ "$cfile" = "$file" ] && [ "$cpart" = "$part" ] || continue
+				nch=$((nch + 1))
+				[ -n "$bad" ] && continue
+				clabel="$cname"
+				[ "$level" = "0" ] || clabel="$cname at level $level"
+				if [ "$kind" = "uint" ]; then
+					# Integer channels do not survive the reference's float
+					# conversion, so they are read back in their native type
+					# and compared value by value.
+					rm -f "$WORK/mpu.exr"
+					err=$(oiiotool --native -i "$path" --subimage "$cpart" --selectmip "$level" --ch "$cname" \
+						-d uint32 -o "$WORK/mpu.exr" 2>&1)
+					if [ ! -f "$WORK/mpu.exr" ]; then
+						bad="$clabel: the reference could not read it: $(printf '%s' "$err" | head -1)"
+						continue
+					fi
+					oiiotool --native --dumpdata -i "$WORK/mpu.exr" 2>/dev/null |
+						sed -n 's/^ *Pixel ([0-9]*, [0-9]*): \([0-9]*\).*/\1/p' >"$WORK/mpu.txt"
+					if ! cmp -s "$WORK/mpu.txt" "$MP/$truth"; then
+						first=$(diff "$MP/$truth" "$WORK/mpu.txt" 2>/dev/null | head -3 | tr '\n' ' ')
+						bad="$clabel: the reference reads different integers ($first)"
+					fi
+					continue
+				fi
+				rm -f "$WORK/mpc.exr"
+				err=$(mp_extract "$path" "$cpart" "$level" "$cname" "$WORK/mpc.exr")
+				if [ ! -f "$WORK/mpc.exr" ]; then
+					bad="$clabel: the reference could not read it: $(printf '%s' "$err" | head -1)"
+					continue
+				fi
+				out=$(mp_diff "$WORK/mpc.exr" "$MP/$truth")
+				case "$(mp_verdict "$out")" in
+				PASS) ;;
+				FAILURE) bad="$clabel: max error $(mp_maxerr "$out"), $(printf '%s\n' "$out" | sed -n 's/.*Max error.*@ \((.*)\).*/at \1/p' | head -1)" ;;
+				*) bad="$clabel: the reference could not compare it: $(printf '%s\n' "$out" | grep -m1 -i error | cut -c1-120)" ;;
+				esac
+			done <"$MP/chans.tsv"
+
+			if [ "$nch" -eq 0 ]; then
+				fail "$label samples: no channel was compared; the check would pass whatever the writer emitted"
+			elif [ -n "$bad" ]; then
+				fail "$label samples: $bad"
+			else
+				pass "$(printf '%s samples: %s channel-and-level comparisons exact' "$label" "$nch")"
+			fi
+		done <"$MP/parts.tsv"
+
+		# ---- signal -------------------------------------------------------
+		# The same comparison against deliberately wrong truth. Both of these
+		# must report a difference; if either passes, the fixture cannot tell
+		# a swapped part or a swapped channel from a correct one.
+		sig_check() {
+			# $1 file, $2 part, $3 channel, $4 truth of something else, $5 what
+			[ -f "$MP/$1" ] && [ -f "$MP/$4" ] || {
+				fail "signal: $5 could not be measured; the fixture is missing"
+				return
+			}
+			rm -f "$WORK/mps.exr"
+			mp_extract "$MP/$1" "$2" 0 "$3" "$WORK/mps.exr" >/dev/null 2>&1
+			if [ ! -f "$WORK/mps.exr" ]; then
+				fail "signal: $5 could not be measured; the reference could not read $1 part $2"
+				return
+			fi
+			out=$(mp_diff "$WORK/mps.exr" "$MP/$4")
+			if [ "$(mp_verdict "$out")" = "FAILURE" ]; then
+				pass "signal: $5 is detected (max error $(mp_maxerr "$out"))"
+			else
+				fail "signal: $5 compares equal — the fixture has no signal and every exact row above asserts nothing"
+			fi
+		}
+		sig_check mp_codecs.exr 0 R mp_codecs.p1.R.pfm "one part's samples put where another part's belong"
+		sig_check mp_channels.exr 0 R mp_channels.p0.G.pfm "one channel's samples put where another channel's belong"
+
+		# ---- measured gaps ------------------------------------------------
+		# Recorded rather than omitted: a row nobody writes down is a row
+		# nobody notices is missing.
+		note "GAP: deep parts in a multi-part file are not gated — MultiPartOutputFile exposes only WritePixels and WriteTile, so this library cannot write a deepscanline or deeptiled part into a multi-part file at all"
+		note "GAP: ripmapped tiled parts inside a multi-part file are not gated — the mipmapped part above covers one level per step, but a ripmap's independent x and y levels are a different chunk offset table and are unexercised"
+		note "GAP: subsampled channels (XSampling or YSampling above 1) are not gated in multi-part parts"
+		note "GAP: the multi-part READ direction is not gated — the reference can write multi-part files (the control above is one), but nothing here asks this library to read one back and compare, so MultiPartInputFile rests on round trips"
 	fi
 fi
 
