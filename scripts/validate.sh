@@ -1341,6 +1341,73 @@ $out"
 fi
 
 # ---------------------------------------------------------------------------
+		# ---- multi-level parts, read direction -----------------------------
+		#
+		# Recorded as ungatable because oiiotool writes a one-level file for
+		# -o:mipmap=1 and drops levels on --siappend. It named the wrong tool.
+		# exrmaketiled generates the levels and exrmultipart combines the
+		# result into a multi-part file, both from OpenEXR itself, so the
+		# fixture is reference-written end to end and this library only reads.
+		#
+		# Note for anyone reproducing: exrmultipart's "::partname" suffix
+		# silently produces a file with headers and no pixel data. Without it
+		# the same command succeeds. The check below would pass on such a file
+		# — comparing nothing to nothing — so it asserts a sample count first.
+		MLDIR=""
+		if ! command -v exrmultipart >/dev/null 2>&1; then
+			gap "multi-level multi-part read: exrmultipart is not installed"
+		elif ! command -v exrmaketiled >/dev/null 2>&1; then
+			gap "multi-level multi-part read: exrmaketiled is not installed"
+		elif [ ! -x "$TILEDUMP" ]; then
+			gap "multi-level multi-part read: exrtiledump could not be built against the reference"
+		else
+			MLDIR="$WORK/mplevels"
+			mkdir -p "$MLDIR"
+			# scripts/exrtileread is built by the tiled read section further
+			# down, which has not run yet; build it here so the two sections
+			# stay independent of each other's order.
+			TILEREAD="$WORK/exrtileread"
+			if [ ! -x "$TILEREAD" ] && ! go build -o "$TILEREAD" ./scripts/exrtileread/ 2>"$MLDIR/build.err"; then
+				fail "multi-level multi-part read: could not build scripts/exrtileread: $(head -1 "$MLDIR/build.err")"
+				MLDIR=""
+			fi
+		fi
+		if [ -n "${MLDIR:-}" ] && [ -d "${MLDIR:-/nonexistent}" ]; then
+			oiiotool --pattern noise:type=uniform 64x64 3 -d half -o "$MLDIR/flat.exr" >/dev/null 2>&1
+			for mode in m r; do
+				case $mode in
+				m) label="mipmapped" ;;
+				r) label="ripmapped" ;;
+				esac
+				if ! exrmaketiled "-$mode" -t 16 16 "$MLDIR/flat.exr" "$MLDIR/lv_$mode.exr" >/dev/null 2>&1; then
+					gap "multi-level multi-part read: exrmaketiled would not write a $label file"
+					continue
+				fi
+				if ! exrmultipart -combine -i "$MLDIR/flat.exr" -i "$MLDIR/lv_$mode.exr" \
+					-o "$MLDIR/mp_$mode.exr" >/dev/null 2>&1; then
+					gap "multi-level multi-part read: exrmultipart would not combine the $label file"
+					continue
+				fi
+				"$TILEDUMP" -part 1 "$MLDIR/mp_$mode.exr" >"$MLDIR/$mode.ref" 2>/dev/null
+				n=$(grep -vc '^#' "$MLDIR/$mode.ref")
+				if [ "${n:-0}" -lt 1000 ]; then
+					fail "multi-level multi-part read ($label): the fixture holds $n samples; it is empty, so nothing would be measured"
+					continue
+				fi
+				if ! "$TILEREAD" -part 1 "$MLDIR/mp_$mode.exr" >"$MLDIR/$mode.got" 2>"$MLDIR/$mode.err"; then
+					fail "multi-level multi-part read ($label): this library could not read it: $(head -1 "$MLDIR/$mode.err" | cut -c1-100)"
+					continue
+				fi
+				line=$(awk -f "$REPO/scripts/tilecmp.awk" "$MLDIR/$mode.ref" "$MLDIR/$mode.got")
+				lv=$(grep -c '^# level' "$MLDIR/$mode.ref")
+				case "$line" in
+				*"missing=0 extra=0 maxerr=0 "*)
+					pass "multi-level multi-part read ($label): all $lv levels match the reference's own reading ($line)" ;;
+				*)
+					fail "multi-level multi-part read ($label): $line" ;;
+				esac
+			done
+		fi
 		# ---- measured gaps ------------------------------------------------
 		note "GAP: deep mipmap and ripmap levels are not gated — DeepTiledWriter writes LevelModeOne only, and no deep mipmapped fixture could be produced with oiiotool 3.1.16 to gate ReadTileLevel above level 0 against"
 		note "GAP: writing deep parts into a multi-part file is not gated — MultiPartOutputFile has no deep entry point; reading multi-part deep is gated, scanline and tiled"
@@ -1603,7 +1670,6 @@ else
 				esac
 			fi
 
-			note "GAP: mipmapped and ripmapped parts are not read-gated — oiiotool 3.1.16 writes a one-level file for -o:mipmap=1 and drops levels on --siappend, so no reference-written multi-level multi-part fixture could be produced; single-part mipmap and ripmap reads are gated in section 8"
 			note "GAP: deep parts inside a multi-part file are not read-gated here — a PFM cannot carry a varying sample count; the deep section gates deep reads, including multi-part deep"
 		fi
 	fi

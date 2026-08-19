@@ -9,7 +9,7 @@
 // writer share. Here the fixture comes from exrmaketiled or oiiotool, the truth
 // comes from exrtiledump, and this program contributes only its own reading.
 //
-//	exrtileread file.exr
+//	exrtileread [-part N] file.exr
 //
 // Output is one line per sample:
 //
@@ -26,6 +26,8 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/mrjoshuak/go-openexr/exr"
 )
@@ -112,16 +114,31 @@ func dumpLevel(out *bufio.Writer, r *exr.TiledReader, lx, ly int) error {
 	return nil
 }
 
-func run(path string) error {
+func run(path string, part int) error {
 	f, err := exr.OpenFile(path)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
 	defer f.Close()
 
-	r, err := exr.NewTiledReader(f)
-	if err != nil {
-		return fmt.Errorf("NewTiledReader: %w", err)
+	// A part index addresses one tiled part of a multi-part file. Without it
+	// the file is read as single-part, which is what every existing caller
+	// wants.
+	var r *exr.TiledReader
+	if part >= 0 {
+		m := exr.NewMultiPartInputFile(f)
+		if part >= m.NumParts() {
+			return fmt.Errorf("part %d of %d", part, m.NumParts())
+		}
+		r, err = m.TiledReader(part)
+		if err != nil {
+			return fmt.Errorf("TiledReader(part %d): %w", part, err)
+		}
+	} else {
+		r, err = exr.NewTiledReader(f)
+		if err != nil {
+			return fmt.Errorf("NewTiledReader: %w", err)
+		}
 	}
 
 	out := bufio.NewWriterSize(os.Stdout, 1<<20)
@@ -158,12 +175,27 @@ func run(path string) error {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: exrtileread file.exr")
+	part := -1
+	args := os.Args[1:]
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		if args[0] == "-part" && len(args) > 1 {
+			n, err := strconv.Atoi(args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "bad part index:", args[1])
+				os.Exit(2)
+			}
+			part = n
+			args = args[2:]
+			continue
+		}
+		break
+	}
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: exrtileread [-part N] file.exr")
 		os.Exit(2)
 	}
-	if err := run(os.Args[1]); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR %s: %v\n", os.Args[1], err)
+	if err := run(args[0], part); err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR %s: %v\n", args[0], err)
 		os.Exit(1)
 	}
 }

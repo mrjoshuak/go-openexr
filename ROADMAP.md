@@ -281,17 +281,21 @@ addressing one part of a multi-part file — reads all 49 of its independent x a
 y levels, 48387 samples, exactly. oiiotool cannot serve as the oracle there,
 because `--selectmip` addresses levels by a single index and a ripmap has none.
 
-Three cases remain outside it, and `validate.sh` prints them as gaps on every
-run rather than leaving them unsaid:
+Multi-level parts are gated in the read direction too, which this file called
+impossible: "oiiotool writes a one-level file for `-o:mipmap=1` and drops levels
+on `--siappend`, so no reference-written multi-level multi-part fixture could be
+produced at all". It named the wrong tool. `exrmaketiled` generates the levels
+and `exrmultipart -combine` assembles the file, both from OpenEXR itself, so the
+fixture is reference-written end to end — and this library reads all 7 mipmap
+levels and all 49 ripmap levels of it exactly.
+
+Two cases remain outside it, and `validate.sh` prints them as gaps on every run
+rather than leaving them unsaid:
 
 - Deep parts inside a multi-part file. `MultiPartOutputFile` exposes only
   `WritePixels` and `WriteTile`, so this library cannot write one at all.
 - Subsampled channels in multi-part parts — the same `XSampling`/`YSampling`
   gap listed above for the tiled and multi-part writers.
-- Multi-level parts in the read direction. oiiotool 3.1.16 writes a one-level
-  file for `-o:mipmap=1` and drops levels on `--siappend`, so no
-  reference-written multi-level multi-part fixture could be produced at all.
-  Single-part mipmap and ripmap reads are gated.
 
 
 ## Later
