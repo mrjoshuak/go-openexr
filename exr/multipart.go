@@ -172,10 +172,7 @@ func (m *MultiPartInputFile) DeepScanlineReader(part int) (*DeepScanlineReader, 
 	if partType != PartTypeDeepScanline {
 		return nil, ErrInvalidPartType
 	}
-	if part != 0 {
-		return nil, errors.New("exr: deep scanline reader only supports part 0")
-	}
-	return NewDeepScanlineReader(m.file)
+	return NewDeepScanlineReaderPart(m.file, part)
 }
 
 // DeepTiledReader returns a DeepTiledReader for the specified part.

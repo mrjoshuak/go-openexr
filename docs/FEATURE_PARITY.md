@@ -22,20 +22,20 @@ This document provides a detailed comparison between go-openexr and the upstream
 
 ## Executive Summary
 
-| Category            | C++ Features | Go Features | Parity  |
-| ------------------- | ------------ | ----------- | ------- |
+| Category            | C++ Features | Go Features | Parity                                                              |
+| ------------------- | ------------ | ----------- | ------------------------------------------------------------------- |
 | Compression Methods | 12           | 12          | 12/12 implemented; 5 verified interoperable, 1 known read gap (DWA) |
-| File Formats        | 4            | 4           | ✅ 100% |
-| Pixel Types         | 3            | 3           | ✅ 100% |
-| Attribute Types     | 36+          | 36+         | ✅ 100% |
-| Level Modes         | 3            | 3           | ✅ 100% |
-| Deep Image          | Full         | Full        | ✅ 100% |
-| Multipart           | Full         | Full        | ✅ 100% |
-| Multiview           | Full         | Full        | ✅ 100% |
-| ACES                | Full         | Full        | ✅ 100% |
-| Environment Maps    | 2 types      | 2 types     | ✅ 100% |
-| ID Manifest         | Full         | Full        | ✅ 100% |
-| Cryptomatte         | Full         | Full        | ✅ 100% |
+| File Formats        | 4            | 4           | ✅ 100%                                                             |
+| Pixel Types         | 3            | 3           | ✅ 100%                                                             |
+| Attribute Types     | 36+          | 36+         | ✅ 100%                                                             |
+| Level Modes         | 3            | 3           | ✅ 100%                                                             |
+| Deep Image          | Full         | Full        | ✅ 100%                                                             |
+| Multipart           | Full         | Full        | ✅ 100%                                                             |
+| Multiview           | Full         | Full        | ✅ 100%                                                             |
+| ACES                | Full         | Full        | ✅ 100%                                                             |
+| Environment Maps    | 2 types      | 2 types     | ✅ 100%                                                             |
+| ID Manifest         | Full         | Full        | ✅ 100%                                                             |
+| Cryptomatte         | Full         | Full        | ✅ 100%                                                             |
 
 **Overall: 100% of core functionality implemented.** Verified interoperability
 is narrower — see the caveat above.
@@ -44,20 +44,20 @@ is narrower — see the caveat above.
 
 ## 1. Compression Methods
 
-| Method        | Type     | C++ | Go  | Notes                     |
-| ------------- | -------- | --- | --- | ------------------------- |
-| NONE (0)      | -        | ✅  | ✅  | Uncompressed              |
-| RLE (1)       | Lossless | ✅  | ✅  | Run-length encoding       |
-| ZIPS (2)      | Lossless | ✅  | ✅  | zlib, single scanline     |
-| ZIP (3)       | Lossless | ✅  | ✅  | zlib, 16 scanlines        |
-| PIZ (4)       | Lossless | ✅  | ✅  | Wavelet compression       |
-| PXR24 (5)     | Lossy    | ✅  | ✅  | 24-bit float              |
-| B44 (6)       | Lossy    | ✅  | ✅  | 4x4 block, fixed rate     |
-| B44A (7)      | Lossy    | ✅  | ✅  | 4x4 block, variable rate  |
-| DWAA (8)      | Lossy    | ✅  | ⚠️  | DCT, 32 scanlines; cannot read reference-written files |
-| DWAB (9)      | Lossy    | ✅  | ⚠️  | DCT, 256 scanlines; cannot read reference-written files |
+| Method        | Type     | C++ | Go  | Notes                                                          |
+| ------------- | -------- | --- | --- | -------------------------------------------------------------- |
+| NONE (0)      | -        | ✅  | ✅  | Uncompressed                                                   |
+| RLE (1)       | Lossless | ✅  | ✅  | Run-length encoding                                            |
+| ZIPS (2)      | Lossless | ✅  | ✅  | zlib, single scanline                                          |
+| ZIP (3)       | Lossless | ✅  | ✅  | zlib, 16 scanlines                                             |
+| PIZ (4)       | Lossless | ✅  | ✅  | Wavelet compression                                            |
+| PXR24 (5)     | Lossy    | ✅  | ✅  | 24-bit float                                                   |
+| B44 (6)       | Lossy    | ✅  | ✅  | 4x4 block, fixed rate                                          |
+| B44A (7)      | Lossy    | ✅  | ✅  | 4x4 block, variable rate                                       |
+| DWAA (8)      | Lossy    | ✅  | ⚠️  | DCT, 32 scanlines; cannot read reference-written files         |
+| DWAB (9)      | Lossy    | ✅  | ⚠️  | DCT, 256 scanlines; cannot read reference-written files        |
 | HTJ2K256 (10) | Lossless | ✅  | ⚠️  | JPEG 2000, 128x128 blocks; FLOAT exact, HALF broken; no oracle |
-| HTJ2K32 (11)  | Lossless | ✅  | ⚠️  | JPEG 2000, 32x32 blocks; FLOAT exact, HALF broken; no oracle |
+| HTJ2K32 (11)  | Lossless | ✅  | ⚠️  | JPEG 2000, 32x32 blocks; FLOAT exact, HALF broken; no oracle   |
 
 **Status: 12/12 implemented. Interoperability verified for None, RLE, ZIPS, ZIP
 and PIZ; DWAA/DWAB have a known read gap; the rest are uncovered.**
@@ -219,13 +219,14 @@ The `exrid` package provides **complete ID Manifest and Cryptomatte support**:
 
 ## 6. Deep Image Support
 
-| Feature          | C++ | Go  | Notes                               |
-| ---------------- | --- | --- | ----------------------------------- |
-| Deep Scanline    | ✅  | ✅  | Per-pixel sample counts             |
-| Deep Tiled       | ✅  | ✅  | Tiled deep data                     |
-| Sample Count     | ✅  | ✅  | Variable samples per pixel          |
-| Deep Compositing | ✅  | ✅  | Over operator                       |
-| Deep Image State | ✅  | ⚠️  | States exist but no typed attribute |
+| Feature           | C++ | Go  | Notes                                            |
+| ----------------- | --- | --- | ------------------------------------------------ |
+| Deep Scanline     | ✅  | ✅  | Per-pixel sample counts                          |
+| Deep Tiled        | ✅  | ✅  | Tiled deep data, single level                    |
+| Sample Count      | ✅  | ✅  | Variable samples per pixel, including zero       |
+| Deep Compositing  | ✅  | ✅  | Over operator                                    |
+| Deep Image State  | ✅  | ⚠️  | States exist but no typed attribute              |
+| Deep Mipmap Level | ✅  | ⚠️  | Written at one level; levels ungated (see below) |
 
 **Go Implementation:**
 
@@ -233,6 +234,20 @@ The `exrid` package provides **complete ID Manifest and Cryptomatte support**:
 - DefaultDeepCompositing with front-to-back sorting
 - DeepSample struct with Z, ZBack, RGBA, custom channels
 - Premultiplied alpha support
+
+**Compression.** Deep data may use NONE, RLE or ZIPS only. A deep chunk holds
+one scanline of variable-length sample data, so the codecs that compress a fixed
+block of several scanlines have nothing to operate on, and the reference
+implementation rejects such a file when it opens it with EXR_ERR_INVALID_ATTR
+"Invalid compression for deep data". `IsDeepCompressionSupported` reports this,
+and both deep writers refuse anything else rather than write a file no other
+reader will open.
+
+**Verification.** `scripts/validate.sh` gates deep scanline and deep tiled
+writing against OpenImageIO's `oiiotool`, comparing every pixel's sample count
+and every sample's value for all three permitted codecs; it gates the deep
+readers against deep files the reference itself wrote, including both parts of a
+multi-part deep file. Deep mipmap levels are not covered.
 
 **Status: ✅ Full Parity**
 

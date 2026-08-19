@@ -1270,8 +1270,19 @@ func TestCompositeDeepTiledWithCreatedFile(t *testing.T) {
 		t.Fatal("Expected deep file")
 	}
 
-	if !readFile.IsTiled() {
+	// A single-part deep tiled file must NOT set the tiled bit in the version
+	// field: the tiled bit and the deep bit are mutually exclusive there, and
+	// OpenEXR rejects a file that sets both with "Invalid combination of
+	// version flags". What makes it tiled is the type attribute, "deeptile",
+	// and the tile description, which is what Header.IsTiled reports.
+	if readFile.IsTiled() {
+		t.Fatal("the version field must not set the tiled bit on a deep tiled file")
+	}
+	if !readFile.Header(0).IsTiled() {
 		t.Fatal("Expected tiled file")
+	}
+	if attr := readFile.Header(0).Get(AttrNameType); attr == nil || attr.Value.(string) != PartTypeDeepTiled {
+		t.Fatalf("type attribute = %v, want %q", attr, PartTypeDeepTiled)
 	}
 
 	reader, err := NewDeepTiledReader(readFile)

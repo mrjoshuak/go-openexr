@@ -174,13 +174,23 @@ func TestIsDeepCompressionSupported(t *testing.T) {
 		{CompressionNone, true},
 		{CompressionRLE, true},
 		{CompressionZIPS, true},
-		{CompressionZIP, true},
-		{CompressionPIZ, true},
+		// ZIP and PIZ were listed as supported here until the reference
+		// implementation was asked: a deep chunk holds one scanline of
+		// variable-length sample data, and OpenEXR rejects a deep file
+		// compressed with anything but NONE, RLE or ZIPS when it opens it,
+		// with EXR_ERR_INVALID_ATTR "Invalid compression for deep data".
+		// Measured on OpenImageIO 3.1.16 / OpenEXR by patching the
+		// compression byte of a deep file it does accept: codes 0, 1 and 2
+		// opened, codes 3 (ZIP), 4 (PIZ), 6 (B44), 10 and 11 (HTJ2K) did not.
+		{CompressionZIP, false},
+		{CompressionPIZ, false},
 		{CompressionPXR24, false},
 		{CompressionB44, false},
 		{CompressionB44A, false},
 		{CompressionDWAA, false},
 		{CompressionDWAB, false},
+		{CompressionHTJ2K256, false},
+		{CompressionHTJ2K32, false},
 		{Compression(100), false}, // Unknown compression type
 	}
 
@@ -980,11 +990,16 @@ func TestDeepScanlineWithCompression(t *testing.T) {
 	compressionTypes := []struct {
 		name string
 		comp Compression
+		// permitted is false for a codec the OpenEXR reference implementation
+		// refuses for deep data ("Invalid compression for deep data"). The
+		// writer has to refuse it too rather than produce a file only this
+		// library can read.
+		permitted bool
 	}{
-		{"None", CompressionNone},
-		{"RLE", CompressionRLE},
-		{"ZIPS", CompressionZIPS},
-		{"ZIP", CompressionZIP},
+		{"None", CompressionNone, true},
+		{"RLE", CompressionRLE, true},
+		{"ZIPS", CompressionZIPS, true},
+		{"ZIP", CompressionZIP, false},
 	}
 
 	for _, ct := range compressionTypes {
@@ -1023,6 +1038,15 @@ func TestDeepScanlineWithCompression(t *testing.T) {
 			writer.SetFrameBuffer(fb)
 			// Now we can set compression
 			writer.Header().SetCompression(ct.comp)
+			if !ct.permitted {
+				if err := writer.WritePixels(height); err != ErrDeepNotSupported {
+					t.Fatalf("WritePixels with %s = %v, want ErrDeepNotSupported", ct.name, err)
+				}
+				if n := len(w.Bytes()); n != 0 {
+					t.Errorf("a refused codec still wrote %d bytes", n)
+				}
+				return
+			}
 			if err := writer.WritePixels(height); err != nil {
 				t.Fatalf("WritePixels error: %v", err)
 			}
@@ -1078,10 +1102,13 @@ func TestDeepTiledWithCompression(t *testing.T) {
 	compressionTypes := []struct {
 		name string
 		comp Compression
+		// permitted is false for a codec the OpenEXR reference implementation
+		// refuses for deep data; see TestDeepScanlineWithCompression.
+		permitted bool
 	}{
-		{"None", CompressionNone},
-		{"ZIPS", CompressionZIPS},
-		{"ZIP", CompressionZIP},
+		{"None", CompressionNone, true},
+		{"ZIPS", CompressionZIPS, true},
+		{"ZIP", CompressionZIP, false},
 	}
 
 	for _, ct := range compressionTypes {
@@ -1119,6 +1146,16 @@ func TestDeepTiledWithCompression(t *testing.T) {
 
 			numTilesX := (width + tileSize - 1) / tileSize
 			numTilesY := (height + tileSize - 1) / tileSize
+
+			if !ct.permitted {
+				if err := writer.WriteTile(0, 0); err != ErrDeepNotSupported {
+					t.Fatalf("WriteTile with %s = %v, want ErrDeepNotSupported", ct.name, err)
+				}
+				if n := len(w.Bytes()); n != 0 {
+					t.Errorf("a refused codec still wrote %d bytes", n)
+				}
+				return
+			}
 
 			for ty := 0; ty < numTilesY; ty++ {
 				for tx := 0; tx < numTilesX; tx++ {
@@ -1835,9 +1872,16 @@ func TestTiledWriterWithMipmap(t *testing.T) {
 	}
 }
 
+// TestDeepScanlineWithPIZCompression asserts that PIZ is refused for deep
+// scanline data, and that the same image written with a permitted codec is
+// still readable.
+//
+// PIZ used to be accepted here: the header said PIZ while compressData quietly
+// fell through to ZIP, and the resulting file was rejected by the reference
+// implementation on open with EXR_ERR_INVALID_ATTR "Invalid compression for
+// deep data". A deep chunk is one scanline of variable-length sample data and
+// PIZ has nothing to operate on.
 func TestDeepScanlineWithPIZCompression(t *testing.T) {
-	// Test PIZ compression writing path for deep scanline data
-	// Note: PIZ for deep images has limited support, so we test the code paths
 	width := 16
 	height := 8
 
@@ -1872,34 +1916,47 @@ func TestDeepScanlineWithPIZCompression(t *testing.T) {
 	writer.SetFrameBuffer(fb)
 	writer.Header().SetCompression(CompressionPIZ)
 
-	if err := writer.WritePixels(height); err != nil {
+	if err := writer.WritePixels(height); err != ErrDeepNotSupported {
+		t.Fatalf("WritePixels with PIZ = %v, want ErrDeepNotSupported", err)
+	}
+	if n := len(w.Bytes()); n != 0 {
+		t.Errorf("a refused codec still wrote %d bytes", n)
+	}
+
+	// The same half-channel image with a permitted codec still writes and
+	// reads, so refusing PIZ costs no coverage of the write path.
+	var buf2 bytes.Buffer
+	w2 := &seekableBuffer{Buffer: buf2}
+	writer2, err := NewDeepScanlineWriter(w2, width, height)
+	if err != nil {
+		t.Fatalf("NewDeepScanlineWriter error: %v", err)
+	}
+	writer2.SetFrameBuffer(fb)
+	writer2.Header().SetCompression(CompressionZIPS)
+	if err := writer2.WritePixels(height); err != nil {
 		t.Fatalf("WritePixels error: %v", err)
 	}
-	writer.Finalize()
+	if err := writer2.Finalize(); err != nil {
+		t.Fatalf("Finalize error: %v", err)
+	}
 
-	// Verify file was created
-	data := w.Bytes()
+	data := w2.Bytes()
 	if len(data) < 100 {
 		t.Errorf("Output too small: %d bytes", len(data))
 	}
-
-	// Verify we can open the file and it has PIZ compression
 	reader := bytes.NewReader(data)
 	f, err := OpenReader(reader, int64(len(data)))
 	if err != nil {
 		t.Fatalf("OpenReader error: %v", err)
 	}
-
-	if f.Header(0).Compression() != CompressionPIZ {
-		t.Errorf("Compression mismatch: got %v, want PIZ", f.Header(0).Compression())
+	if f.Header(0).Compression() != CompressionZIPS {
+		t.Errorf("Compression mismatch: got %v, want ZIPS", f.Header(0).Compression())
 	}
-
-	t.Log("Deep scanline PIZ compression write test completed")
 }
 
+// TestDeepTiledWithPIZCompression asserts that PIZ is refused for deep tiled
+// data too; see TestDeepScanlineWithPIZCompression.
 func TestDeepTiledWithPIZCompression(t *testing.T) {
-	// Test PIZ compression writing path for deep tiled data
-	// Note: PIZ for deep images has limited support, so we test the code paths
 	width := 32
 	height := 32
 	tileSize := 16
@@ -1936,28 +1993,42 @@ func TestDeepTiledWithPIZCompression(t *testing.T) {
 	numTilesX := (width + tileSize - 1) / tileSize
 	numTilesY := (height + tileSize - 1) / tileSize
 
+	if err := writer.WriteTile(0, 0); err != ErrDeepNotSupported {
+		t.Fatalf("WriteTile with PIZ = %v, want ErrDeepNotSupported", err)
+	}
+	if n := len(w.Bytes()); n != 0 {
+		t.Errorf("a refused codec still wrote %d bytes", n)
+	}
+
+	// The same image with a permitted codec still writes and reads.
+	var buf2 bytes.Buffer
+	w2 := &seekableBuffer{Buffer: buf2}
+	writer2, err := NewDeepTiledWriter(w2, width, height, uint32(tileSize), uint32(tileSize))
+	if err != nil {
+		t.Fatalf("NewDeepTiledWriter error: %v", err)
+	}
+	writer2.SetFrameBuffer(fb)
+	writer2.Header().SetCompression(CompressionZIPS)
 	for ty := 0; ty < numTilesY; ty++ {
 		for tx := 0; tx < numTilesX; tx++ {
-			if err := writer.WriteTile(tx, ty); err != nil {
+			if err := writer2.WriteTile(tx, ty); err != nil {
 				t.Fatalf("WriteTile(%d,%d) error: %v", tx, ty, err)
 			}
 		}
 	}
-	writer.Finalize()
+	if err := writer2.Finalize(); err != nil {
+		t.Fatalf("Finalize error: %v", err)
+	}
 
-	// Verify file was created with PIZ compression
-	data := w.Bytes()
+	data := w2.Bytes()
 	reader := bytes.NewReader(data)
 	f, err := OpenReader(reader, int64(len(data)))
 	if err != nil {
 		t.Fatalf("OpenReader error: %v", err)
 	}
-
-	if f.Header(0).Compression() != CompressionPIZ {
-		t.Errorf("Compression mismatch: got %v, want PIZ", f.Header(0).Compression())
+	if f.Header(0).Compression() != CompressionZIPS {
+		t.Errorf("Compression mismatch: got %v, want ZIPS", f.Header(0).Compression())
 	}
-
-	t.Log("Deep tiled PIZ compression write test completed")
 }
 
 func TestDeepEmptyData(t *testing.T) {
@@ -3257,6 +3328,28 @@ func TestDeepScanlineRoundTripZIP(t *testing.T) {
 		t.Fatalf("NewDeepScanlineWriter error: %v", err)
 	}
 	writer.Header().SetCompression(CompressionZIP)
+	writer.SetFrameBuffer(fb)
+
+	// ZIP compresses sixteen scanlines as one block; a deep chunk is a single
+	// scanline of variable-length sample data, and the reference
+	// implementation rejects a deep file that claims ZIP with
+	// EXR_ERR_INVALID_ATTR "Invalid compression for deep data". So the writer
+	// refuses it, and the round trip below runs on ZIPS, which is what ZIP
+	// meant here.
+	if err := writer.WritePixels(height); err != ErrDeepNotSupported {
+		t.Fatalf("WritePixels with ZIP = %v, want ErrDeepNotSupported", err)
+	}
+	if n := len(ws.Bytes()); n != 0 {
+		t.Errorf("a refused codec still wrote %d bytes", n)
+	}
+
+	buf = bytes.Buffer{}
+	ws = &seekableBuffer{Buffer: buf}
+	writer, err = NewDeepScanlineWriter(ws, width, height)
+	if err != nil {
+		t.Fatalf("NewDeepScanlineWriter error: %v", err)
+	}
+	writer.Header().SetCompression(CompressionZIPS)
 	writer.SetFrameBuffer(fb)
 
 	err = writer.WritePixels(height)

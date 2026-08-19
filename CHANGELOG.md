@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Tiled and multi-part images are now gated by the reference implementation, in
-the write direction, level by level and part by part. Eight defects fell out of
-the first runs. Every one of them produced a file the reference refuses to open
-or reads wrongly, and every one was invisible to the existing suite, because a
-round trip reads a file back with the same assumption that wrote it.
+Tiled, multi-part and deep images are now gated by the reference implementation
+in the write direction, and deep images in both. Fifteen defects fell out of the
+first runs. Every one of them produced a file the reference refuses to open or
+reads wrongly, and every one was invisible to the existing suite, because a round
+trip reads a file back with the same assumption that wrote it.
 
 ### Fixed
 - **A tile's offset was recorded in the slot the write arrived in, not the slot
@@ -62,6 +62,41 @@ round trip reads a file back with the same assumption that wrote it.
   was a part that advertised a compression it had never had applied. The
   default now returns an error instead of silently storing raw.
 
+- **Every deep image this library wrote was unreadable outside it.** Deep
+  scanline and deep tiled writing had never been read by anything but this
+  library's own reader, which shared each of the defects below, so the round
+  trip was green and the files were not OpenEXR:
+
+  - the deep scanline chunk header was 20 bytes rather than 28 and the deep
+    tile chunk header 32 rather than 40, both omitting the trailing
+    `unpackedSizeOfSampleData`. Nothing else in a deep chunk says how many
+    samples it holds, so OpenEXR could not size its buffer and answered "Some
+    scanline chunks were missing or corrupted";
+  - a single-part deep tiled file set the tiled bit *and* the deep bit in the
+    version field. Those two are mutually exclusive — what makes such a file
+    tiled is its `deeptile` type attribute — so the reference refused every
+    deep tiled file at the header with "Invalid combination of version flags";
+  - the sample data was stored pixel-major (all channels of pixel 0, then all
+    channels of pixel 1). The format stores it one scanline at a time and,
+    within a scanline, one channel at a time, every sample of every pixel for
+    that channel before the next channel begins. Files read as scrambled;
+  - the pixel offset table accumulated across the whole chunk or tile. The
+    counts are cumulative along each scanline and restart on the next one;
+  - a deep tile that hangs off the right or bottom edge of the data window is
+    stored clipped, and the reader assumed a full tile;
+  - a block that compression does not make smaller is stored raw, which is how
+    the format distinguishes the two — there is no flag. The readers always
+    tried to decompress, so every deep file the reference wrote came back as
+    "corrupted ZIP data", and the writers always compressed.
+
+- **Deep files could be written with ZIP and PIZ.** Only NONE, RLE and ZIPS are
+  permitted for deep data; the reference rejects anything else on open with
+  EXR_ERR_INVALID_ATTR "Invalid compression for deep data" (measured for ZIP,
+  PIZ, B44 and both HTJ2K variants). `IsDeepCompressionSupported` said ZIP and
+  PIZ were fine, and the PIZ path silently ZIP-compressed the data while the
+  header claimed PIZ. Both deep writers now return `ErrDeepNotSupported`
+  instead of producing a file no other reader will open.
+
 ### Added
 - `scripts/tiledgen` writes 24 tiled fixtures — one level, mipmap and ripmap;
   tile sizes that divide the image, that leave partial tiles on both edges, and
@@ -100,6 +135,20 @@ round trip reads a file back with the same assumption that wrote it.
   library.
 - Every part of a multi-part file now declares its own `chunkCount`, which the
   format requires and the reference implementation always writes.
+- `scripts/validate.sh` gates deep images against the reference implementation,
+  in both directions: `scripts/deepgen` writes deep scanline and deep tiled
+  fixtures with 0 to 4 samples per pixel (including an entirely empty scanline
+  and an entirely empty tile) for each permitted codec, and `oiiotool
+  --dumpdata` is asked to read back every sample of every pixel, compared by
+  `scripts/deepdiff.awk`; and this library is asked to read deep images the
+  reference itself wrote, compared against the reference's own reading of them.
+  A control confirms `oiiotool` round-trips its own deep output first, so a
+  broken oracle stays distinguishable from a defect. 28 checks, taking the gate
+  from 44 to 72.
+- `exr/deep_wireformat_test.go` asserts the deep chunk layout byte for byte —
+  header sizes and fields, the per-scanline sample count table, channel-major
+  sample order, edge-tile clipping and the version flags — so the format is
+  held even where `oiiotool` is not installed.
 
 ## [1.4.2] - 2026-08-19
 

@@ -39,6 +39,64 @@ Measured gaps, recorded rather than omitted:
   `WriteMipmapTiledImage` and `WriteRipmapTiledImage`.
 - Deep tiled files are not covered here; `DeepTiledWriter` remains ungated.
 
+## Deep images: the same class of defect, found the same way
+
+### Date: August 19, 2026
+
+`DeepScanlineWriter` and `DeepTiledWriter` had never been read by anything but
+this library. Asking OpenImageIO's `oiiotool` to read one found that **not a
+single deep file this library wrote was readable by the reference
+implementation**, and not a single deep file the reference wrote was readable by
+this library — while `go test ./...` was green, because the writers and the
+readers shared every defect.
+
+Gated first, in `scripts/validate.sh` (28 new checks, 44 -> 72), then fixed:
+
+- [x] Deep scanline chunk header 20 bytes instead of 28; deep tile chunk header
+      32 instead of 40. Both omitted the trailing `unpackedSizeOfSampleData`,
+      without which a reader cannot size its buffer — "Some scanline chunks
+      were missing or corrupted".
+- [x] Single-part deep tiled files set the tiled bit as well as the deep bit in
+      the version field. They are mutually exclusive; the `deeptile` type
+      attribute is what marks the file tiled. "Invalid combination of version
+      flags".
+- [x] Sample data written pixel-major rather than one scanline at a time,
+      channel by channel within the scanline.
+- [x] Pixel offset table accumulated across the whole chunk or tile rather than
+      restarting on each scanline.
+- [x] Deep tiles at the right and bottom edge are stored clipped to the data
+      window; the reader assumed a full tile.
+- [x] The "store the block raw when compressing does not shrink it" rule — the
+      one fixed for scanline, tiled and multi-part in v1.4.0 — was never applied
+      to the deep paths, in either direction. It is not an optimisation: it is
+      how the format says which of the two a block is.
+- [x] ZIP and PIZ were offered for deep data. Only NONE, RLE and ZIPS are
+      valid; the reference refuses the rest on open (measured for ZIP, PIZ, B44
+      and both HTJ2K variants), and the PIZ path was ZIP-compressing while the
+      header claimed PIZ. Both writers now return `ErrDeepNotSupported`.
+
+Gated: sample counts (0 to 4 per pixel, including an entirely empty scanline
+and an entirely empty tile), every sample value of every channel, channel
+structure and tile size, for deep scanline and deep tiled across NONE, RLE and
+ZIPS, plus the read direction against deep files the reference itself wrote,
+behind a control that confirms `oiiotool` round-trips its own deep output.
+
+Multi-part deep reading is gated too, for part 0 and part 1 of a multi-part
+deep scanline and a multi-part deep tiled file the reference wrote — the two
+parts carry different sample counts, so a reader that quietly returns part 0
+for every part fails. `MultiPartInputFile.DeepScanlineReader` used to refuse
+any part but 0; `NewDeepScanlineReaderPart` is new, and the reader now uses the
+part's own header and chunk offsets.
+
+Not gated, and still unverified:
+
+- deep mipmap/ripmap levels. `DeepTiledWriter` writes a single level, and
+  `DeepTiledReader.tileExtent` does not fold the level size into its clipping,
+  so `ReadTileLevel` with a level other than 0 is unmeasured. `oiiotool` will
+  not produce a deep mipmapped fixture to gate it against.
+- *writing* multi-part deep files. The deep writers here are single-part; what
+  `cmd/exrmultipart` assembles from them is outside this gate.
+
 ## Codec Interoperability: issue #4 and the defects it uncovered
 
 ### Date: August 17, 2026

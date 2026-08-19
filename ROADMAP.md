@@ -165,14 +165,31 @@ and half test files are where they concentrate.
 Done when every mutation in `scripts/mutation/mutations.json` is killed, and the
 manifest has grown to cover each codec's core invariants.
 
-### Deep coverage against the reference
+### Deep coverage — done in both directions, with three named gaps
 
-Deep scanline and deep tiled images are implemented but have never been read by
-the reference implementation. The write side is unverified in exactly the way
-the scanline codecs were before v1.4.0.
+Deep is now gated both ways: `scripts/deepgen` writes deep scanline and deep
+tiled fixtures with 0 to 4 samples per pixel, including an entirely empty
+scanline and an entirely empty tile, and `oiiotool --dumpdata` reads back every
+sample of every pixel; and this library reads deep files the reference itself
+wrote. It found seven defects, which together meant the reference rejected every
+deep file this library produced and this library rejected every deep file the
+reference produced — while `go test ./...` was green, because writer and reader
+shared every one of them.
 
-Done when the gate covers deep writes the way it covers the 36 pixel-type by
-compression combinations.
+What remains open:
+
+- **Deep mipmap and ripmap levels.** `DeepTiledWriter` writes `LevelModeOne`
+  only, and `DeepTiledReader.tileExtent` does not fold the level size into its
+  clipping, so `ReadTileLevel` above level 0 is unmeasured. `oiiotool` 3.1.16
+  could not be made to produce a deep mipmapped fixture to gate it against.
+  Note that `DeepTiledWriter` *does* index its offset table by tile coordinate
+  (`tileY*tilesX + tileX`), so it never had the write-order defect the shallow
+  tiled writer did — its limit is levels, not ordering.
+- **Writing deep parts into a multi-part file**, which the section below covers
+  from the other side. Reading them is gated, scanline and tiled.
+- **Deep sample semantics** — Z-sorted and non-overlapping ordering,
+  `deepImageState`, alpha premultiplication. Nothing here asserts more than that
+  samples come back in the order they were written.
 
 ### The multi-part cases the gate still does not reach
 

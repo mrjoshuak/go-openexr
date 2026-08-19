@@ -207,6 +207,19 @@ OpenJPH would accept: v1.3.0 ignored `HighThroughput` in `EncodeHalf`/
 and gates them for every other version. If a waived row passes anyway, the
 script says so, so the waiver cannot outlive the defect it was granted for.
 
+**Deep images.** Deep data may use None, RLE or ZIPS only — a deep chunk holds
+one scanline of variable-length sample data, so the codecs that compress a fixed
+block of several scanlines have nothing to work on, and the reference rejects
+such a file when it opens it. `IsDeepCompressionSupported` reports this and both
+deep writers refuse anything else. All three permitted codecs are gated for deep
+scanline and deep tiled in both directions, sample by sample: `scripts/deepgen`
+writes fixtures with 0 to 4 samples per pixel — including an entirely empty
+scanline and an entirely empty tile, since a fixture with a constant sample
+count is read correctly by a writer that assumes one — and `oiiotool --dumpdata`
+reports every pixel's sample count and every sample's value for comparison.
+Multi-part deep files the reference wrote are read back the same way, part by
+part. Deep mipmap levels are not covered: `oiiotool` will not write that fixture.
+
 **Subsampled channels.** Channels with `ySampling > 1` are refused by the B44
 and DWA paths rather than silently misread. The chunk layout code assumes one
 row per channel per scanline, so the other codecs do not handle them correctly
@@ -241,13 +254,14 @@ by mutating the code under them. Coverage counted every one of those as covered.
 
 What the guarantees actually rest on:
 
-1. `scripts/validate.sh` — CHECKS checks against the OpenEXR reference
-   implementation, both directions, failing the build on any regression. That
-   covers the pixel-type by compression matrix, tiled writing (plain, mipmapped
-   and ripmapped fixtures read back level by level by a program linked against
-   libOpenEXR itself), and multi-part files read back part by part, level by
-   level and channel by channel — each with a control and a signal check that
-   must fail.
+1. `scripts/validate.sh` — 157 checks against the OpenEXR reference
+   implementation, both directions, failing the build on any regression. It
+   covers the pixel-type by compression matrix; tiled writing, with plain,
+   mipmapped and ripmapped fixtures read back level by level by a program
+   linked against libOpenEXR itself; multi-part files read back part by part,
+   level by level and channel by channel; and deep images sample by sample, in
+   both directions. Each area runs a control and a signal check that must fail,
+   so a broken oracle stays distinguishable from a defect.
 2. `scripts/mutation/run.py` — deliberately breaks a codec and records whether
    the tests notice. Currently 11 of 20 mutations survive the pre-existing
    tests; all 15 covered by the added spec-anchored tests are killed.

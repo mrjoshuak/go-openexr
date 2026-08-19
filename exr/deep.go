@@ -235,17 +235,25 @@ func (dfb *DeepFrameBuffer) UnpackSampleCountTable(table []byte) error {
 // DeepScanlineReader reads deep scanline images.
 type DeepScanlineReader struct {
 	file     *File
+	part     int
 	header   *Header
 	channels *ChannelList
 	fb       *DeepFrameBuffer
 }
 
-// NewDeepScanlineReader creates a reader for deep scanline data.
+// NewDeepScanlineReader creates a reader for deep scanline data in part 0.
 func NewDeepScanlineReader(f *File) (*DeepScanlineReader, error) {
+	return NewDeepScanlineReaderPart(f, 0)
+}
+
+// NewDeepScanlineReaderPart creates a reader for the deep scanline data in the
+// given part of a multi-part file. Part 0 of a single-part file is what
+// NewDeepScanlineReader reads.
+func NewDeepScanlineReaderPart(f *File, part int) (*DeepScanlineReader, error) {
 	if !f.IsDeep() {
 		return nil, ErrDeepNotSupported
 	}
-	header := f.Header(0)
+	header := f.Header(part)
 	if header == nil {
 		return nil, ErrInvalidHeader
 	}
@@ -257,6 +265,7 @@ func NewDeepScanlineReader(f *File) (*DeepScanlineReader, error) {
 
 	return &DeepScanlineReader{
 		file:     f,
+		part:     part,
 		header:   header,
 		channels: cl,
 	}, nil
@@ -279,7 +288,7 @@ func (r *DeepScanlineReader) ReadPixelSampleCounts(y1, y2 int) error {
 	yMax := int(dw.Max.Y)
 
 	linesPerBlock := r.header.Compression().ScanlinesPerChunk()
-	offsets := r.file.OffsetsRef(0)
+	offsets := r.file.OffsetsRef(r.part)
 	comp := r.header.Compression()
 
 	// Track which chunks we've already processed
@@ -300,7 +309,7 @@ func (r *DeepScanlineReader) ReadPixelSampleCounts(y1, y2 int) error {
 		processedChunks[chunkIndex] = true
 
 		// Read compressed chunk data
-		chunkY, compressedSampleCounts, _, err := r.file.ReadDeepChunk(0, chunkIndex)
+		chunkY, compressedSampleCounts, _, err := r.file.ReadDeepChunk(r.part, chunkIndex)
 		if err != nil {
 			return err
 		}
@@ -323,20 +332,15 @@ func (r *DeepScanlineReader) ReadPixelSampleCounts(y1, y2 int) error {
 			return err
 		}
 
-		// Unpack sample counts for lines in this chunk
-		prevCumulative := uint32(0)
+		// Unpack sample counts for lines in this chunk. The table is
+		// cumulative along each scanline and restarts on the next one, so the
+		// running total resets per line rather than carrying across the chunk.
 		for ly := 0; ly < linesInChunk; ly++ {
 			absY := int(chunkY) + ly
 			if absY < y1 || absY > y2 {
-				// Still need to track cumulative count
-				for x := 0; x < width; x++ {
-					tableOffset := (ly*width + x) * 4
-					if tableOffset+4 <= len(sampleCounts) {
-						prevCumulative = binary.LittleEndian.Uint32(sampleCounts[tableOffset:])
-					}
-				}
 				continue
 			}
+			prevCumulative := uint32(0)
 
 			for x := 0; x < width; x++ {
 				tableOffset := (ly*width + x) * 4
@@ -367,7 +371,7 @@ func (r *DeepScanlineReader) ReadPixels(y1, y2 int) error {
 	yMax := int(dw.Max.Y)
 
 	linesPerBlock := r.header.Compression().ScanlinesPerChunk()
-	offsets := r.file.OffsetsRef(0)
+	offsets := r.file.OffsetsRef(r.part)
 	comp := r.header.Compression()
 
 	// Allocate sample storage based on sample counts
@@ -389,7 +393,7 @@ func (r *DeepScanlineReader) ReadPixels(y1, y2 int) error {
 		}
 
 		// Read chunk
-		chunkY, sampleCountData, pixelData, err := r.file.ReadDeepChunk(0, chunkIndex)
+		chunkY, sampleCountData, pixelData, err := r.file.ReadDeepChunk(r.part, chunkIndex)
 		if err != nil {
 			return err
 		}
@@ -412,12 +416,14 @@ func (r *DeepScanlineReader) ReadPixels(y1, y2 int) error {
 			return err
 		}
 
-		// Calculate total samples in chunk from cumulative counts
+		// Calculate total samples in chunk from the cumulative counts. Each
+		// scanline's counts restart at zero, so the chunk total is the sum of
+		// the last entry of every scanline, not the last entry of the table.
 		var totalSamples uint64
-		if len(sampleCounts) >= 4 {
-			lastIdx := (numPixelsInChunk - 1) * 4
-			if lastIdx+4 <= len(sampleCounts) {
-				totalSamples = uint64(binary.LittleEndian.Uint32(sampleCounts[lastIdx:]))
+		for ly := 0; ly < linesInChunk; ly++ {
+			lastIdx := (ly*width + width - 1) * 4
+			if lastIdx >= 0 && lastIdx+4 <= len(sampleCounts) {
+				totalSamples += uint64(binary.LittleEndian.Uint32(sampleCounts[lastIdx:]))
 			}
 		}
 
@@ -465,36 +471,7 @@ func (r *DeepScanlineReader) decompressSampleCountTable(data []byte, expectedSiz
 	if len(data) == 0 {
 		return make([]byte, expectedSize), nil
 	}
-
-	switch comp {
-	case CompressionNone:
-		return data, nil
-	case CompressionRLE:
-		decompressed, err := compression.RLEDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionZIPS, CompressionZIP:
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	default:
-		// For unsupported compression, try zlib as fallback
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return data, nil // Return as-is
-		}
-		return decompressed, nil
-	}
+	return decompressDeepBlock(data, expectedSize, comp)
 }
 
 // decompressPixelData decompresses the pixel data
@@ -502,37 +479,7 @@ func (r *DeepScanlineReader) decompressPixelData(data []byte, expectedSize int, 
 	if len(data) == 0 || expectedSize == 0 {
 		return nil, nil
 	}
-
-	switch comp {
-	case CompressionNone:
-		return data, nil
-	case CompressionRLE:
-		decompressed, err := compression.RLEDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionZIPS, CompressionZIP:
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionPIZ:
-		// PIZ for deep data - decompress and convert
-		width := int(r.header.DataWindow().Width())
-		numChannels := r.channels.Len()
-		numSamples := expectedSize / 2 // Approximate for 16-bit data
-		return compression.PIZDecompressBytes(data, width, numSamples/width/numChannels+1, numChannels)
-	default:
-		return data, nil
-	}
+	return decompressDeepBlock(data, expectedSize, comp)
 }
 
 // parseDeepPixelData parses decompressed pixel data into the frame buffer
@@ -544,30 +491,29 @@ func (r *DeepScanlineReader) parseDeepPixelData(data, sampleCounts []byte, chann
 	}
 
 	reader := xdr.NewReader(data)
-	prevCumulative := uint32(0)
 
+	// The sample data is stored one scanline at a time and, within a
+	// scanline, one channel at a time: every sample of every pixel of that
+	// scanline for one channel, then the next channel. The counts in the
+	// table are cumulative along the scanline and restart on the next one.
 	for ly := 0; ly < linesInChunk; ly++ {
 		absY := chunkY + ly
 		inRange := absY >= y1 && absY <= y2
 		fbY := absY - yMin
 
-		for x := 0; x < width; x++ {
-			// Get sample count for this pixel
-			tableOffset := (ly*width + x) * 4
-			var sampleCount uint32
-			if tableOffset+4 <= len(sampleCounts) {
-				cumulative := binary.LittleEndian.Uint32(sampleCounts[tableOffset:])
-				sampleCount = cumulative - prevCumulative
-				prevCumulative = cumulative
-			}
+		for _, ch := range channels {
+			slice := r.fb.Slices[ch.Name]
+			prevCumulative := uint32(0)
 
-			if sampleCount == 0 {
-				continue
-			}
-
-			// Read samples for each channel
-			for _, ch := range channels {
-				slice := r.fb.Slices[ch.Name]
+			for x := 0; x < width; x++ {
+				// Get sample count for this pixel
+				tableOffset := (ly*width + x) * 4
+				var sampleCount uint32
+				if tableOffset+4 <= len(sampleCounts) {
+					cumulative := binary.LittleEndian.Uint32(sampleCounts[tableOffset:])
+					sampleCount = cumulative - prevCumulative
+					prevCumulative = cumulative
+				}
 
 				for s := uint32(0); s < sampleCount; s++ {
 					switch ch.Type {
@@ -660,6 +606,13 @@ func (dsw *DeepScanlineWriter) SetFrameBuffer(fb *DeepFrameBuffer) {
 func (dsw *DeepScanlineWriter) initialize() error {
 	if dsw.initialized {
 		return nil
+	}
+
+	// A deep file compressed with anything but NONE, RLE or ZIPS is rejected
+	// by the reference implementation before a single pixel is read, so refuse
+	// to produce one rather than write a file no other reader will open.
+	if !IsDeepCompressionSupported(dsw.header.Compression()) {
+		return ErrDeepNotSupported
 	}
 
 	// Update data window from frame buffer
@@ -770,20 +723,34 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 	yMin := int(dsw.dataWindow.Min.Y)
 	numPixels := width * linesInChunk
 
-	// Build sample count table (cumulative)
+	// Build the pixel offset (sample count) table. The counts are cumulative
+	// along each scanline and start again at zero on the next one: the table
+	// entry for pixel (x, y) is the number of samples in scanline y up to and
+	// including x. A deep chunk holds exactly one scanline, so this is also
+	// the number of samples in the chunk, but the reset is what the format
+	// defines and is visible in every deep tile the reference writes.
 	sampleCountTable := make([]byte, numPixels*4)
-	cumulative := uint32(0)
+	totalSamples := uint32(0)
 	for ly := 0; ly < linesInChunk; ly++ {
 		fbY := chunkY + ly - yMin
+		cumulative := uint32(0)
 		for x := 0; x < width; x++ {
 			cumulative += dsw.fb.GetSampleCount(x, fbY)
 			offset := (ly*width + x) * 4
 			binary.LittleEndian.PutUint32(sampleCountTable[offset:], cumulative)
 		}
+		totalSamples += cumulative
 	}
-	totalSamples := cumulative
 
-	// Build pixel data
+	// Build the sample data. It is laid out exactly as flat scanline data is:
+	// one scanline at a time, and within a scanline one channel at a time, in
+	// the channel list's alphabetical order, each channel holding every sample
+	// of every pixel of that scanline before the next channel begins.
+	//
+	// Writing it pixel-major instead (all channels of pixel 0, then all
+	// channels of pixel 1) round-trips through this library's own reader and
+	// is read as scrambled data by everything else, which is what the deep
+	// writers did until the reference was asked.
 	bytesPerSample := 0
 	for _, ch := range channels {
 		bytesPerSample += ch.Type.Size()
@@ -791,43 +758,32 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 	pixelDataSize := int(totalSamples) * bytesPerSample
 
 	writer := xdr.NewBufferWriter(pixelDataSize)
-	prevCumulative := uint32(0)
 
 	for ly := 0; ly < linesInChunk; ly++ {
 		fbY := chunkY + ly - yMin
-		for x := 0; x < width; x++ {
-			tableOffset := (ly*width + x) * 4
-			cumulative := binary.LittleEndian.Uint32(sampleCountTable[tableOffset:])
-			sampleCount := cumulative - prevCumulative
-			prevCumulative = cumulative
-
-			for _, ch := range channels {
-				slice := dsw.fb.Slices[ch.Name]
-				if slice == nil {
-					// Write zeros for missing channels
-					for s := uint32(0); s < sampleCount; s++ {
-						switch ch.Type {
-						case PixelTypeHalf:
-							writer.WriteUint16(0)
-						case PixelTypeFloat:
-							writer.WriteFloat32(0)
-						case PixelTypeUint:
-							writer.WriteUint32(0)
-						}
-					}
-					continue
-				}
-
+		for _, ch := range channels {
+			slice := dsw.fb.Slices[ch.Name]
+			for x := 0; x < width; x++ {
+				sampleCount := dsw.fb.GetSampleCount(x, fbY)
 				for s := uint32(0); s < sampleCount; s++ {
 					switch ch.Type {
 					case PixelTypeHalf:
-						val := slice.GetSampleHalf(x, fbY, int(s))
+						var val uint16
+						if slice != nil {
+							val = slice.GetSampleHalf(x, fbY, int(s))
+						}
 						writer.WriteUint16(val)
 					case PixelTypeFloat:
-						val := slice.GetSampleFloat32(x, fbY, int(s))
+						var val float32
+						if slice != nil {
+							val = slice.GetSampleFloat32(x, fbY, int(s))
+						}
 						writer.WriteFloat32(val)
 					case PixelTypeUint:
-						val := slice.GetSampleUint(x, fbY, int(s))
+						var val uint32
+						if slice != nil {
+							val = slice.GetSampleUint(x, fbY, int(s))
+						}
 						writer.WriteUint32(val)
 					}
 				}
@@ -841,17 +797,28 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 		return err
 	}
 
-	compressedPixelData, err := dsw.compressData(writer.Bytes(), comp)
+	uncompressedPixelData := writer.Bytes()
+	compressedPixelData, err := dsw.compressData(uncompressedPixelData, comp)
 	if err != nil {
 		return err
 	}
 
-	// Write chunk header
-	// For deep data: y (4 bytes) + packed sample count size (8 bytes) + packed pixel data size (8 bytes)
-	chunkHeader := make([]byte, 20)
+	// Write chunk header. A deep scanline chunk carries four fields, not
+	// three: the reference implementation needs the unpacked size of the
+	// sample data to size its decompression buffer, because the packed size
+	// says nothing about how many samples the chunk holds. Writing only the
+	// first three produced files this library read back perfectly and OpenEXR
+	// rejected with "Some scanline chunks were missing or corrupted".
+	//
+	//   int    y coordinate
+	//   uint64 packed size of the pixel offset (sample count) table
+	//   uint64 packed size of the sample data
+	//   uint64 unpacked size of the sample data
+	chunkHeader := make([]byte, deepScanlineChunkHeaderSize)
 	xdr.ByteOrder.PutUint32(chunkHeader[0:4], uint32(chunkY))
 	xdr.ByteOrder.PutUint64(chunkHeader[4:12], uint64(len(compressedSampleCount)))
 	xdr.ByteOrder.PutUint64(chunkHeader[12:20], uint64(len(compressedPixelData)))
+	xdr.ByteOrder.PutUint64(chunkHeader[20:28], uint64(len(uncompressedPixelData)))
 
 	if _, err := dsw.w.Write(chunkHeader); err != nil {
 		return err
@@ -873,10 +840,25 @@ func (dsw *DeepScanlineWriter) writeChunk(chunkY, linesInChunk, width int, chann
 // compressData compresses data based on compression type.
 // Uses the compression level from the header for deterministic round-trip.
 func (dsw *DeepScanlineWriter) compressData(data []byte, comp Compression) ([]byte, error) {
+	return compressDeepBlock(data, comp, dsw.header.ZIPLevel())
+}
+
+// compressDeepBlock compresses one block of a deep chunk — either the pixel
+// offset table or the sample data.
+//
+// If compressing does not make the block smaller the block is stored as it is.
+// That is not an optimisation: it is how the format signals which of the two a
+// block is. Nothing in the chunk says "this block is compressed"; a reader
+// compares the packed size against the unpacked size and treats a block that
+// did not shrink as raw bytes. Small deep chunks reach this constantly — a
+// four-pixel sample count table is 16 bytes and zlib makes it bigger — and the
+// reference implementation's own files are full of raw blocks.
+func compressDeepBlock(data []byte, comp Compression, zipLevel compression.CompressionLevel) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
+	var out []byte
 	switch comp {
 	case CompressionNone:
 		return data, nil
@@ -884,19 +866,53 @@ func (dsw *DeepScanlineWriter) compressData(data []byte, comp Compression) ([]by
 		// Reorder bytes, apply the predictor, then RLE compress
 		scratch := make([]byte, len(data))
 		predictor.DeconstructBytes(scratch, data)
-		return compression.RLECompress(scratch), nil
-	case CompressionZIPS, CompressionZIP:
-		// Reorder bytes, apply the predictor, then zlib compress
-		scratch := make([]byte, len(data))
-		predictor.DeconstructBytes(scratch, data)
-		level := dsw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(scratch, level)
+		out = compression.RLECompress(scratch)
 	default:
-		// Fallback to ZIP
+		// ZIPS, and anything else that reaches here: reorder bytes, apply the
+		// predictor, then zlib compress.
 		scratch := make([]byte, len(data))
 		predictor.DeconstructBytes(scratch, data)
-		level := dsw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(scratch, level)
+		var err error
+		out, err = compression.ZIPCompressLevel(scratch, zipLevel)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if len(out) >= len(data) {
+		return data, nil
+	}
+	return out, nil
+}
+
+// decompressDeepBlock reverses compressDeepBlock. A block whose packed size is
+// not smaller than its unpacked size was stored raw; see compressDeepBlock.
+func decompressDeepBlock(data []byte, expectedSize int, comp Compression) ([]byte, error) {
+	if expectedSize > 0 && len(data) >= expectedSize {
+		return data[:expectedSize], nil
+	}
+
+	switch comp {
+	case CompressionNone:
+		return data, nil
+	case CompressionRLE:
+		decompressed, err := compression.RLEDecompress(data, expectedSize)
+		if err != nil {
+			return nil, err
+		}
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
+	default:
+		decompressed, err := compression.ZIPDecompress(data, expectedSize)
+		if err != nil {
+			return nil, err
+		}
+		// Reverse the predictor, then undo the byte reordering.
+		output := make([]byte, len(decompressed))
+		predictor.ReconstructBytes(output, decompressed)
+		return output, nil
 	}
 }
 
@@ -940,15 +956,24 @@ func (dsw *DeepScanlineWriter) Finalize() error {
 	return err
 }
 
-// IsDeepCompressionSupported returns true if the compression type supports deep data.
+// IsDeepCompressionSupported returns true if the compression type may be used
+// for deep data.
+//
+// Only NONE, RLE and ZIPS may. Every other codec compresses a fixed-size block
+// of several scanlines at once, and a deep chunk holds one scanline of
+// variable-length sample data, so there is nothing for them to operate on: a
+// deep chunk is always a single scanline. The reference implementation enforces
+// this when the file is opened, rejecting anything else with
+// EXR_ERR_INVALID_ATTR "Invalid compression for deep data" — measured here for
+// ZIP, PIZ, B44 and both HTJ2K variants, all of which this function used to
+// allow or the writers used to emit.
 func IsDeepCompressionSupported(c Compression) bool {
 	switch c {
-	case CompressionNone, CompressionRLE, CompressionZIPS, CompressionZIP, CompressionPIZ:
+	case CompressionNone, CompressionRLE, CompressionZIPS:
 		return true
-	case CompressionPXR24, CompressionB44, CompressionB44A, CompressionDWAA, CompressionDWAB:
-		// Lossy compression not supported for deep data
-		return false
 	default:
+		// ZIP, PIZ, PXR24, B44, B44A, DWAA, DWAB, HTJ2K and anything
+		// unrecognised: not permitted for deep data.
 		return false
 	}
 }
@@ -1103,11 +1128,8 @@ func (r *DeepTiledReader) ReadTileSampleCountsLevel(tileX, tileY, levelX, levelY
 		return err
 	}
 
-	// Calculate tile boundaries
-	tileW := int(r.tileDesc.XSize)
-	tileH := int(r.tileDesc.YSize)
-	tileStartX := tileX * tileW
-	tileStartY := tileY * tileH
+	// Calculate tile boundaries, clipped to the data window
+	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY)
 
 	// Decompress sample count table
 	numPixelsInTile := tileW * tileH
@@ -1118,13 +1140,14 @@ func (r *DeepTiledReader) ReadTileSampleCountsLevel(tileX, tileY, levelX, levelY
 		return err
 	}
 
-	// Unpack sample counts
-	prevCumulative := uint32(0)
+	// Unpack sample counts. The table is cumulative along each scanline of the
+	// tile and restarts on the next one.
 	for ly := 0; ly < tileH; ly++ {
 		y := tileStartY + ly
 		if y >= r.fb.Height {
 			continue
 		}
+		prevCumulative := uint32(0)
 		for lx := 0; lx < tileW; lx++ {
 			x := tileStartX + lx
 			if x >= r.fb.Width {
@@ -1140,6 +1163,37 @@ func (r *DeepTiledReader) ReadTileSampleCountsLevel(tileX, tileY, levelX, levelY
 	}
 
 	return nil
+}
+
+// tileExtent returns the origin and the size of a tile after clipping it to the
+// data window. A tile that hangs off the right or the bottom edge is stored
+// with only the pixels it has inside the window — a 4x4 tile over a 4x3 image
+// carries a twelve-entry sample count table, not sixteen — so the tile's stored
+// width is also the stride of its sample count table.
+//
+// Levels are not accounted for: this library writes deep tiled images with a
+// single level, and the level size would have to be folded in here for the
+// mipmapped case.
+func (r *DeepTiledReader) tileExtent(tileX, tileY int) (startX, startY, w, h int) {
+	tw := int(r.tileDesc.XSize)
+	th := int(r.tileDesc.YSize)
+	dw := r.header.DataWindow()
+	startX = tileX * tw
+	startY = tileY * th
+	w, h = tw, th
+	if startX+w > int(dw.Width()) {
+		w = int(dw.Width()) - startX
+	}
+	if startY+h > int(dw.Height()) {
+		h = int(dw.Height()) - startY
+	}
+	if w < 0 {
+		w = 0
+	}
+	if h < 0 {
+		h = 0
+	}
+	return startX, startY, w, h
 }
 
 // ReadTile reads a single deep tile at level 0.
@@ -1165,11 +1219,8 @@ func (r *DeepTiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error 
 		return err
 	}
 
-	// Calculate tile boundaries
-	tileW := int(r.tileDesc.XSize)
-	tileH := int(r.tileDesc.YSize)
-	tileStartX := tileX * tileW
-	tileStartY := tileY * tileH
+	// Calculate tile boundaries, clipped to the data window
+	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY)
 
 	comp := r.header.Compression()
 	sortedChannels := r.getSortedChannels()
@@ -1182,22 +1233,24 @@ func (r *DeepTiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error 
 		return err
 	}
 
-	// Calculate total samples from cumulative counts
+	// Calculate total samples from the cumulative counts. Each scanline of the
+	// tile restarts at zero, so the total is the sum of the last entry of each
+	// of the tile's scanlines.
 	var totalSamples uint64
-	if len(sampleCounts) >= 4 {
-		lastIdx := (numPixelsInTile - 1) * 4
-		if lastIdx+4 <= len(sampleCounts) {
-			totalSamples = uint64(binary.LittleEndian.Uint32(sampleCounts[lastIdx:]))
+	for ly := 0; ly < tileH; ly++ {
+		lastIdx := (ly*tileW + tileW - 1) * 4
+		if lastIdx >= 0 && lastIdx+4 <= len(sampleCounts) {
+			totalSamples += uint64(binary.LittleEndian.Uint32(sampleCounts[lastIdx:]))
 		}
 	}
 
 	// Allocate samples based on sample counts
-	prevCumulative := uint32(0)
 	for ly := 0; ly < tileH; ly++ {
 		y := tileStartY + ly
 		if y >= r.fb.Height {
 			continue
 		}
+		prevCumulative := uint32(0)
 		for lx := 0; lx < tileW; lx++ {
 			x := tileStartX + lx
 			if x >= r.fb.Width {
@@ -1227,36 +1280,35 @@ func (r *DeepTiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error 
 		return err
 	}
 
-	// Parse pixel data
+	// Parse pixel data. Within a tile it is stored one scanline at a time and,
+	// within a scanline, one channel at a time: every sample of every pixel of
+	// that scanline for one channel, then the next channel.
 	if len(decompressedPixelData) > 0 {
 		reader := xdr.NewReader(decompressedPixelData)
-		prevCumulative = 0
 
 		for ly := 0; ly < tileH; ly++ {
 			y := tileStartY + ly
 			if y >= r.fb.Height {
 				continue
 			}
-			for lx := 0; lx < tileW; lx++ {
-				x := tileStartX + lx
-				if x >= r.fb.Width {
-					continue
-				}
+			for _, ch := range sortedChannels {
+				slice := r.fb.Slices[ch.Name]
+				prevCumulative := uint32(0)
 
-				tableOffset := (ly*tileW + lx) * 4
-				var sampleCount uint32
-				if tableOffset+4 <= len(sampleCounts) {
-					cumulative := binary.LittleEndian.Uint32(sampleCounts[tableOffset:])
-					sampleCount = cumulative - prevCumulative
-					prevCumulative = cumulative
-				}
+				for lx := 0; lx < tileW; lx++ {
+					x := tileStartX + lx
+					if x >= r.fb.Width {
+						continue
+					}
 
-				if sampleCount == 0 {
-					continue
-				}
+					tableOffset := (ly*tileW + lx) * 4
+					var sampleCount uint32
+					if tableOffset+4 <= len(sampleCounts) {
+						cumulative := binary.LittleEndian.Uint32(sampleCounts[tableOffset:])
+						sampleCount = cumulative - prevCumulative
+						prevCumulative = cumulative
+					}
 
-				for _, ch := range sortedChannels {
-					slice := r.fb.Slices[ch.Name]
 					for s := uint32(0); s < sampleCount; s++ {
 						switch ch.Type {
 						case PixelTypeHalf:
@@ -1327,35 +1379,7 @@ func (r *DeepTiledReader) decompressSampleCountTable(data []byte, expectedSize i
 	if len(data) == 0 {
 		return make([]byte, expectedSize), nil
 	}
-
-	switch comp {
-	case CompressionNone:
-		return data, nil
-	case CompressionRLE:
-		decompressed, err := compression.RLEDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionZIPS, CompressionZIP:
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	default:
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return data, nil
-		}
-		return decompressed, nil
-	}
+	return decompressDeepBlock(data, expectedSize, comp)
 }
 
 // decompressPixelData decompresses the pixel data
@@ -1363,36 +1387,7 @@ func (r *DeepTiledReader) decompressPixelData(data []byte, expectedSize int, com
 	if len(data) == 0 || expectedSize == 0 {
 		return nil, nil
 	}
-
-	switch comp {
-	case CompressionNone:
-		return data, nil
-	case CompressionRLE:
-		decompressed, err := compression.RLEDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionZIPS, CompressionZIP:
-		decompressed, err := compression.ZIPDecompress(data, expectedSize)
-		if err != nil {
-			return nil, err
-		}
-		// Reverse the predictor, then undo the byte reordering.
-		output := make([]byte, len(decompressed))
-		predictor.ReconstructBytes(output, decompressed)
-		return output, nil
-	case CompressionPIZ:
-		width := int(r.tileDesc.XSize)
-		numChannels := r.channels.Len()
-		numSamples := expectedSize / 2
-		return compression.PIZDecompressBytes(data, width, numSamples/width/numChannels+1, numChannels)
-	default:
-		return data, nil
-	}
+	return decompressDeepBlock(data, expectedSize, comp)
 }
 
 // DeepTiledWriter writes deep tiled images.
@@ -1468,6 +1463,12 @@ func (dtw *DeepTiledWriter) initialize() error {
 		return nil
 	}
 
+	// See DeepScanlineWriter.initialize: the reference implementation refuses
+	// a deep file compressed with anything but NONE, RLE or ZIPS.
+	if !IsDeepCompressionSupported(dtw.header.Compression()) {
+		return ErrDeepNotSupported
+	}
+
 	if dtw.fb != nil {
 		dtw.dataWindow = Box2i{
 			Min: V2i{0, 0},
@@ -1482,8 +1483,14 @@ func (dtw *DeepTiledWriter) initialize() error {
 		return err
 	}
 
-	// Write version field with deep and tiled flags
-	versionField := MakeVersionField(2, true, false, true, false)
+	// Write the version field with the deep flag and *not* the tiled flag.
+	// The tiled flag and the non-image (deep) flag are mutually exclusive in
+	// the version field: a single-part deep tiled file is identified by its
+	// type attribute, "deeptiled", and OpenEXR rejects the combination with
+	// "Invalid combination of version flags: single part flag found, but also
+	// marked as deep". Setting both made every deep tiled file this library
+	// wrote unopenable by the reference implementation.
+	versionField := MakeVersionField(2, false, false, true, false)
 	versionBuf := make([]byte, 4)
 	xdr.ByteOrder.PutUint32(versionBuf, versionField)
 	if _, err := dtw.w.Write(versionBuf); err != nil {
@@ -1564,21 +1571,30 @@ func (dtw *DeepTiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) err
 	comp := dtw.header.Compression()
 	sortedChannels := dtw.getSortedChannels()
 
-	// Build sample count table (cumulative)
+	// Build the pixel offset (sample count) table. Inside a tile the counts
+	// are cumulative along each scanline of the tile and start again at zero
+	// on the tile's next scanline: a tile the reference wrote for a 4x3 image
+	// with two samples in every pixel of rows 1 and 2 has the table
+	// 1 3 5 7 | 2 4 6 8 | 2 4 6 8, not one running total.
 	sampleCountTable := make([]byte, numPixels*4)
-	cumulative := uint32(0)
+	totalSamples := uint32(0)
 	for ly := 0; ly < actualTileH; ly++ {
 		y := tileStartY + ly
+		cumulative := uint32(0)
 		for lx := 0; lx < actualTileW; lx++ {
 			x := tileStartX + lx
 			cumulative += dtw.fb.GetSampleCount(x, y)
 			offset := (ly*actualTileW + lx) * 4
 			binary.LittleEndian.PutUint32(sampleCountTable[offset:], cumulative)
 		}
+		totalSamples += cumulative
 	}
-	totalSamples := cumulative
 
-	// Build pixel data
+	// Build the sample data, one scanline of the tile at a time and, within a
+	// scanline, one channel at a time in the channel list's alphabetical
+	// order: every sample of every pixel of that scanline for one channel
+	// before the next channel begins. See writeChunk for what writing it
+	// pixel-major instead costs.
 	bytesPerSample := 0
 	for _, ch := range sortedChannels {
 		bytesPerSample += ch.Type.Size()
@@ -1586,42 +1602,32 @@ func (dtw *DeepTiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) err
 	pixelDataSize := int(totalSamples) * bytesPerSample
 	writer := xdr.NewBufferWriter(pixelDataSize)
 
-	prevCumulative := uint32(0)
 	for ly := 0; ly < actualTileH; ly++ {
 		y := tileStartY + ly
-		for lx := 0; lx < actualTileW; lx++ {
-			x := tileStartX + lx
-			tableOffset := (ly*actualTileW + lx) * 4
-			cumulative := binary.LittleEndian.Uint32(sampleCountTable[tableOffset:])
-			sampleCount := cumulative - prevCumulative
-			prevCumulative = cumulative
-
-			for _, ch := range sortedChannels {
-				slice := dtw.fb.Slices[ch.Name]
-				if slice == nil {
-					for s := uint32(0); s < sampleCount; s++ {
-						switch ch.Type {
-						case PixelTypeHalf:
-							writer.WriteUint16(0)
-						case PixelTypeFloat:
-							writer.WriteFloat32(0)
-						case PixelTypeUint:
-							writer.WriteUint32(0)
-						}
-					}
-					continue
-				}
-
+		for _, ch := range sortedChannels {
+			slice := dtw.fb.Slices[ch.Name]
+			for lx := 0; lx < actualTileW; lx++ {
+				x := tileStartX + lx
+				sampleCount := dtw.fb.GetSampleCount(x, y)
 				for s := uint32(0); s < sampleCount; s++ {
 					switch ch.Type {
 					case PixelTypeHalf:
-						val := slice.GetSampleHalf(x, y, int(s))
+						var val uint16
+						if slice != nil {
+							val = slice.GetSampleHalf(x, y, int(s))
+						}
 						writer.WriteUint16(val)
 					case PixelTypeFloat:
-						val := slice.GetSampleFloat32(x, y, int(s))
+						var val float32
+						if slice != nil {
+							val = slice.GetSampleFloat32(x, y, int(s))
+						}
 						writer.WriteFloat32(val)
 					case PixelTypeUint:
-						val := slice.GetSampleUint(x, y, int(s))
+						var val uint32
+						if slice != nil {
+							val = slice.GetSampleUint(x, y, int(s))
+						}
 						writer.WriteUint32(val)
 					}
 				}
@@ -1635,21 +1641,29 @@ func (dtw *DeepTiledWriter) WriteTileLevel(tileX, tileY, levelX, levelY int) err
 		return err
 	}
 
-	compressedPixelData, err := dtw.compressData(writer.Bytes(), comp)
+	uncompressedPixelData := writer.Bytes()
+	compressedPixelData, err := dtw.compressData(uncompressedPixelData, comp)
 	if err != nil {
 		return err
 	}
 
-	// Write deep tile chunk header
-	// For deep tiled: tileX (4) + tileY (4) + levelX (4) + levelY (4) +
-	//                 packed sample count size (8) + packed pixel data size (8) = 32 bytes
-	chunkHeader := make([]byte, 32)
+	// Write deep tile chunk header. Like the deep scanline chunk it ends with
+	// the unpacked size of the sample data, which the reference implementation
+	// needs to size its buffer; omitting it made every tile unreadable outside
+	// this library.
+	//
+	//   int    tile x, tile y, level x, level y
+	//   uint64 packed size of the pixel offset (sample count) table
+	//   uint64 packed size of the sample data
+	//   uint64 unpacked size of the sample data
+	chunkHeader := make([]byte, deepTileChunkHeaderSize)
 	xdr.ByteOrder.PutUint32(chunkHeader[0:4], uint32(tileX))
 	xdr.ByteOrder.PutUint32(chunkHeader[4:8], uint32(tileY))
 	xdr.ByteOrder.PutUint32(chunkHeader[8:12], uint32(levelX))
 	xdr.ByteOrder.PutUint32(chunkHeader[12:16], uint32(levelY))
 	xdr.ByteOrder.PutUint64(chunkHeader[16:24], uint64(len(compressedSampleCount)))
 	xdr.ByteOrder.PutUint64(chunkHeader[24:32], uint64(len(compressedPixelData)))
+	xdr.ByteOrder.PutUint64(chunkHeader[32:40], uint64(len(uncompressedPixelData)))
 
 	if _, err := dtw.w.Write(chunkHeader); err != nil {
 		return err
@@ -1683,31 +1697,7 @@ func (dtw *DeepTiledWriter) WriteTiles(tileX1, tileY1, tileX2, tileY2 int) error
 // compressData compresses data based on compression type.
 // Uses the compression level from the header for deterministic round-trip.
 func (dtw *DeepTiledWriter) compressData(data []byte, comp Compression) ([]byte, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-
-	switch comp {
-	case CompressionNone:
-		return data, nil
-	case CompressionRLE:
-		// Reorder bytes, apply the predictor, then RLE compress
-		scratch := make([]byte, len(data))
-		predictor.DeconstructBytes(scratch, data)
-		return compression.RLECompress(scratch), nil
-	case CompressionZIPS, CompressionZIP:
-		// Reorder bytes, apply the predictor, then zlib compress
-		scratch := make([]byte, len(data))
-		predictor.DeconstructBytes(scratch, data)
-		level := dtw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(scratch, level)
-	default:
-		// Fallback to ZIP
-		scratch := make([]byte, len(data))
-		predictor.DeconstructBytes(scratch, data)
-		level := dtw.header.ZIPLevel()
-		return compression.ZIPCompressLevel(scratch, level)
-	}
+	return compressDeepBlock(data, comp, dtw.header.ZIPLevel())
 }
 
 // getSortedChannels returns channels sorted by name

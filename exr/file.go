@@ -387,14 +387,27 @@ func (f *File) ReadTileChunk(part int, chunkIndex int) ([4]int32, []byte, error)
 	return [4]int32{tileX, tileY, levelX, levelY}, data, nil
 }
 
+// Deep chunk header sizes, from the OpenEXR file layout. Both carry three
+// uint64 sizes after their coordinates — the packed size of the pixel offset
+// (sample count) table, the packed size of the sample data, and the *unpacked*
+// size of the sample data. The third is not redundant: nothing else in the
+// chunk says how many samples it holds, so a reader cannot size its output
+// buffer without it, and OpenEXR refuses a chunk that omits it.
+const (
+	deepScanlineChunkHeaderSize = 28 // int y + 3 x uint64
+	deepTileChunkHeaderSize     = 40 // 4 x int tile coords + 3 x uint64
+	multiPartChunkPrefixSize    = 4  // uint32 part number, multi-part files only
+)
+
 // ReadDeepChunk reads a deep data chunk at the given index.
 // Returns the y-coordinate, sample count table, and pixel data.
-// Deep chunk format:
+// Deep scanline chunk format:
 //   - 4 bytes: y coordinate
-//   - 8 bytes: packed size of pixel data
-//   - 8 bytes: unpacked size of pixel data
-//   - sample count table (cumulative counts)
-//   - compressed pixel data
+//   - 8 bytes: packed size of the pixel offset (sample count) table
+//   - 8 bytes: packed size of the sample data
+//   - 8 bytes: unpacked size of the sample data
+//   - compressed sample count table (cumulative counts)
+//   - compressed sample data
 func (f *File) ReadDeepChunk(part int, chunkIndex int) (int32, []byte, []byte, error) {
 	if part < 0 || part >= len(f.offsets) {
 		return 0, nil, nil, errors.New("exr: invalid part index")
@@ -406,14 +419,14 @@ func (f *File) ReadDeepChunk(part int, chunkIndex int) (int32, []byte, []byte, e
 	offset := f.offsets[part][chunkIndex]
 
 	// Multipart chunks have a 4-byte part number prefix before the header
-	headerSize := int64(20)
+	headerSize := int64(deepScanlineChunkHeaderSize)
 	headerStart := int64(0)
 	if f.IsMultiPart() {
-		headerSize = 24
-		headerStart = 4 // skip part number
+		headerSize += multiPartChunkPrefixSize
+		headerStart = multiPartChunkPrefixSize // skip part number
 	}
 
-	// Read deep chunk header (optionally: part number +) y + packedSize + unpackedSize
+	// Read deep chunk header (optionally: part number +) y + the three sizes
 	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return 0, nil, nil, err
@@ -450,10 +463,11 @@ func (f *File) ReadDeepChunk(part int, chunkIndex int) (int32, []byte, []byte, e
 //   - 4 bytes: tile Y coordinate
 //   - 4 bytes: level X
 //   - 4 bytes: level Y
-//   - 8 bytes: packed size of sample count table
-//   - 8 bytes: packed size of pixel data
-//   - sample count table (cumulative counts)
-//   - compressed pixel data
+//   - 8 bytes: packed size of the pixel offset (sample count) table
+//   - 8 bytes: packed size of the sample data
+//   - 8 bytes: unpacked size of the sample data
+//   - compressed sample count table (cumulative counts)
+//   - compressed sample data
 func (f *File) ReadDeepTileChunk(part int, chunkIndex int) ([4]int32, []byte, []byte, error) {
 	if part < 0 || part >= len(f.offsets) {
 		return [4]int32{}, nil, nil, errors.New("exr: invalid part index")
@@ -465,14 +479,15 @@ func (f *File) ReadDeepTileChunk(part int, chunkIndex int) ([4]int32, []byte, []
 	offset := f.offsets[part][chunkIndex]
 
 	// Multipart chunks have a 4-byte part number prefix before the header
-	headerSize := int64(32)
+	headerSize := int64(deepTileChunkHeaderSize)
 	headerStart := int64(0)
 	if f.IsMultiPart() {
-		headerSize = 36
-		headerStart = 4 // skip part number
+		headerSize += multiPartChunkPrefixSize
+		headerStart = multiPartChunkPrefixSize // skip part number
 	}
 
-	// Read deep tile chunk header (optionally: part number +) tileX + tileY + levelX + levelY + packedSampleCountSize + packedPixelDataSize
+	// Read deep tile chunk header (optionally: part number +) the four tile
+	// coordinates and the three sizes
 	chunkHeader := make([]byte, headerSize)
 	if _, err := f.reader.ReadAt(chunkHeader, offset); err != nil {
 		return [4]int32{}, nil, nil, err

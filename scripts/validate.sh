@@ -2,7 +2,7 @@
 #
 # validate.sh — the gate this repository has to pass.
 #
-# It runs two kinds of check, and the second is the one that matters:
+# It runs three kinds of check, and the last two are the ones that matter:
 #
 #   1. The project's own standards: it builds, it is formatted, it vets clean,
 #      staticcheck is quiet, the whole suite passes, and it passes again under
@@ -21,6 +21,13 @@
 #      as plain PFMs, and the reference is asked part by part and channel by
 #      channel whether the file holds them. Section 5 below says what that
 #      covers and what it does not.
+#   4. The same oracle for deep images, sample by sample: scripts/deepgen
+#      writes deep scanline and deep tiled fixtures with a varying number of
+#      samples per pixel, the reference is asked to read every sample of every
+#      pixel back, and this library is asked to read deep images the reference
+#      itself wrote. See the section's own header, below, for what that does
+#      and does not assert. Both deep writers were non-interoperable in every
+#      one of their parts while the suite was green.
 #
 # Every combination interopgen writes is declared "exact" or "lossy" in its
 # manifest, from the format specification and never from a measurement:
@@ -666,6 +673,11 @@ $(grep -E '^[-+][^-+]' "$WORK/t.gdiff" | head -6)"
 				fail "guard $guard: this library accepts a header the reference cannot read; it will write a file nothing can open"
 			fi
 		done <"$TDIR/guards.tsv"
+
+		# ---- measured gaps ------------------------------------------------
+		note "GAP: the tiled READ direction is not gated — exrmaketiled can write tiled fixtures, but nothing here asks this library to read one back and compare, so the tiled read path rests on round trips"
+		note "GAP: the contents of generated mipmap/ripmap levels are not gated — the format specifies no downsampling filter, so only level placement and encoding are checked; nothing external can say what level 3 should contain"
+		note "GAP: b44a and both htj2k compressions are not exercised over tiles — the scanline matrix covers them, the tiled chunk path does not"
 	fi
 fi
 
@@ -1000,7 +1012,238 @@ else
 	fi
 fi
 
+# 7. Deep images: the same oracle, sample for sample.
+#
+#    A deep pixel holds a variable number of samples, so two things have to
+#    survive the trip through an outside reader: the sample count table, which
+#    says how many samples each pixel has, and the samples themselves. A writer
+#    that assumes a constant sample count reads back correctly from its own
+#    reader and produces a file no one else can open — which is exactly what
+#    both deep writers did before this section existed.
+#
+#    WHAT THE REFERENCE CAN ASSERT. oiiotool --dumpdata prints, for every pixel
+#    of a deep image, the sample count and then every sample's value for every
+#    channel, by name. That is the whole of the deep payload, so this section
+#    compares it position by position against scripts/deepgen's expectation:
+#
+#      * sample count per pixel, including pixels with zero samples
+#      * the set of channels present on each sample, by name
+#      * every sample value of every channel, in sample order
+#      * the header structure: deep, dimensions, channel names, tile size
+#
+#    WHAT IT DOES NOT ASSERT. --dumpdata prints decimal text, so a value is
+#    compared to the precision the reference prints (about eight significant
+#    digits) rather than bit for bit. The fixture's neighbouring values are at
+#    least 1/128 apart and its tolerance is 1e-6, so the gap between "equal as
+#    printed" and "equal as bits" is four orders of magnitude smaller than the
+#    smallest defect that could hide in it. Deep files also carry no alpha
+#    premultiplication or sample-ordering convention that this section checks:
+#    it asserts the samples come back in the order they were written, nothing
+#    about what they mean.
+#
+#    CODECS. The OpenEXR specification allows deep data to be compressed with
+#    NONE, RLE, ZIPS and ZIP only; the block codecs (PIZ, PXR24, B44, B44A,
+#    DWAA, DWAB) operate on fixed-size scanline blocks and have no defined
+#    behaviour on variable-length deep sample data. All four permitted codecs
+#    are gated here, for deep scanline and for deep tiled.
+#
+#    CONTROL. Before measuring this library, the reference is asked to
+#    round-trip a deep image of its own making, as scanline and as tiled, with
+#    the same comparison. A broken oracle and a real defect look identical, and
+#    this repository has been fooled by both; if the control fails, this whole
+#    section reports a skip rather than blaming the library.
 # ---------------------------------------------------------------------------
+section "external oracle (deep images: sample counts and per-sample values)"
+
+DEEP_TOL=1e-6
+
+# dump_deep <file> — the reference's per-pixel dump with the punctuation turned
+# into separators, which is what scripts/deepdiff.awk parses.
+dump_deep() { oiiotool --dumpdata "$1" 2>&1 | sed -e 's/[():,]/ /g'; }
+
+if ! command -v oiiotool >/dev/null 2>&1; then
+	skip "oiiotool not installed; deep images cannot be checked against the reference"
+elif [ "$build_ok" = "0" ]; then
+	skip "deep external oracle (build failed)"
+else
+	DCTL="$WORK/deepctl"
+	DEEP="$WORK/deep"
+	mkdir -p "$DCTL" "$DEEP"
+
+	# --- the control -----------------------------------------------------
+	# Two deep images at different depths, merged, so the reference's own
+	# fixture has 0, 1 and 2 samples per pixel: a constant fixture would
+	# compare equal against a reader that ignores the sample count table.
+	# --deepen gives a pixel no samples where it is black, so the black corner
+	# of the first and the black top edge of the second overlap in exactly one
+	# pixel, which ends up with no samples at all.
+	ctl_ok=1
+	{
+		oiiotool --pattern fill:topleft=0,0,0:topright=1,0,0:bottomleft=0,1,0:bottomright=0,0,1 \
+			8x6 3 --chnames R,G,B --deepen -d half -o "$DCTL/a.exr" &&
+			oiiotool --pattern fill:topleft=0,0,0:topright=0,0,0:bottomleft=1,1,1:bottomright=1,1,1 \
+				8x6 3 --chnames R,G,B --deepen:z=2.5 -d half -o "$DCTL/b.exr" &&
+			oiiotool "$DCTL/a.exr" "$DCTL/b.exr" --deepmerge -d half -o "$DCTL/ctl.exr" &&
+			oiiotool "$DCTL/ctl.exr" -d half -o "$DCTL/ctl_scan.exr" &&
+			oiiotool "$DCTL/ctl.exr" --tile 4 4 -d half -o "$DCTL/ctl_tile.exr" &&
+			oiiotool "$DCTL/ctl.exr" "$DCTL/b.exr" --siappend -d half -o "$DCTL/ctl_mpscan.exr" &&
+			oiiotool "$DCTL/ctl_tile.exr" "$DCTL/b.exr" --tile 4 4 --siappend -d half -o "$DCTL/ctl_mptile.exr"
+	} >"$DCTL/gen.log" 2>&1 || ctl_ok=0
+
+	if [ "$ctl_ok" = "0" ]; then
+		skip "the reference could not build a deep control image: $(head -1 "$DCTL/gen.log")"
+	else
+		dump_deep "$DCTL/ctl.exr" >"$DCTL/ctl.dump"
+		zeros=$(grep -c ' 0 samples' "$DCTL/ctl.dump")
+		ones=$(grep -c ' 1 samples' "$DCTL/ctl.dump")
+		twos=$(grep -c ' 2 samples' "$DCTL/ctl.dump")
+		if [ "$zeros" -lt 1 ] || [ "$ones" -lt 1 ] || [ "$twos" -lt 1 ]; then
+			skip "the deep control image has no varying sample counts ($zeros empty, $ones one-sample, $twos two-sample pixels); it would compare equal against anything"
+			ctl_ok=0
+		else
+			note "control fixture: $zeros pixels with no samples, $ones with one, $twos with two"
+		fi
+	fi
+
+	if [ "$ctl_ok" = "1" ]; then
+		for form in scan tile; do
+			dump_deep "$DCTL/ctl_$form.exr" >"$DCTL/ctl_$form.dump"
+			if out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+				"$DCTL/ctl.dump" "$DCTL/ctl_$form.dump" 2>&1); then
+				pass "control: the reference round-trips its own deep $form image sample for sample"
+			else
+				fail "control: the reference does not round-trip its own deep $form image; the oracle is broken, not this library
+$out"
+				ctl_ok=0
+			fi
+		done
+	fi
+
+	# --- the read direction ----------------------------------------------
+	# The control images were written by the reference, not by this library, so
+	# they are the one deep fixture here whose bytes this code had no hand in.
+	# Reading them and comparing against the reference's own reading of the
+	# same file gates the deep readers the way the fixtures below gate the
+	# writers. This is how the "packed size equals unpacked size means the
+	# block is stored raw" rule was found: without it every one of these files
+	# was reported as corrupt ZIP data.
+	if [ "$ctl_ok" = "1" ]; then
+		for form in scan tile; do
+			if ! go run ./scripts/deepgen -dump "$DCTL/ctl_$form.exr" >"$DCTL/ours_$form.dump" 2>"$DCTL/ours_$form.err"; then
+				fail "read direction: this library cannot read the deep $form image the reference wrote: $(head -1 "$DCTL/ours_$form.err")"
+				continue
+			fi
+			sed -e 's/[():,]/ /g' "$DCTL/ours_$form.dump" >"$DCTL/ours_$form.norm"
+			if out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+				"$DCTL/ctl_$form.dump" "$DCTL/ours_$form.norm" 2>&1); then
+				pass "read direction: this library reads the reference's own deep $form image sample for sample"
+			else
+				fail "read direction: this library reads the reference's deep $form image differently than the reference does:
+$out"
+			fi
+		done
+
+		# Multi-part deep, both parts. The two parts hold different sample
+		# counts and different values, so a reader that quietly returns part 0
+		# for every part is caught rather than passed.
+		for form in mpscan mptile; do
+			for part in 0 1; do
+				oiiotool -a --dumpdata "$DCTL/ctl_$form.exr" 2>&1 |
+					awk -v n="$part" '$1 == "subimage" && $2 + 0 == n { f = 1; next } $1 == "subimage" { f = 0 } f' |
+					sed -e 's/[():,]/ /g' >"$DCTL/${form}_$part.ref"
+				if ! [ -s "$DCTL/${form}_$part.ref" ]; then
+					skip "the reference could not dump part $part of its own multi-part deep $form image"
+					continue
+				fi
+				if ! go run ./scripts/deepgen -dump "$DCTL/ctl_$form.exr" "$part" \
+					>"$DCTL/${form}_$part.ours" 2>"$DCTL/${form}_$part.err"; then
+					fail "read direction: this library cannot read part $part of the reference's multi-part deep $form image: $(head -1 "$DCTL/${form}_$part.err")"
+					continue
+				fi
+				sed -e 's/[():,]/ /g' "$DCTL/${form}_$part.ours" >"$DCTL/${form}_$part.norm"
+				if out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+					"$DCTL/${form}_$part.ref" "$DCTL/${form}_$part.norm" 2>&1); then
+					pass "read direction: multi-part deep $form, part $part, sample for sample"
+				else
+					fail "read direction: multi-part deep $form part $part reads differently than the reference reads it:
+$out"
+				fi
+			done
+		done
+	fi
+
+	if [ "$ctl_ok" = "0" ]; then
+		skip "deep fixtures not measured: the control above did not hold"
+	elif ! go run ./scripts/deepgen "$DEEP" >"$WORK/deepgen.log" 2>&1; then
+		fail "scripts/deepgen could not write the deep fixtures"
+		cat "$WORK/deepgen.log"
+	else
+		note "$(tail -1 "$WORK/deepgen.log") into $DEEP"
+		note "counts and every sample value are compared against the reference's own reading"
+
+		while IFS=$'\t' read -r file kind codec chans tile status; do
+			case "$file" in \#* | "") continue ;; esac
+			path="$DEEP/$file"
+			label=$(printf '%-12s %-4s %-5s' "$kind" "$codec" "$(printf '%s' "$file" | sed -e 's/^d[st]_//' -e 's/_.*//')")
+
+			# A codec the reference refuses for deep data must be refused by
+			# this library too, rather than written into a file nothing else
+			# can open. deepgen reports which happened; a row it managed to
+			# write arrives with status "ok" and is measured below like any
+			# other, against a reference that will not read it.
+			if [ "$status" = "refused" ]; then
+				pass "$label refused, as the reference refuses this codec for deep data (EXR_ERR_INVALID_ATTR)"
+				continue
+			fi
+
+			# Structure first: the reference has to agree it is a deep image
+			# of the right shape with the right channels, before its reading
+			# of the samples means anything.
+			info=$(oiiotool --info -v "$path" 2>&1)
+			if ! printf '%s\n' "$info" | grep -q 'channel list:'; then
+				fail "$label the reference cannot read the file: $(printf '%s\n' "$info" | grep -m1 -iE 'error|ERROR' | cut -c1-140)"
+				fail "$label samples not compared (the reference could not open the file)"
+				continue
+			fi
+
+			structure_ok=1
+			printf '%s\n' "$info" | grep -q '13 x   20, 5 channel, deep' || structure_ok=0
+			for c in $(printf '%s' "$chans" | tr ',' ' '); do
+				printf '%s\n' "$info" | grep -q "channel list:.*\b$c\b" || structure_ok=0
+			done
+			if [ "$tile" != "-" ]; then
+				# "4x4" in the manifest, "tile size: 4 x 4" in the reference's
+				# report of the header it read.
+				printf '%s\n' "$info" | grep -q "tile size: $(printf '%s' "$tile" | sed 's/x/ x /')" || structure_ok=0
+			else
+				printf '%s\n' "$info" | grep -q 'tile size:' && structure_ok=0
+			fi
+			if [ "$structure_ok" = "1" ]; then
+				pass "$label structure: $(printf '%s\n' "$info" | grep -m1 -o '13 x   20, 5 channel, deep [a-z]*'), channels $chans, tile $tile"
+			else
+				fail "$label structure: the reference reads $(printf '%s\n' "$info" | sed -n '2,4p' | tr '\n' ' ' | cut -c1-140), expected 13x20 deep, channels $chans, tile $tile"
+			fi
+
+			dump_deep "$path" >"$DEEP/$file.dump"
+			exp=$(sed -e 's/[():,]/ /g' "$path.expect")
+			printf '%s\n' "$exp" >"$DEEP/$file.expnorm"
+			if out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
+				"$DEEP/$file.expnorm" "$DEEP/$file.dump" 2>&1); then
+				pass "$label 260 pixels, 470 samples: every count and every sample value read back as written"
+			else
+				fail "$label the reference reads different deep data than was written:
+$out"
+			fi
+		done <"$DEEP/manifest.tsv"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+		# ---- measured gaps ------------------------------------------------
+		note "GAP: deep mipmap and ripmap levels are not gated — DeepTiledWriter writes LevelModeOne only, and no deep mipmapped fixture could be produced with oiiotool 3.1.16 to gate ReadTileLevel above level 0 against"
+		note "GAP: writing deep parts into a multi-part file is not gated — MultiPartOutputFile has no deep entry point; reading multi-part deep is gated, scanline and tiled"
+		note "GAP: deep sample semantics are not asserted — Z-sorted and non-overlapping ordering, deepImageState and alpha premultiplication; only that samples return in the order written"
+
 section "result"
 echo "checks run: $checked, failures: $failures, skipped: $skips"
 if [ "$failures" -ne 0 ]; then
