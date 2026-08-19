@@ -118,7 +118,7 @@ complete.
 
 ## Dependency note
 
-HTJ2K support requires go-jpeg2000 v1.4.0 or later. Earlier versions cannot emit
+HTJ2K support requires go-jpeg2000 v1.5.0, which this module pins. Earlier versions cannot emit
 a codestream the reference accepts, for two reasons that were measured:
 `EncodeHalf`/`EncodeFloat` ignored `Options.HighThroughput` so Rsiz bit 14 was
 never set, and the NLT segment was written short. `scripts/validate.sh` excuses
