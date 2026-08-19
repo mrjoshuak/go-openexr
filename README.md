@@ -14,8 +14,31 @@ every pixel type — no cgo, no C++ toolchain, no shared libraries to ship.
 
 **Files go-openexr writes are read back correctly by the OpenEXR reference
 implementation — all 36 pixel-type and compression combinations, checked on
-every release.** That is the bar the whole project is held to, and
-[`scripts/validate.sh`](scripts/validate.sh) enforces it.
+every release.**
+
+<details>
+<summary><b>New to OpenEXR?</b> — what the format is, and why you might want it</summary>
+
+It is the image format the film industry runs on — created at Industrial Light &
+Magic, and the reason a render can be graded, composited and re-exposed without
+falling apart. Two things make it worth reaching for outside VFX too.
+
+**Real floating point.** Channels hold 16- or 32-bit floats rather than bytes,
+or 32-bit integers where you want exact IDs. Nothing clips at white, nothing
+bands in a gradient, and a value meaning 40,000 nits or 0.0001 metres survives
+the round trip intact.
+
+**Arbitrary named channels.** An EXR is not limited to R, G, B and A. It holds
+as many named channels as you like, each with its own type — depth, surface
+normals, motion vectors, object IDs, per-object masks — so one file carries a
+render *and* everything you need to relight or re-composite it. That makes it a
+genuinely good container for scientific and sensor data, not just pictures.
+
+On top of that: tiled storage for random access into huge images, mipmaps,
+multi-part files, deep images with several samples per pixel, and eleven
+compression methods from lossless to aggressive.
+
+</details>
 
 ### Why go-openexr?
 
@@ -48,16 +71,16 @@ go-openexr implements the complete [OpenEXR specification](https://openexr.com/)
 
 | Category                                   | Status                                     |
 | ------------------------------------------ | ------------------------------------------ |
-| Storage types (scanline, tiled, deep)      | ✅ Complete                                |
+| Storage types (scanline, tiled, deep)      | ✅ Complete                                 |
 | All compression types (12 IDs, 11 methods) | See [support matrix](#compression-support) |
-| All pixel types (UINT, HALF, FLOAT)        | ✅ Complete                                |
-| Mipmap/Ripmap levels                       | ✅ Complete                                |
-| Multi-part files                           | ✅ Complete                                |
-| Deep scanline/tiled images                 | ✅ Complete                                |
-| Standard attributes                        | ✅ Complete                                |
-| Preview images                             | ✅ Complete                                |
-| Luminance/Chroma (YC)                      | ✅ Complete                                |
-| Multi-view/Stereo                          | ✅ Complete                                |
+| All pixel types (UINT, HALF, FLOAT)        | ✅ Complete                                 |
+| Mipmap/Ripmap levels                       | ✅ Complete                                 |
+| Multi-part files                           | ✅ Complete                                 |
+| Deep scanline/tiled images                 | ✅ Complete                                 |
+| Standard attributes                        | ✅ Complete                                 |
+| Preview images                             | ✅ Complete                                 |
+| Luminance/Chroma (YC)                      | ✅ Complete                                 |
+| Multi-view/Stereo                          | ✅ Complete                                 |
 
 Files produced by go-openexr are checked against the OpenEXR reference implementation itself: the conformance suite compares pixels sample for sample with what OpenImageIO's `oiiotool` reads from the same file, in both directions. The [compression support matrix](#compression-support) records the per-codec detail; every row is now covered in both directions.
 
