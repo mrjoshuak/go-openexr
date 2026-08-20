@@ -256,6 +256,29 @@ else
 		note "corpus: $n files written by the reference implementation"
 	fi
 
+	# ---- what Open fetches ------------------------------------------------
+	#
+	# The byte-range path is worth nothing if opening the file reads all of it,
+	# and until v1.4.8 it did: the header size was computed as size-8, so Open
+	# pulled the whole file into memory and then refused anything over 64 MiB
+	# outright — an ordinary 4096x4096 float frame. Measured on v1.4.7:
+	# 57,213,503 of 57,213,503 bytes read at open, after which ReadRegion's 2%
+	# was pure addition.
+	#
+	# The checks below pin all three: a prefix rather than the file, growth
+	# when one prefix is not enough, and a file past the header cap opening at
+	# all.
+	op=$(go test ./exr/ -run 'TestOpenFetchesOnlyTheFrontOfTheFile|TestOpenGrowsThePrefixWhenTheOffsetTableIsLarge|TestOpenAcceptsAFileLargerThanTheHeaderCap' -v 2>&1)
+	opran=$(printf '%s\n' "$op" | grep -cE '^\s*--- PASS')
+	if printf '%s\n' "$op" | grep -qE '^\s*--- FAIL'; then
+		fail "open fetches a prefix: $(printf '%s\n' "$op" | grep -E '^\s*--- FAIL' | head -1)"
+	elif [ "$opran" -lt 3 ]; then
+		fail "open fetches a prefix: only $opran assertions ran"
+	else
+		measured=$(printf '%s\n' "$op" | sed -n 's/.*\(Open read [0-9]* of [0-9]* bytes.*\)$/\1/p' | head -1)
+		pass "open fetches a prefix, not the file (${measured:-measured}), grows it when the offset table is larger, and opens a file past the 64 MiB header cap"
+	fi
+
 	# ---- frame buffers that do not cover the window (issue #7) -------------
 	#
 	# This library addresses a frame buffer in the data window's own

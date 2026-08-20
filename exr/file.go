@@ -37,6 +37,12 @@ const (
 	maxHeaderSize = 64 * 1024 * 1024  // 64 MB maximum header size
 	maxChunkSize  = 256 * 1024 * 1024 // 256 MB maximum chunk size
 	headerBufSize = 1024              // Initial buffer size for header serialization
+
+	// headerPrefixSize is how much of the front of a file Open fetches before
+	// it knows how much it needs. It covers the header and the offset table of
+	// an ordinary frame in one read; a file needing more grows the prefix
+	// rather than falling back to reading everything.
+	headerPrefixSize = 64 * 1024
 )
 
 // Version extracts the version number from a version field.
@@ -135,25 +141,94 @@ func OpenReader(r io.ReaderAt, size int64) (*File, error) {
 		return nil, ErrUnsupportedVersion
 	}
 
-	// Validate header size to prevent DoS
-	headerSize := size - 8
-	if headerSize <= 0 || headerSize > maxHeaderSize {
+	// Fetch the front of the file, growing until the headers and offset tables
+	// parse out of it.
+	//
+	// This used to read size-8 bytes — the whole file — and refuse anything
+	// over maxHeaderSize, so a 4096x4096 float frame was pulled entirely into
+	// memory to be opened and an 81 MiB one could not be opened at all. Both
+	// defeated the point of the byte-range path: File.ReadRegion would go on
+	// to fetch 2% of a file that Open had already fetched in full.
+	//
+	// A prefix is enough because the header and the offset tables sit at the
+	// front, before any pixel data, and the tables are what say where the
+	// pixel data is. What cannot be known in advance is how long they are —
+	// the header is variable-length and the table's size depends on a chunk
+	// count inside it — so the prefix grows and the parse is retried. Parsing
+	// is pure and reads no I/O, so a retry costs only the fetch.
+	limit := size - 8
+	if limit <= 0 {
 		return nil, ErrInvalidHeaderSize
 	}
-
-	// Read header(s)
-	headerData := make([]byte, headerSize)
-	if _, err := r.ReadAt(headerData, 8); err != nil {
-		return nil, err
+	prefix := int64(headerPrefixSize)
+	if prefix > limit {
+		prefix = limit
 	}
-	reader := xdr.NewReader(headerData)
+	var (
+		reader   *xdr.Reader
+		parseErr error
+	)
+	for {
+		buf := make([]byte, prefix)
+		if _, err := r.ReadAt(buf, 8); err != nil && err != io.EOF {
+			return nil, err
+		}
+		reader = xdr.NewReader(buf)
+		f.headers = nil
+		f.offsets = nil
+		var need int64
+		need, parseErr = f.parseHeadersAndOffsets(reader, size)
+		if parseErr == nil {
+			break
+		}
+		if prefix >= limit {
+			// The whole file has been read and it still does not parse, so
+			// the error is the file's rather than the prefix's.
+			return nil, parseErr
+		}
+		// Once the headers themselves have parsed, the offset tables' size is
+		// known exactly, so the second fetch is the last one — no doubling
+		// towards it and no overshoot. need is zero when even the headers did
+		// not fit, and then there is nothing to do but ask for more.
+		if need > prefix {
+			prefix = need
+		} else {
+			prefix *= 4
+		}
+		if prefix > limit {
+			prefix = limit
+		}
+	}
 
+	// A writer that never completed leaves the offset table zeroed even though
+	// the chunk data is intact. Rebuild it by scanning the chunks, as the
+	// reference implementation does, rather than decoding to silent zeroes.
+	// This is a no-op for well-formed files.
+	f.reconstructOffsetTables(8 + int64(reader.Pos()))
+
+	return f, nil
+}
+
+// parseHeadersAndOffsets reads the header or headers and the per-part chunk
+// offset tables out of a prefix of the file.
+//
+// It returns an error when the prefix is too short as well as when the file is
+// malformed, and OpenReader cannot tell those apart — which is why it grows the
+// prefix and retries rather than trying to distinguish them. The distinction is
+// not needed: a parse that still fails once the whole file has been fetched is
+// a malformed file by elimination.
+//
+// The first return is how many bytes past the magic the parse would need, and
+// is meaningful only once the headers themselves have parsed — at which point
+// the chunk counts are known and the answer is exact. It is what turns growing
+// the prefix into at most one further fetch rather than a doubling search.
+func (f *File) parseHeadersAndOffsets(reader *xdr.Reader, size int64) (int64, error) {
 	if IsMultiPart(f.versionField) {
 		// Multi-part file: read multiple headers
 		for {
 			h, err := ReadHeader(reader)
 			if err != nil {
-				return nil, err
+				return 0, err
 			}
 			if h == nil || len(h.attrs) == 0 {
 				// Empty header terminates multi-part header list
@@ -165,13 +240,21 @@ func OpenReader(r io.ReaderAt, size int64) (*File, error) {
 		// Single-part file: read one header
 		h, err := ReadHeader(reader)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		f.headers = []*Header{h}
 	}
 
 	if len(f.headers) == 0 {
-		return nil, ErrInvalidHeader
+		return 0, ErrInvalidHeader
+	}
+
+	// The header itself is still bounded, which is what the DoS check was
+	// always meant to do. Applying that bound to the file's size instead is
+	// what refused every EXR over 64 MiB.
+	headerBytes := int64(reader.Pos())
+	if headerBytes > maxHeaderSize {
+		return 0, ErrInvalidHeaderSize
 	}
 
 	// Read offset table(s).
@@ -184,33 +267,29 @@ func OpenReader(r io.ReaderAt, size int64) (*File, error) {
 	// few-hundred-byte file demand hundreds of megabytes.
 	const maxChunksPerPart = 16 * 1024 * 1024 // 16M chunks max per part
 	maxChunksForSize := size / 8
+	var tableBytes int64
 	f.offsets = make([][]int64, len(f.headers))
 	for i, h := range f.headers {
 		numChunks := h.ChunksInFile()
 		if numChunks < 0 || numChunks > maxChunksPerPart {
-			return nil, fmt.Errorf("invalid chunk count %d (max %d)", numChunks, maxChunksPerPart)
+			return 0, fmt.Errorf("invalid chunk count %d (max %d)", numChunks, maxChunksPerPart)
 		}
 		if int64(numChunks) > maxChunksForSize {
-			return nil, fmt.Errorf("chunk count %d exceeds what a %d-byte file can hold", numChunks, size)
+			return 0, fmt.Errorf("chunk count %d exceeds what a %d-byte file can hold", numChunks, size)
 		}
+		tableBytes += int64(numChunks) * 8
 		offsets := make([]int64, numChunks)
 		for j := 0; j < numChunks; j++ {
 			offset, err := reader.ReadUint64()
 			if err != nil {
-				return nil, err
+				return headerBytes + tableBytes, err
 			}
 			offsets[j] = int64(offset)
 		}
 		f.offsets[i] = offsets
 	}
 
-	// A writer that never completed leaves the offset table zeroed even though
-	// the chunk data is intact. Rebuild it by scanning the chunks, as the
-	// reference implementation does, rather than decoding to silent zeroes.
-	// This is a no-op for well-formed files.
-	f.reconstructOffsetTables(8 + int64(reader.Pos()))
-
-	return f, nil
+	return headerBytes + tableBytes, nil
 }
 
 // VersionField returns the file's version field.

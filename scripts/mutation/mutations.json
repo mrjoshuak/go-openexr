@@ -1270,6 +1270,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "open-reads-whole-file",
+      "codec": "core",
+      "description": "OpenReader fetches the whole file as its header prefix, as it did before v1.4.8",
+      "spec": "OpenEXR 3.x file layout: the magic and version are followed by the header or headers, then the per-part chunk offset tables, then chunk data. Everything needed to open a file and locate any chunk is in that prefix; the pixel data is not. Reading size-8 bytes treats the whole file as header, which both defeats the byte-range path — measured on v1.4.7 at 57,213,503 of 57,213,503 bytes read to open a 4096x4096 float frame — and, through the maxHeaderSize guard applied to that same figure, refused every EXR over 64 MiB. The mutation restores the whole-file prefix; correctness is unaffected, which is the point, so only a test that counts bytes at the ReaderAt can see it.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/file.go",
+          "count": 1,
+          "old": "\tprefix := int64(headerPrefixSize)\n\tif prefix > limit {\n\t\tprefix = limit\n\t}",
+          "new": "\tprefix := limit"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestOpenFetchesOnlyTheFrontOfTheFile"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }
