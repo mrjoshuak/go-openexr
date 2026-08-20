@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.14] - 2026-08-19
+
+First fix from the libOpenEXR parity audit.
+
+### Fixed
+- **ACES colour conversion was wrong by up to 58% per channel.** It produced a
+  well-formed file with the wrong colours: no error, no failed round trip.
+  Measured against the reference `exr2aces` on a Rec.709 constant of
+  (0.8, 0.2, 0.1):
+
+  ```
+  reference : 0.446045  0.244141  0.123413
+  this repo : 0.317871  0.101868  0.079590
+  ```
+
+  Three places mixed two matrix conventions. Imath composes row vectors as
+  `v*M`, so it stores its matrices transposed and its products read left to
+  right; this file applies `M*v`. The Bradford constants had been copied in
+  Imath's form, the adaptation product was composed in Imath's order, and so was
+  the final RGB to XYZ to ACES chain — while `RGBtoXYZ` and the per-pixel
+  application were `M*v`. The mixture is self-consistent enough to look right.
+
+  All three are now `M*v`. The conversion matches the reference within one
+  half-float ULP, which is the format's own precision rather than a tolerance
+  chosen to pass.
+
+  **Why nothing caught it.** Every check the area had went out through this
+  library and came back through it, and a round trip cannot see a colour
+  transform that is wrong in both directions. The pre-existing
+  `TestChromaticAdaptation` looked like coverage — it asserts that equal white
+  points give the identity — but a *consistently* transposed pair satisfies that
+  exactly. It verified self-consistency, not correctness. The mutation added
+  here restores the original code precisely, and that pre-existing test survives
+  it; only the new checks kill it.
+
+### Gate
+- 252 checks, 0 failures, 0 skipped. Two new checks: two fixtures converted by
+  both this library and the reference `exr2aces` and compared within one half
+  ULP, and a signal check that the comparison rejects an unconverted file.
+- A 39th mutation, `aces-bradford-transposed`.
+
+### Recorded
+- ROADMAP now lists, under Later, the features libOpenEXR has that this library
+  does not — `isComplete()`, the tiled-RGBA writer, `exrstdattr`/`exrmakepreview`/
+  `exrmanifest`, the OpenEXRUtil image layer, the C core API, the RGBA reader's
+  refusal of non-zero data window origins, ID manifest interop, and header
+  validation looser than the reference's. Those are absent features rather than
+  wrong answers, so they are a separate target rather than part of this work.
+
 ## [1.4.13] - 2026-08-19
 
 ### Added

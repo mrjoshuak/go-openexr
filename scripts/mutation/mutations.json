@@ -1425,6 +1425,55 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "aces-bradford-transposed",
+      "codec": "core",
+      "description": "The ACES colour chain is written in Imath's row-vector convention throughout while the pixels are converted as M*v, as it shipped until v1.4.14",
+      "spec": "The Bradford cone response matrix adapts a white point (CIE 159:2004; ACES SMPTE ST 2065-1). Which storage order and product order are correct depends on how the matrix is applied: Imath composes row vectors as v*M and stores the transpose, this file applies M*v and must not. Mixing them is what shipped. Measured against the reference exr2aces, Rec.709 (0.8, 0.2, 0.1) converted to (0.3179, 0.1019, 0.0796) where the reference gives (0.4460, 0.2441, 0.1234) — up to 58% per channel, no error raised, a well-formed output file. No round trip could see it because the same wrong transform ran both ways. Note which test kills this: the pre-existing TestChromaticAdaptation survives it, because it checks that equal white points give the identity and a consistently transposed pair satisfies that exactly. It verified self-consistency, not correctness, which is the shape this harness exists to expose.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/aces.go",
+          "count": 1,
+          "old": "\tbradfordCPM := M44f{\n\t\t0.895100, 0.266400, -0.161400, 0,\n\t\t-0.750200, 1.713500, 0.036700, 0,\n\t\t0.038900, -0.068500, 1.029600, 0,\n\t\t0, 0, 0, 1,\n\t}",
+          "new": "\tbradfordCPM := M44f{\n\t\t0.895100, -0.750200, 0.038900, 0,\n\t\t0.266400, 1.713500, -0.068500, 0,\n\t\t-0.161400, 0.036700, 1.029600, 0,\n\t\t0, 0, 0, 1,\n\t}"
+        },
+        {
+          "file": "exr/aces.go",
+          "count": 1,
+          "old": "\tinverseBradfordCPM := M44f{\n\t\t0.986993, -0.147054, 0.159963, 0,\n\t\t0.432305, 0.518360, 0.049291, 0,\n\t\t-0.008529, 0.040043, 0.968487, 0,\n\t\t0, 0, 0, 1,\n\t}",
+          "new": "\tinverseBradfordCPM := M44f{\n\t\t0.986993, 0.432305, -0.008529, 0,\n\t\t-0.147054, 0.518360, 0.040043, 0,\n\t\t0.159963, 0.049291, 0.968487, 0,\n\t\t0, 0, 0, 1,\n\t}"
+        },
+        {
+          "file": "exr/aces.go",
+          "count": 1,
+          "old": "\ttemp := multiply44(inverseBradfordCPM, ratioMat)\n\treturn multiply44(temp, bradfordCPM)",
+          "new": "\ttemp := multiply44(bradfordCPM, ratioMat)\n\treturn multiply44(temp, inverseBradfordCPM)"
+        },
+        {
+          "file": "exr/aces.go",
+          "count": 1,
+          "old": "\ttemp := multiply44(xyzToACES, bradfordTrans)\n\taf.fileToACES = multiply44(temp, fileToXYZ)",
+          "new": "\ttemp := multiply44(fileToXYZ, bradfordTrans)\n\taf.fileToACES = multiply44(temp, xyzToACES)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestChromaticAdaptation$"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestACESConversionMatchesTheReference|TestChromaticAdaptationMovesTheWhitePoint"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

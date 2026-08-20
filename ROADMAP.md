@@ -463,6 +463,48 @@ now refuses a chunk with no channels rather than producing one.
 
 ## Later
 
+### Features libOpenEXR has and this library does not
+
+From the parity audit of 2026-08-19, which read the OpenEXR 3.4.14 headers
+rather than working from recollection. None of these are wrong answers — they
+are things the reference offers that this library simply lacks, so they fail
+loudly or not at all rather than silently. That is why they are here and not in
+the goal that covers the audit's defects.
+
+**Convenience and utility APIs.** No `isComplete()`/`partComplete()`, so a
+caller cannot ask whether a file was fully written. No tiled-RGBA writer
+(`ImfTiledRgbaFile.h`). No `updatePreviewImage`. No OpenEXRUtil `Image` and
+`DeepImage` layer, which is the reference's own answer to "read a whole file
+into memory without thinking about frame buffers". No C core API
+(`OpenEXRCore/`) and no cgo binding, which is a deliberate difference rather
+than an omission — this library exists to be pure Go — but callers porting C
+code should know it.
+
+**Command-line tools.** The reference ships `exrstdattr`, `exrmakepreview` and
+`exrmanifest`; this repository has no equivalent.
+
+**The RGBA convenience reader refuses a non-zero data window origin.** A crop
+window is ordinary in VFX, so this will bite anyone reaching for the simplest
+API first. It refuses rather than misreading, which is why it is here rather
+than in the defect list, but it is the item on this page most likely to be hit
+in practice.
+
+**The ID manifest does not interoperate in either direction.** Two audit passes
+disagreed on whether the attribute name is wrong or only the payload is
+invented; either way a manifest written here is not one the reference reads,
+and one the reference wrote is not one this library understands.
+
+**Header validation is looser than the reference's.** `Validate()` does not
+require `pixelAspectRatio > 0` or a non-empty display window, both of which
+make libOpenEXR refuse a file. So this library can write a header the reference
+rejects. That is closer to a defect than the rest of this section, and if it
+turns out to sit inside the header-parsing work already under way it should be
+fixed there instead of waiting.
+
+Done when each of these is either implemented and gated against the reference,
+or recorded here with a stated reason for not doing it — the C core API being
+the obvious candidate for the latter.
+
 ### Quality layers, blocked below the format
 
 Writing a chunk in several quality layers would let a reader decode a prefix of

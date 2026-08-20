@@ -2099,6 +2099,82 @@ else
 		fi
 	fi
 
+	# ---- ACES colour conversion, against the reference tool --------------
+	#
+	# This was wrong for a long time and nothing noticed, because every check it
+	# had went out through this library and came back through it. A round trip
+	# cannot see a colour transform that is wrong in both directions, and the
+	# output was a well-formed file: no error, no failure, just the wrong
+	# colours. Measured before the fix, Rec.709 (0.8, 0.2, 0.1) came back as
+	# (0.3179, 0.1019, 0.0796) where the reference produces (0.4460, 0.2441,
+	# 0.1234) — up to 58% per channel.
+	#
+	# The cause was three places mixing two matrix conventions: Imath composes
+	# row vectors and stores its matrices transposed, this library multiplies
+	# M*v, and the Bradford constants, the adaptation product and the final
+	# chain had all been written the Imath way while the application was not.
+	#
+	# The oracle is the reference's own exr2aces on the same input. The
+	# tolerance is one half-float ULP, which comes from the format — the samples
+	# are half, and the two implementations round their float32 matrix products
+	# independently — rather than from what happened to pass.
+	if ! command -v exr2aces >/dev/null 2>&1; then
+		skip "ACES conversion: exr2aces is not installed (brew install openexr)"
+	elif ! command -v oiiotool >/dev/null 2>&1; then
+		skip "ACES conversion: oiiotool is not installed"
+	elif ! go build -o "$WORK/goexr2aces" ./cmd/exr2aces 2>"$WORK/aces.err"; then
+		fail "ACES conversion: could not build cmd/exr2aces: $(head -1 "$WORK/aces.err")"
+	else
+		ADIR="$WORK/aces"
+		mkdir -p "$ADIR"
+		aces_fail=0
+		aces_ran=0
+		for pat in "constant:color=0.8,0.2,0.1" "noise:type=uniform:min=0:max=4"; do
+			tag=$(printf '%s' "$pat" | tr -c 'a-zA-Z0-9' '_')
+			if ! oiiotool --pattern "$pat" 64x64 3 -d half -o "$ADIR/$tag.exr" >/dev/null 2>&1; then
+				gap "ACES conversion: oiiotool would not write the $tag fixture"
+				continue
+			fi
+			if ! exr2aces "$ADIR/$tag.exr" "$ADIR/$tag.ref.exr" >/dev/null 2>&1; then
+				gap "ACES conversion: the reference exr2aces would not convert $tag"
+				continue
+			fi
+			if ! out=$("$WORK/goexr2aces" "$ADIR/$tag.exr" "$ADIR/$tag.ours.exr" 2>&1); then
+				fail "ACES conversion $tag: $(printf '%s' "$out" | head -1)"
+				aces_fail=1
+				continue
+			fi
+			aces_ran=$((aces_ran + 1))
+			# 2^-10 relative is one half ULP at these magnitudes; --diff takes an
+			# absolute threshold, so the bound is scaled by the pattern's own
+			# maximum of 4.
+			if ! d=$(oiiotool --diff --fail 0.004 --warn 0.004 \
+				"$ADIR/$tag.ref.exr" "$ADIR/$tag.ours.exr" 2>&1); then
+				fail "ACES conversion $tag: $(printf '%s' "$d" | grep -iE 'max error' | head -1 | cut -c1-100)"
+				aces_fail=1
+			fi
+		done
+		if [ "$aces_ran" -eq 0 ]; then
+			fail "ACES conversion: nothing was compared"
+		elif [ "$aces_fail" -eq 0 ]; then
+			pass "ACES conversion: $aces_ran fixtures match the reference exr2aces within one half-float ULP"
+		fi
+
+		# Signal: the comparison must reject a conversion that is wrong. Without
+		# this, a --diff invocation that silently passes anything would satisfy
+		# the check above — which is exactly the shape of the defect it exists
+		# to catch.
+		if [ -f "$ADIR/constant_color_0_8_0_2_0_1.exr" ]; then
+			if oiiotool --diff --fail 0.004 --warn 0.004 \
+				"$ADIR/constant_color_0_8_0_2_0_1.ref.exr" \
+				"$ADIR/constant_color_0_8_0_2_0_1.exr" >/dev/null 2>&1; then
+				fail "ACES signal check: the unconverted Rec.709 file compared equal to the ACES one"
+			else
+				pass "ACES signal check: the comparison rejects an unconverted file"
+			fi
+		fi
+	fi
+
 	# ---- a rectangle of a mipmap level -----------------------------------
 	#
 	# This is the answer for HD playback of a 5K plate, and it is worth being

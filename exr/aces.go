@@ -208,19 +208,28 @@ func XYZtoRGB(c Chromaticities) M44f {
 // ChromaticAdaptation computes the Bradford chromatic adaptation transform matrix
 // that converts colors from a source white point to a destination white point.
 func ChromaticAdaptation(srcWhite, dstWhite V2f) M44f {
-	// Bradford cone primary matrix (LMS response)
+	// Bradford cone primary matrix, XYZ to LMS.
+	//
+	// The literals are in the convention this file multiplies in — row-major,
+	// applied as M*v, so row 0 produces L from X, Y and Z. Imath writes the
+	// transpose of this because it composes row vectors as v*M, and until
+	// v1.4.14 these constants were copied in that form and then applied as
+	// M*v. The result was a plausible-looking file with the wrong colours:
+	// Rec.709 (0.8, 0.2, 0.1) came out as (0.3179, 0.1019, 0.0796) where the
+	// reference exr2aces produces (0.4460, 0.2441, 0.1234), an error of up to
+	// 58% per channel with nothing reported.
 	bradfordCPM := M44f{
-		0.895100, -0.750200, 0.038900, 0,
-		0.266400, 1.713500, -0.068500, 0,
-		-0.161400, 0.036700, 1.029600, 0,
+		0.895100, 0.266400, -0.161400, 0,
+		-0.750200, 1.713500, 0.036700, 0,
+		0.038900, -0.068500, 1.029600, 0,
 		0, 0, 0, 1,
 	}
 
-	// Inverse Bradford matrix
+	// Inverse Bradford matrix, LMS back to XYZ, in the same convention.
 	inverseBradfordCPM := M44f{
-		0.986993, 0.432305, -0.008529, 0,
-		-0.147054, 0.518360, 0.040043, 0,
-		0.159963, 0.049291, 0.968487, 0,
+		0.986993, -0.147054, 0.159963, 0,
+		0.432305, 0.518360, 0.049291, 0,
+		-0.008529, 0.040043, 0.968487, 0,
 		0, 0, 0, 1,
 	}
 
@@ -250,9 +259,12 @@ func ChromaticAdaptation(srcWhite, dstWhite V2f) M44f {
 		0, 0, 0, 1,
 	}
 
-	// Final adaptation matrix: Bradford * ratio * inverseBradford
-	temp := multiply44(bradfordCPM, ratioMat)
-	return multiply44(temp, inverseBradfordCPM)
+	// Final adaptation matrix. Applied as M*v the rightmost factor acts first,
+	// so it reads right to left: take XYZ to LMS, scale by the white-point
+	// ratio, come back. Imath composes this the other way round because it
+	// multiplies row vectors, and that order was copied here too.
+	temp := multiply44(inverseBradfordCPM, ratioMat)
+	return multiply44(temp, bradfordCPM)
 }
 
 // Matrix utility functions
@@ -419,9 +431,12 @@ func (af *AcesInputFile) initColorConversion() {
 	bradfordTrans := ChromaticAdaptation(fileNeutral, acesNeutral)
 	xyzToACES := XYZtoRGB(acesChr)
 
-	// Combine: fileToXYZ * bradfordTrans * xyzToACES
-	temp := multiply44(fileToXYZ, bradfordTrans)
-	af.fileToACES = multiply44(temp, xyzToACES)
+	// Combine, right to left as M*v requires: the file's RGB becomes XYZ, the
+	// white point is adapted, and the result becomes ACES RGB. Composing these
+	// left to right — the row-vector order — was the third of the three places
+	// this file mixed conventions.
+	temp := multiply44(xyzToACES, bradfordTrans)
+	af.fileToACES = multiply44(temp, fileToXYZ)
 }
 
 // Header returns the header of the file.
