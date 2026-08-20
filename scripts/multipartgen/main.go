@@ -281,6 +281,18 @@ var files = []fileSpec{
 					{"RY", exr.PixelTypeHalf, 2},
 					{"quarter", exr.PixelTypeFloat, 4},
 				}},
+			// PIZ is here because it is the codec that models per-channel
+			// dimensions explicitly, and this path passed it the window's
+			// width for every channel. That is not a wrong answer but an
+			// index out of range: writing a subsampled PIZ part panicked with
+			// "index out of range [128] with length 128" until the width was
+			// computed per channel, as the scanline path always did.
+			{name: "chromapiz", comp: exr.CompressionPIZ, compName: "piz",
+				dw: [4]int{0, 0, 63, 47}, chans: []chanSpec{
+					{"Y", exr.PixelTypeHalf, 1},
+					{"BY", exr.PixelTypeHalf, 2},
+					{"RY", exr.PixelTypeHalf, 2},
+				}},
 		},
 	},
 	{

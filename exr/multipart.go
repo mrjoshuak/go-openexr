@@ -595,7 +595,15 @@ func compressChunkData(data []byte, minX, minY, width, height int, cl *ChannelLi
 			if ch.Type == PixelTypeFloat || ch.Type == PixelTypeUint {
 				size = 2
 			}
-			pizChs[i] = compression.PIZChannel{Size: size, NX: width, NY: height}
+			// The channel's own width, not the window's: a channel with
+			// xSampling 2 has half as many columns, and telling PIZ otherwise
+			// makes it read twice as far as the data goes. That is not a wrong
+			// answer but an index out of range — measured on a two-part file
+			// whose second part had xSampling 2, "index out of range [128]
+			// with length 128". The scanline path has always computed this
+			// per channel; this one did not.
+			chWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
+			pizChs[i] = compression.PIZChannel{Size: size, NX: chWidth, NY: height}
 		}
 		channelData := pizScanlineToChannelContiguous(data, sortedChs, width, height)
 		return compression.PIZCompressBytesChannels(channelData, pizChs)

@@ -1542,6 +1542,99 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "row-fallback-double-divides",
+      "codec": "core",
+      "description": "The per-pixel row fallbacks pass a stored column index to an accessor that divides by XSampling again",
+      "spec": "A channel with xSampling n stores every n-th column, so its plane has ceil(width/n) columns and the chunk packers walk those, not the image's. The row functions are therefore indexed by stored column, which their fast paths honour by stepping one stored pixel at a time. The fast paths require xSampling of 1, so for a subsampled channel the per-pixel fallback is the only path taken — in both directions, which is why a round trip through this library agreed with itself perfectly. Measured against libOpenEXR on a 16x16 file with BY and RY at xSampling 2: 316 of 512 samples wrong, on ten of the twelve codecs, with the reference reading the files without complaint.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/framebuffer.go",
+          "count": 1,
+          "old": "func (s *Slice) planeColumnToX(col int) int {\n\treturn s.OriginX + col*s.XSampling\n}",
+          "new": "func (s *Slice) planeColumnToX(col int) int {\n\treturn s.OriginX + col\n}"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestSubsampledChannelsRoundTrip"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "ysampling-rows-ignored",
+      "codec": "core",
+      "description": "Every channel contributes a row to every scanline, ignoring ySampling",
+      "spec": "A channel with ySampling n holds a sample only on rows where the image row is a multiple of n, so a chunk carries fewer of its rows than of a full-rate channel's and two chunks of equal height can differ in size. Ignoring that makes every chunk the wrong length: measured against libOpenEXR on a 16x16 fixture at ySampling 2, none, rle, zips, zip and piz all produced files the reference could not decompress, and pxr24 produced one it read with 359 of 384 samples wrong.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/scanline.go",
+          "count": 1,
+          "old": "func storesRow(y, ySampling int) bool {\n\treturn ySampling <= 1 || y%ySampling == 0\n}",
+          "new": "func storesRow(y, ySampling int) bool {\n\treturn true\n}"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestSubsampledChannelsRoundTrip"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "multipart-piz-full-width",
+      "codec": "PIZ",
+      "description": "The multi-part PIZ path gives every channel the window's width instead of its own",
+      "spec": "PIZ models each channel's dimensions explicitly (PIZChannel NX, NY), which is how it handles subsampling at all. Telling it a subsampled channel is full width makes it read twice as far as the data goes, which is not a wrong answer but an index out of range: writing a two-part file whose second part had xSampling 2 panicked with 'index out of range [128] with length 128'. The scanline path has always computed this per channel; the multi-part path did not, and no fixture exercised it.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/multipart.go",
+          "count": 1,
+          "old": "\t\t\tchWidth := (width + int(ch.XSampling) - 1) / int(ch.XSampling)\n\t\t\tpizChs[i] = compression.PIZChannel{Size: size, NX: chWidth, NY: height}",
+          "new": "\t\t\tpizChs[i] = compression.PIZChannel{Size: size, NX: width, NY: height}"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartRefusesYSubsampling"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestMultiPartPIZSubsampledDoesNotPanic"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

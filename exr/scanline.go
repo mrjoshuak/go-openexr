@@ -180,6 +180,40 @@ func (r *ScanlineReader) Header() *Header {
 }
 
 // DataWindow returns the data window for this part.
+// sampledRows counts how many of the scanlines in [y1, y2] a channel with the
+// given ySampling actually stores.
+//
+// A channel with ySampling n holds a sample only on rows where y is a multiple
+// of n, in the image's own coordinates (ISO/IEC OpenEXR file layout: a channel
+// contains a sample at (px, py) only when px and py are multiples of its
+// sampling factors). So a chunk's size depends on which rows it spans, not just
+// how many, and the rows a chunk carries for one channel are not the rows it
+// carries for another.
+//
+// This used to be ignored: every channel contributed a row for every scanline,
+// so a file with ySampling above one had chunks the reference could not
+// decompress at all — measured on a 16x16 fixture, none, rle, zips, zip and piz
+// all produced files libOpenEXR refused, and pxr24 produced one it read with
+// 359 of 384 samples wrong.
+func sampledRows(y1, y2, ySampling int) int {
+	if ySampling <= 1 {
+		return y2 - y1 + 1
+	}
+	n := 0
+	for y := y1; y <= y2; y++ {
+		if y%ySampling == 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// storesRow reports whether a channel with the given ySampling holds a sample
+// on image row y.
+func storesRow(y, ySampling int) bool {
+	return ySampling <= 1 || y%ySampling == 0
+}
+
 func (r *ScanlineReader) DataWindow() Box2i {
 	return r.dataWindow
 }
@@ -363,25 +397,25 @@ func (r *ScanlineReader) readPixelsSequential(y1, y2 int) error {
 		switch {
 		case comp == CompressionNone:
 			decompressedData = data
-		case r.chunkIsStoredRaw(data, numLinesInChunk, comp):
+		case r.chunkIsStoredRawAt(data, int(chunkY), numLinesInChunk, comp):
 			decompressedData = data
 		case comp == CompressionRLE:
-			decompressedData, err = r.decompressRLE(data, numLinesInChunk)
+			decompressedData, err = r.decompressRLE(data, int(chunkY), numLinesInChunk)
 			if err != nil {
 				return err
 			}
 		case comp == CompressionZIPS || comp == CompressionZIP:
-			decompressedData, err = r.decompressZIP(data, numLinesInChunk)
+			decompressedData, err = r.decompressZIP(data, int(chunkY), numLinesInChunk)
 			if err != nil {
 				return err
 			}
 		case comp == CompressionPIZ:
-			decompressedData, err = r.decompressPIZ(data, numLinesInChunk)
+			decompressedData, err = r.decompressPIZ(data, int(chunkY), numLinesInChunk)
 			if err != nil {
 				return err
 			}
 		case comp == CompressionPXR24:
-			decompressedData, err = r.decompressPXR24(data, numLinesInChunk)
+			decompressedData, err = r.decompressPXR24(data, int(chunkY), numLinesInChunk)
 			if err != nil {
 				return err
 			}
@@ -487,17 +521,17 @@ func (r *ScanlineReader) readPixelsParallel(firstChunk, lastChunk, minY, maxY in
 // compressing it would not have made it smaller. OpenEXR signals this only by
 // the chunk's size: a reader must treat any chunk that is not smaller than the
 // uncompressed chunk size as raw pixel data. See storeUncompressed.
-func (r *ScanlineReader) chunkIsStoredRaw(data []byte, numLines int, comp Compression) bool {
+func (r *ScanlineReader) chunkIsStoredRawAt(data []byte, startY, numLines int, comp Compression) bool {
 	if comp == CompressionNone {
 		return false
 	}
-	return len(data) >= r.calculateChunkSize(numLines)
+	return len(data) >= r.calculateChunkSizeAt(startY, numLines)
 }
 
 // decompressChunk decompresses a chunk based on compression type.
 // This is a thread-safe version that doesn't use shared reader buffers.
 func (r *ScanlineReader) decompressChunk(data []byte, startY, numLines int, comp Compression) ([]byte, error) {
-	if r.chunkIsStoredRaw(data, numLines, comp) {
+	if r.chunkIsStoredRawAt(data, startY, numLines, comp) {
 		result := make([]byte, len(data))
 		copy(result, data)
 		return result, nil
@@ -510,13 +544,13 @@ func (r *ScanlineReader) decompressChunk(data []byte, startY, numLines int, comp
 		copy(result, data)
 		return result, nil
 	case CompressionRLE:
-		return r.decompressRLE(data, numLines)
+		return r.decompressRLE(data, startY, numLines)
 	case CompressionZIPS, CompressionZIP:
-		return r.decompressZIP(data, numLines)
+		return r.decompressZIP(data, startY, numLines)
 	case CompressionPIZ:
-		return r.decompressPIZ(data, numLines)
+		return r.decompressPIZ(data, startY, numLines)
 	case CompressionPXR24:
-		return r.decompressPXR24(data, numLines)
+		return r.decompressPXR24(data, startY, numLines)
 	case CompressionB44, CompressionB44A:
 		return r.decompressB44(data, numLines)
 	case CompressionDWAA, CompressionDWAB:
@@ -566,6 +600,12 @@ func (r *ScanlineReader) decodeUncompressedChunkParallel(chunkY int, data []byte
 
 		for i := range channelInfos {
 			ci := &channelInfos[i]
+			// A channel with ySampling above one carries no row here, and the
+			// chunk does not contain one: skipping the bytes as well as the
+			// write is what keeps the position in step.
+			if !storesRow(y, int(ci.ch.YSampling)) {
+				continue
+			}
 			if ci.slice == nil {
 				pos += ci.bytesInChannel
 				continue
@@ -631,6 +671,12 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 
 		for i := range channelInfos {
 			ci := &channelInfos[i]
+			// A channel with ySampling above one carries no row here, and the
+			// chunk does not contain one: skipping the bytes as well as the
+			// write is what keeps the position in step.
+			if !storesRow(y, int(ci.ch.YSampling)) {
+				continue
+			}
 			if ci.slice == nil {
 				pos += ci.bytesInChannel
 				continue
@@ -655,23 +701,38 @@ func (r *ScanlineReader) decodeUncompressedChunk(chunkY int, data []byte) error 
 	return nil
 }
 
-// calculateChunkSize calculates the uncompressed size of a chunk.
+// calculateChunkSize calculates the uncompressed size of a chunk starting at
+// the data window's first row.
+//
+// It is the whole-file case and is what the raw-storage check wants. A chunk
+// elsewhere in the file may hold a different number of rows for a subsampled
+// channel, which calculateChunkSizeAt accounts for.
 func (r *ScanlineReader) calculateChunkSize(numLines int) int {
+	return r.calculateChunkSizeAt(int(r.dataWindow.Min.Y), numLines)
+}
+
+// calculateChunkSizeAt is calculateChunkSize for a chunk beginning at row y1.
+//
+// The start matters once a channel is subsampled vertically: such a channel
+// stores a row only where y is a multiple of its ySampling, so two chunks of
+// the same height can hold different numbers of its rows.
+func (r *ScanlineReader) calculateChunkSizeAt(y1, numLines int) int {
 	width := int(r.dataWindow.Width())
-	bytesPerLine := 0
+	total := 0
 	for i := 0; i < r.channelList.Len(); i++ {
 		ch := r.channelList.At(i)
 		pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
-		bytesPerLine += pixelsInChannel * ch.Type.Size()
+		total += pixelsInChannel * ch.Type.Size() *
+			sampledRows(y1, y1+numLines-1, int(ch.YSampling))
 	}
-	return bytesPerLine * numLines
+	return total
 }
 
 // decompressRLE decompresses RLE-compressed chunk data.
 // The OpenEXR RLE pipeline is: RLE decompress -> reverse predictor ->
 // undo byte reordering, mirroring compressRLE.
-func (r *ScanlineReader) decompressRLE(data []byte, numLines int) ([]byte, error) {
-	expectedSize := r.calculateChunkSize(numLines)
+func (r *ScanlineReader) decompressRLE(data []byte, startY, numLines int) ([]byte, error) {
+	expectedSize := r.calculateChunkSizeAt(startY, numLines)
 
 	// RLE decompress
 	decompressed, err := compression.RLEDecompress(data, expectedSize)
@@ -690,8 +751,8 @@ func (r *ScanlineReader) decompressRLE(data []byte, numLines int) ([]byte, error
 // The OpenEXR ZIP pipeline is: zlib decompress -> deinterleave -> reverse predictor
 // This function is thread-safe and can be called from multiple goroutines.
 // It also detects and records the FLEVEL from the compressed data for deterministic round-trip.
-func (r *ScanlineReader) decompressZIP(data []byte, numLines int) ([]byte, error) {
-	expectedSize := r.calculateChunkSize(numLines)
+func (r *ScanlineReader) decompressZIP(data []byte, startY, numLines int) ([]byte, error) {
+	expectedSize := r.calculateChunkSizeAt(startY, numLines)
 
 	// Detect FLEVEL from compressed data for deterministic round-trip
 	// Use sync.Once to ensure thread-safe detection (first detection wins)
@@ -732,7 +793,7 @@ func (r *ScanlineReader) decompressZIP(data []byte, numLines int) ([]byte, error
 // data is decompressed to channel-contiguous format (each channel's data for
 // all lines contiguous), then rearranged back to per-scanline interleaved format
 // that decodeUncompressedChunk expects.
-func (r *ScanlineReader) decompressPIZ(data []byte, numLines int) ([]byte, error) {
+func (r *ScanlineReader) decompressPIZ(data []byte, startY, numLines int) ([]byte, error) {
 	width := int(r.dataWindow.Width())
 
 	// Build channel info sorted by name (EXR channel order).
@@ -747,13 +808,13 @@ func (r *ScanlineReader) decompressPIZ(data []byte, numLines int) ([]byte, error
 		pizChannels[i] = compression.PIZChannel{
 			Size: size,
 			NX:   chWidth,
-			NY:   numLines,
+			NY:   sampledRows(startY, startY+numLines-1, int(ch.YSampling)),
 		}
 	}
 
 	// Check for passthrough: when PIZ compression produces output >= input size,
 	// C++ stores the data uncompressed in per-scanline interleaved format.
-	expectedSize := r.calculateChunkSize(numLines)
+	expectedSize := r.calculateChunkSizeAt(startY, numLines)
 	if len(data) == expectedSize {
 		result := make([]byte, len(data))
 		copy(result, data)
@@ -819,9 +880,9 @@ func pizChannelContiguousToScanline(data []byte, channels []Channel, width, numL
 
 // decompressPXR24 decompresses PXR24-compressed chunk data.
 // PXR24 uses 24-bit float representation with zlib compression.
-func (r *ScanlineReader) decompressPXR24(data []byte, numLines int) ([]byte, error) {
+func (r *ScanlineReader) decompressPXR24(data []byte, startY, numLines int) ([]byte, error) {
 	width := int(r.dataWindow.Width())
-	expectedSize := r.calculateChunkSize(numLines)
+	expectedSize := r.calculateChunkSizeAt(startY, numLines)
 
 	// Build channel info - channels are sorted by name in the file
 	sortedChannels := r.channelList.SortedByName()
@@ -839,9 +900,11 @@ func (r *ScanlineReader) decompressPXR24(data []byte, numLines int) ([]byte, err
 			pxrType = 2 // pxr24PixelTypeFloat
 		}
 		channels[i] = compression.ChannelInfo{
-			Type:   pxrType,
-			Width:  chWidth,
-			Height: numLines,
+			Type:      pxrType,
+			Width:     chWidth,
+			Height:    sampledRows(startY, startY+numLines-1, int(ch.YSampling)),
+			YSampling: int(ch.YSampling),
+			FirstY:    startY,
 		}
 	}
 
@@ -1012,13 +1075,13 @@ func (w *ScanlineWriter) writePixelsSequential(y1, y2 int) error {
 			}
 		case CompressionPIZ:
 			numLines := chunkEnd - chunkStart + 1
-			data, err = w.compressPIZ(rawData, numLines)
+			data, err = w.compressPIZ(rawData, chunkStart, numLines)
 			if err != nil {
 				return err
 			}
 		case CompressionPXR24:
 			numLines := chunkEnd - chunkStart + 1
-			data, err = w.compressPXR24(rawData, numLines)
+			data, err = w.compressPXR24(rawData, chunkStart, numLines)
 			if err != nil {
 				return err
 			}
@@ -1120,9 +1183,9 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 		case CompressionZIPS, CompressionZIP:
 			compressed, compErr = w.compressZIP(chunk.rawData)
 		case CompressionPIZ:
-			compressed, compErr = w.compressPIZ(chunk.rawData, numLines)
+			compressed, compErr = w.compressPIZ(chunk.rawData, chunk.chunkStart, numLines)
 		case CompressionPXR24:
-			compressed, compErr = w.compressPXR24(chunk.rawData, numLines)
+			compressed, compErr = w.compressPXR24(chunk.rawData, chunk.chunkStart, numLines)
 		case CompressionB44:
 			compressed, compErr = w.compressB44(chunk.rawData, numLines, false)
 		case CompressionB44A:
@@ -1169,7 +1232,7 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 	for i := 0; i < w.channelList.Len(); i++ {
 		ch := w.channelList.At(i)
 		pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
-		bufSize += pixelsInChannel * ch.Type.Size() * (y2 - y1 + 1)
+		bufSize += pixelsInChannel * ch.Type.Size() * sampledRows(y1, y2, int(ch.YSampling))
 	}
 
 	// Allocate output buffer directly
@@ -1194,6 +1257,11 @@ func (w *ScanlineWriter) encodeUncompressedChunk(y1, y2 int) ([]byte, error) {
 		bufY := y
 
 		for _, ch := range sortedChannels {
+			// A channel with ySampling above one contributes nothing on the
+			// rows it does not sample; the chunk simply does not carry them.
+			if !storesRow(y, int(ch.YSampling)) {
+				continue
+			}
 			pixelsInChannel := (width + int(ch.XSampling) - 1) / int(ch.XSampling)
 			bytesInChannel := pixelsInChannel * ch.Type.Size()
 
@@ -1264,7 +1332,7 @@ func (w *ScanlineWriter) compressZIP(data []byte) ([]byte, error) {
 // This uses channel-aware compression matching the C++ OpenEXR reference:
 // per-scanline data is rearranged to channel-contiguous format, then compressed
 // with the wavelet applied per channel using strides for multi-byte types.
-func (w *ScanlineWriter) compressPIZ(data []byte, numLines int) ([]byte, error) {
+func (w *ScanlineWriter) compressPIZ(data []byte, startY, numLines int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
 
 	// Build channel info.
@@ -1279,7 +1347,7 @@ func (w *ScanlineWriter) compressPIZ(data []byte, numLines int) ([]byte, error) 
 		pizChannels[i] = compression.PIZChannel{
 			Size: size,
 			NX:   chWidth,
-			NY:   numLines,
+			NY:   sampledRows(startY, startY+numLines-1, int(ch.YSampling)),
 		}
 	}
 
@@ -1336,7 +1404,7 @@ func pizScanlineToChannelContiguous(data []byte, channels []Channel, width, numL
 
 // compressPXR24 compresses chunk data using PXR24.
 // PXR24 converts floats to 24-bit and uses zlib compression.
-func (w *ScanlineWriter) compressPXR24(data []byte, numLines int) ([]byte, error) {
+func (w *ScanlineWriter) compressPXR24(data []byte, startY, numLines int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
 
 	// Build channel info - channels are sorted by name in the file
@@ -1355,9 +1423,11 @@ func (w *ScanlineWriter) compressPXR24(data []byte, numLines int) ([]byte, error
 			pxrType = 2 // pxr24PixelTypeFloat
 		}
 		channels[i] = compression.ChannelInfo{
-			Type:   pxrType,
-			Width:  chWidth,
-			Height: numLines,
+			Type:      pxrType,
+			Width:     chWidth,
+			Height:    sampledRows(startY, startY+numLines-1, int(ch.YSampling)),
+			YSampling: int(ch.YSampling),
+			FirstY:    startY,
 		}
 	}
 

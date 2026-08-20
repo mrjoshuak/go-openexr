@@ -1194,12 +1194,29 @@ else
 		elif [ ! -f "$MP/mp_subsampled.exr" ]; then
 			gap "subsampled multi-part channels: the fixture was not written"
 		else
-			if ! "$PARTDUMP" -part 1 "$MP/mp_subsampled.exr" >"$WORK/sub.dump" 2>"$WORK/sub.err"; then
-				fail "subsampled multi-part channels: the reference refused the file: $(head -1 "$WORK/sub.err" | cut -c1-100)"
-			elif out=$(python3 scripts/subpartcmp.py "$WORK/sub.dump" "$MP" mp_subsampled 1 2>&1); then
-				pass "subsampled multi-part channels: the reference reads every channel exactly ($out)"
-			else
-				fail "subsampled multi-part channels: $out"
+			# Both subsampled parts are compared. Part 2 is PIZ, and it is
+			# there because PIZ models per-channel dimensions explicitly and
+			# this path handed it the window's width for every channel:
+			# writing it panicked with "index out of range [128] with length
+			# 128" rather than producing a wrong file. Checking only part 1
+			# would have left that unseen.
+			sub_fail=0
+			sub_last=""
+			for subpart in 1 2; do
+				if ! "$PARTDUMP" -part "$subpart" "$MP/mp_subsampled.exr" >"$WORK/sub.dump" 2>"$WORK/sub.err"; then
+					fail "subsampled multi-part channels part $subpart: the reference refused it: $(head -1 "$WORK/sub.err" | cut -c1-100)"
+					sub_fail=1
+					continue
+				fi
+				if out=$(python3 scripts/subpartcmp.py "$WORK/sub.dump" "$MP" mp_subsampled "$subpart" 2>&1); then
+					sub_last="$out"
+				else
+					fail "subsampled multi-part channels part $subpart: $out"
+					sub_fail=1
+				fi
+			done
+			if [ "$sub_fail" = "0" ]; then
+				pass "subsampled multi-part channels: the reference reads every channel of both subsampled parts exactly (part 2 is PIZ; $sub_last)"
 			fi
 
 			# YSampling above 1 must be refused rather than written, since the
@@ -2096,6 +2113,94 @@ else
 			pass "precinct opt-in: it buys a smaller region decode and the default output is unchanged (${line:-measured})"
 		else
 			fail "precinct opt-in: $(printf '%s\n' "$out" | grep -E "htj2k_precinct_test" | head -1 | cut -c1-110)"
+		fi
+	fi
+
+	# ---- subsampled channels, every codec that accepts them --------------
+	#
+	# Subsampling is the format's luminance/chroma mechanism and it was broken
+	# in both axes, in both directions, on almost every codec. The gate never
+	# looked at it outside the multi-part section, and no round trip could
+	# have: the defects were applied identically to reader and writer.
+	#
+	# Horizontally, the row functions are indexed by stored column — a channel
+	# with xSampling 2 has half as many columns as the window is wide — and
+	# their per-pixel fallbacks passed that index to an accessor that divides
+	# by xSampling again. Since the fast paths require xSampling of 1, the
+	# fallback is the only path a subsampled channel ever takes. Measured
+	# against libOpenEXR: 316 of 512 samples wrong, on ten of twelve codecs,
+	# with the reference reading the files without complaint.
+	#
+	# Vertically, every channel contributed a row to every scanline, so chunks
+	# were the wrong size: none, rle, zips, zip and piz produced files
+	# libOpenEXR could not decompress at all, and pxr24 produced one it read
+	# with 359 of 384 samples wrong. Once the chunk sizes were right, piz and
+	# pxr24 panicked instead — their codecs consumed a row per channel per
+	# scanline regardless.
+	#
+	# Both directions are checked here. scripts/subsampgen writes a file and
+	# reads it back; exrpartdump reads the same file with libOpenEXR, in the
+	# channel's own coordinates. So the write side is "the reference agrees
+	# with what we meant" and the read side is "we agree with the reference on
+	# the same bytes".
+	if [ ! -x "$PARTDUMP" ]; then
+		skip "subsampled channels: exrpartdump could not be built against the reference"
+	elif ! go build -o "$WORK/subsampgen" ./scripts/subsampgen/ 2>"$WORK/ss.err"; then
+		fail "subsampled channels: could not build scripts/subsampgen: $(head -1 "$WORK/ss.err")"
+	else
+		SSDIR="$WORK/subsamp"
+		mkdir -p "$SSDIR"
+		ss_fail=0
+		ss_ran=0
+		for codec in none rle zips zip piz pxr24; do
+			for samp in "2 1" "2 2"; do
+				set -- $samp
+				xs=$1
+				ys=$2
+				if ! "$WORK/subsampgen" "$SSDIR" "$codec" "$xs" "$ys" >"$SSDIR/ours.dump" 2>"$SSDIR/err"; then
+					fail "subsampled $codec ${xs}x${ys}: this library could not round-trip it: $(head -1 "$SSDIR/err")"
+					ss_fail=1
+					continue
+				fi
+				exrfile=$(awk '/^# file/ {print $3}' "$SSDIR/ours.dump")
+				if ! "$PARTDUMP" "$exrfile" >"$SSDIR/ref.dump" 2>"$SSDIR/err2"; then
+					fail "subsampled $codec ${xs}x${ys}: the reference refused the file: $(head -1 "$SSDIR/err2")"
+					ss_fail=1
+					continue
+				fi
+				ss_ran=$((ss_ran + 1))
+				if ! d=$(python3 scripts/subsampcmp.py "$SSDIR/ref.dump" "$SSDIR/ours.dump"); then
+					fail "subsampled $codec ${xs}x${ys}: $d"
+					ss_fail=1
+				fi
+			done
+		done
+		if [ "$ss_ran" -eq 0 ]; then
+			fail "subsampled channels: nothing was compared"
+		elif [ "$ss_fail" -eq 0 ]; then
+			pass "subsampled channels: $ss_ran codec and sampling combinations agree with libOpenEXR sample for sample, 4:2:2 and 4:2:0"
+		fi
+
+		# Signal: the comparison must reject a file whose samples are wrong, or
+		# every pass above is worthless.
+		if [ -s "$SSDIR/ours.dump" ]; then
+			awk '/^#/ {print; next} {$4 = $4 + 1; print}' "$SSDIR/ours.dump" >"$SSDIR/bad.dump"
+			if python3 scripts/subsampcmp.py "$SSDIR/ref.dump" "$SSDIR/bad.dump" >/dev/null 2>&1; then
+				fail "subsampled signal check: deliberately shifted samples compared clean"
+			else
+				pass "subsampled signal check: the comparison reports shifted samples"
+			fi
+		fi
+
+		# The codecs that cannot carry a vertically subsampled channel must
+		# refuse rather than write something. b44, dwa and htj2k all do; what
+		# matters is that the refusal is an error and not a panic.
+		if out=$("$WORK/subsampgen" "$SSDIR" "b44" 2 2 2>&1); then
+			note "subsampled b44 2x2 was accepted; the reference supports it, so this is now gatable"
+		elif printf '%s' "$out" | grep -qi panic; then
+			fail "subsampled b44 2x2: it panicked instead of refusing: $(printf '%s' "$out" | head -1 | cut -c1-80)"
+		else
+			pass "subsampled channels: a codec that cannot carry ySampling above one refuses rather than panicking"
 		fi
 	fi
 

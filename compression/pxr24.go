@@ -26,6 +26,28 @@ type ChannelInfo struct {
 	Type   int // pxr24PixelTypeUint, pxr24PixelTypeHalf, pxr24PixelTypeFloat
 	Width  int
 	Height int
+
+	// YSampling and FirstY say which of the chunk's rows this channel actually
+	// stores. A channel with YSampling above one holds a sample only where the
+	// image row is a multiple of it, so a chunk carries fewer of its rows than
+	// of a full-rate channel's, and the rows are not the same rows.
+	//
+	// Zero means every row, which is what an unsubsampled channel wants and
+	// what every caller before this passed. Without it the row loop consumed a
+	// row per channel per scanline and ran off the end of a chunk holding
+	// fewer: a vertically subsampled PXR24 chunk panicked with "index out of
+	// range [768] with length 768".
+	YSampling int
+	FirstY    int
+}
+
+// storesRow reports whether this channel holds a sample on the given row of the
+// chunk, counting from the chunk's first row.
+func (c ChannelInfo) storesRow(row int) bool {
+	if c.YSampling <= 1 {
+		return true
+	}
+	return (c.FirstY+row)%c.YSampling == 0
 }
 
 // floatToFloat24 converts a 32-bit float to a 24-bit representation.
@@ -105,7 +127,7 @@ func PXR24Compress(data []byte, channels []ChannelInfo, width, height int) ([]by
 	// Process each scanline
 	for y := 0; y < height; y++ {
 		for _, ch := range channels {
-			if ch.Height == 0 {
+			if ch.Height == 0 || !ch.storesRow(y) {
 				continue
 			}
 			w := ch.Width
@@ -243,7 +265,7 @@ func PXR24Decompress(data []byte, channels []ChannelInfo, width, height int, exp
 
 	for y := 0; y < height; y++ {
 		for _, ch := range channels {
-			if ch.Height == 0 {
+			if ch.Height == 0 || !ch.storesRow(y) {
 				continue
 			}
 			w := ch.Width

@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.16] - 2026-08-20
+
+Third fix from the parity audit: subsampled channels. This was the largest of
+them — broken on both axes, in both directions, on almost every codec, and
+invisible to every test because each defect was applied identically to the
+reader and the writer.
+
+### Fixed
+- **Horizontal subsampling put every sample in the wrong column.** The row
+  functions are indexed by *stored* column — a channel with xSampling 2 has half
+  as many columns as the window is wide — and their per-pixel fallbacks passed
+  that index to an accessor that divides by xSampling again. Since the fast
+  paths require xSampling of 1, the fallback is the only path a subsampled
+  channel ever takes. Measured against libOpenEXR on a 16x16 file: **316 of 512
+  samples wrong, on ten of the twelve codecs**, with the reference reading the
+  files without complaint.
+
+- **Vertical subsampling made every chunk the wrong size.** A channel with
+  ySampling n stores a row only where the image row is a multiple of n, so a
+  chunk carries fewer of its rows than of a full-rate channel's — and two chunks
+  of equal height can differ in size. Every channel was contributing a row to
+  every scanline. Measured: `none`, `rle`, `zips`, `zip` and `piz` produced files
+  libOpenEXR **could not decompress at all**, and `pxr24` produced one it read
+  with **359 of 384 samples wrong**.
+
+- **PIZ and PXR24 then panicked rather than producing a wrong file.** Once the
+  chunk sizes were right, both codecs still consumed a row per channel per
+  scanline: `index out of range [768] with length 768`. Both now take the
+  chunk's first row and derive each channel's row count from it.
+
+- **Multi-part PIZ with a subsampled channel panicked.** That path handed PIZ
+  the window's width for every channel, where the scanline path had always
+  computed it per channel: `index out of range [128] with length 128`.
+
+  All six codecs that can carry a subsampled channel now agree with libOpenEXR
+  sample for sample, at 4:2:2 and 4:2:0, in both directions.
+
+### Gate
+- 257 checks, 0 failures, 0 skipped. A new section covers twelve codec and
+  sampling combinations: `scripts/subsampgen` writes a file and reads it back,
+  `scripts/exrpartdump` reads the same file with libOpenEXR, and the two are
+  compared by key so a dropped channel is reported apart from a wrong sample.
+  With a signal check, and a check that a codec which cannot carry ySampling
+  above one refuses rather than panicking.
+- The multi-part subsampled fixture gained a third part, compressed with PIZ,
+  and both subsampled parts are now compared — checking only the first would
+  have left the panic unseen.
+- Mutations 42, 43 and 44: `row-fallback-double-divides`,
+  `ysampling-rows-ignored` and `multipart-piz-full-width`. The first two are
+  marked symmetric. All three survive the pre-existing tests and are killed only
+  by the new ones, which is the measurement that says the old suite could not
+  have caught them.
+
 ## [1.4.15] - 2026-08-20
 
 Second fix from the parity audit: header attribute parsing.
