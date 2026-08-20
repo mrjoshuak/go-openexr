@@ -148,6 +148,12 @@ jobs:
       - name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
+      # The gate requires go build to print nothing at all, and a cold module
+      # cache prints "go: downloading ..." to stderr. Fetching first keeps that
+      # strictness meaningful instead of turning it into a CI artefact.
+      - name: Prefetch modules
+        run: go mod download
+
       - name: Report the oracles in use
         run: |
           echo "PATH=$PATH"

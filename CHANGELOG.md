@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.20] - 2026-08-20
+
+The gate and the mutation harness now run in CI, which is what "green CI" was
+supposed to mean all along and did not.
+
+### Fixed
+- **Two amd64 assembly declaration errors**, found the first time the gate ran
+  on an amd64 runner. `hasSSE41` was defined in assembly with no Go declaration
+  anywhere and was called by nothing — dead code left behind by a feature check
+  that moved elsewhere. `findMaxSIMD` declared a 16-byte argument frame for a
+  10-byte one (a pointer and a `uint16` return); the code already wrote its
+  result at the right offset, so the declaration was simply wrong.
+
+  Neither was visible from this project's usual machine, which is arm64 and
+  never builds them, and `go test` runs only a subset of vet's checks so the
+  existing amd64 CI job passed straight over both. The gate now vets **the
+  architecture it is not running on** as well, so which machine happens to run
+  it stops deciding what it covers.
+
+### Gate
+- 264 checks, 0 failures, 0 skipped.
+- CI gained a job that runs `scripts/validate.sh` with `STRICT=1` and then the
+  mutation harness. STRICT makes a section that cannot find its oracle a
+  failure rather than a skip, so the job cannot pass by measuring nothing. It
+  builds OpenEXR 3.4 and OpenJPH from source, because the distribution's
+  OpenEXR predates HTJ2K and an older reference would turn those rows into
+  failures that say nothing about this code.
+
+  Until now CI ran `go test`, race, coverage, fmt and build — and this project
+  has been reporting "green CI" beside gate output produced locally. Both were
+  true; together they read as more than they were.
+
 ## [1.4.19] - 2026-08-20
 
 The last four areas from the parity audit, all of them deep. Three of its

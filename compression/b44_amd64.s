@@ -102,7 +102,7 @@ TEXT ·toOrderedSIMD(SB), NOSPLIT, $0-16
 // func findMaxSIMD(src *[16]uint16) uint16
 // Finds the maximum value among 16 uint16 values.
 // Uses SSE2-compatible unsigned max via XOR with 0x8000 trick.
-TEXT ·findMaxSIMD(SB), NOSPLIT, $0-16
+TEXT ·findMaxSIMD(SB), NOSPLIT, $0-10
 	MOVQ src+0(FP), SI          // SI = src pointer
 
 	MOVOU 0(SI), X0             // X0 = values[0:7]

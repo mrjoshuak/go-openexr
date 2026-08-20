@@ -114,12 +114,3 @@ scalar_loop:
 
 done:
     RET
-
-// func hasSSE41() bool
-TEXT ·hasSSE41(SB), NOSPLIT, $0-1
-    MOVL $1, AX
-    CPUID
-    SHRL $19, CX                // SSE4.1 is bit 19 of ECX
-    ANDL $1, CX
-    MOVB CL, ret+0(FP)
-    RET

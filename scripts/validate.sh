@@ -159,6 +159,26 @@ $out"
 	build_ok=0
 fi
 
+# Vet the other architecture too.
+#
+# This package carries amd64 assembly that an arm64 machine never builds, and
+# go test runs only a subset of vet's checks — so two real declaration errors
+# sat in it unseen: a hasSSE41 with no Go declaration at all, and a findMaxSIMD
+# declaring a 16-byte argument frame for a 10-byte one. Both were found the
+# first time the gate ran on an amd64 runner. Checking both architectures here
+# means the machine the gate happens to run on stops deciding what it covers.
+if [ "$(go env GOARCH)" = "amd64" ]; then
+	crossarch=arm64
+else
+	crossarch=amd64
+fi
+if out=$(GOARCH=$crossarch go vet ./... 2>&1) && [ -z "$out" ]; then
+	pass "go vet ./... for GOARCH=$crossarch (the architecture this machine is not)"
+else
+	fail "go vet ./... for GOARCH=$crossarch
+$out"
+fi
+
 if unformatted=$(gofmt -l . 2>/dev/null) && [ -z "$unformatted" ]; then
 	pass "gofmt -l . (no files need formatting)"
 else
