@@ -164,7 +164,11 @@ jobs:
           # calibrated on rather than making them guess at a format.
           git clone --depth 1 --branch v3.1.16.0 \
             https://github.com/AcademySoftwareFoundation/OpenImageIO.git /tmp/oiio
+          # OpenImageIO defaults its install prefix to <source>/dist, so
+          # without this it installs successfully and puts oiiotool somewhere
+          # nothing looks.
           cmake -S /tmp/oiio -B /tmp/oiio/build \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DCMAKE_BUILD_TYPE=Release \
             -DOpenImageIO_BUILD_MISSING_DEPS=all \
             -DUSE_PYTHON=OFF \
