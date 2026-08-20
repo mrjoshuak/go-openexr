@@ -98,3 +98,74 @@ jobs:
           go build ./cmd/exrmultiview
           go build ./cmd/exrenvmap
           go build ./cmd/exr2aces
+
+  gate:
+    name: Conformance gate and mutation harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Install build tools and OpenImageIO
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential pkg-config python3 \
+            openimageio-tools libopenjp2-tools zlib1g-dev
+
+      # The distribution's OpenEXR predates HTJ2K, whose compression
+      # identifiers arrived in 3.4. The gate compares this library's HTJ2K
+      # output against the reference, so the reference has to be new enough to
+      # have it; an older one would turn those rows into failures that say
+      # nothing about this code.
+      - name: Build OpenEXR from source
+        run: |
+          git clone --depth 1 --branch v3.4.0 \
+            https://github.com/AcademySoftwareFoundation/openexr.git /tmp/openexr
+          cmake -S /tmp/openexr -B /tmp/openexr/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DOPENEXR_BUILD_TOOLS=ON \
+            -DOPENEXR_INSTALL_EXAMPLES=OFF
+          cmake --build /tmp/openexr/build -j"$(nproc)"
+          sudo cmake --install /tmp/openexr/build
+          sudo ldconfig
+
+      - name: Build OpenJPH
+        run: |
+          git clone --depth 1 https://github.com/aous72/OpenJPH.git /tmp/openjph
+          cmake -S /tmp/openjph -B /tmp/openjph/build \
+            -DCMAKE_BUILD_TYPE=Release -DOJPH_ENABLE_TIFF_SUPPORT=OFF
+          cmake --build /tmp/openjph/build -j"$(nproc)"
+          sudo cmake --install /tmp/openjph/build
+          sudo ldconfig
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Report the oracles in use
+        run: |
+          echo "PATH=$PATH"
+          exrheader --help 2>&1 | head -2 || true
+          pkg-config --modversion OpenEXR || true
+          oiiotool --version 2>&1 | head -1 || true
+          ojph_expand 2>&1 | head -2 || true
+
+      # STRICT makes a section that cannot find its oracle a failure instead of
+      # a skip, so this job cannot pass by measuring nothing. It is the same
+      # bargain the gate makes locally.
+      - name: Run the conformance gate
+        env:
+          STRICT: "1"
+          PATH: /usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+        run: bash scripts/validate.sh
+
+      # The gate says the code is right; the mutation harness says the gate
+      # would notice if it stopped being right. Both or neither.
+      - name: Run the mutation harness
+        run: python3 scripts/mutation/run.py
