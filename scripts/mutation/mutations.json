@@ -1332,6 +1332,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "scanline-region-origin",
+      "codec": "core",
+      "description": "readScanlineRegion takes the region's columns as absolute rather than relative to the data window",
+      "spec": "OpenEXR 3.x file layout, scanline images: a chunk holds its rows at the full width of the data window, and column 0 of the stored data is dataWindow.min.x. A viewport expressed in image coordinates must subtract that origin to index the chunk. Like every other coordinate defect in this package it is invisible while the window starts at (0, 0), which every scanline fixture here did before the viewport work; the offset-window case is what notices.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/region.go",
+          "count": 1,
+          "old": "\t\tsx0 := int(clipped.Min.X - dw.Min.X)\n\t\tsx1 := int(clipped.Max.X-dw.Min.X) + 1",
+          "new": "\t\tsx0 := int(clipped.Min.X)\n\t\tsx1 := int(clipped.Max.X) + 1"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionOnAScanlinePart/htj2k256_origin"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionOnAScanlinePart/htj2k256_offset"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

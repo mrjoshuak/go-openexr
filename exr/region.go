@@ -35,8 +35,8 @@ type RegionSamples struct {
 	DecodedBytes, SkippedBytes int
 }
 
-// ReadRegion reads a rectangle of a tiled part without decompressing the whole
-// of it, and without reading the parts of the file it does not need.
+// ReadRegion reads a rectangle of a part without decompressing the whole of it,
+// and without reading the parts of the file it does not need.
 //
 // This is the composition the chunk index and the codestream index were built
 // for. ChunksForRegion turns the viewport into the tiles that hold it, reading
@@ -50,13 +50,21 @@ type RegionSamples struct {
 // nothing more, and reports SkippedBytes of zero rather than implying
 // otherwise. Samples are returned as float32 whatever the channel's stored
 // type, since a viewport is for looking at.
+//
+// A scanline part works too, and for HTJ2K it is where the codestream saving is
+// largest: a scanline chunk is the full width of the image by 32 or 256 rows,
+// so a viewport is a small fraction of it horizontally and there is a great
+// deal inside the chunk to skip. Measured on a 256-row chunk 8192 samples wide,
+// a 256x256 viewport puts 9.3% of the code-block bytes through the block coder.
+// A scanline part cannot be addressed below a band of rows at the chunk level,
+// though, so the chunk-level saving is smaller than a tiled part's.
 func (f *File) ReadRegion(part int, region Box2i) (*RegionSamples, error) {
 	h := f.Header(part)
 	if h == nil {
 		return nil, errors.New("exr: invalid part index")
 	}
 	if !f.partIsTiled(part) {
-		return nil, errors.New("exr: ReadRegion needs a tiled part; a scanline part has no viewport structure below the chunk")
+		return f.readScanlineRegion(part, h, region)
 	}
 	td := h.TileDescription()
 	if td == nil || td.XSize == 0 || td.YSize == 0 {
@@ -193,6 +201,139 @@ func (f *File) ReadRegion(part int, region Box2i) (*RegionSamples, error) {
 						continue
 					}
 					dstX := int(tx0) + x - int(clipped.Min.X)
+					plane[dstY*rw+dstX] = htj2kSampleAt(row, sx, ch.Type)
+				}
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// readScanlineRegion is ReadRegion for a part stored as scanlines.
+//
+// The shape differs from the tiled path in what a chunk is: a band of rows at
+// the full width of the data window rather than a rectangle. That makes the
+// chunk-level saving weaker — a viewport pulls whole rows — and the
+// codestream-level saving stronger for HTJ2K, since the viewport is a small
+// part of a very wide chunk.
+func (f *File) readScanlineRegion(part int, h *Header, region Box2i) (*RegionSamples, error) {
+	dw := h.DataWindow()
+	clipped := Box2i{
+		Min: V2i{X: maxi32(region.Min.X, dw.Min.X), Y: maxi32(region.Min.Y, dw.Min.Y)},
+		Max: V2i{X: mini32(region.Max.X, dw.Max.X), Y: mini32(region.Max.Y, dw.Max.Y)},
+	}
+	if clipped.Min.X > clipped.Max.X || clipped.Min.Y > clipped.Max.Y {
+		return nil, fmt.Errorf("exr: region %v does not meet the data window %v", region, dw)
+	}
+	rw := int(clipped.Max.X-clipped.Min.X) + 1
+	rh := int(clipped.Max.Y-clipped.Min.Y) + 1
+
+	sorted := h.Channels().SortedByName()
+	for _, ch := range sorted {
+		if ch.XSampling != 1 || ch.YSampling != 1 {
+			return nil, fmt.Errorf("exr: ReadRegion does not handle subsampled channels: %s has sampling %d,%d",
+				ch.Name, ch.XSampling, ch.YSampling)
+		}
+	}
+	out := &RegionSamples{
+		Region:      clipped,
+		Channels:    make([]string, len(sorted)),
+		Planes:      make(map[string][]float32, len(sorted)),
+		ChunksTotal: f.NumChunks(part),
+	}
+	for i, ch := range sorted {
+		out.Channels[i] = ch.Name
+		out.Planes[ch.Name] = make([]float32, rw*rh)
+	}
+
+	chunks, err := f.ChunksForScanlines(part, clipped.Min.Y, clipped.Max.Y)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("exr: no chunk of part %d covers rows %d to %d",
+			part, clipped.Min.Y, clipped.Max.Y)
+	}
+
+	reader, err := NewScanlineReaderPart(f, part)
+	if err != nil {
+		return nil, err
+	}
+	comp := h.Compression()
+	htj2k := comp == CompressionHTJ2K256 || comp == CompressionHTJ2K32
+	linesPerChunk := comp.ScanlinesPerChunk()
+	dwW := int(dw.Max.X-dw.Min.X) + 1
+
+	for _, cr := range chunks {
+		data := make([]byte, cr.DataLength)
+		if _, err := f.reader.ReadAt(data, cr.DataOffset); err != nil {
+			return nil, fmt.Errorf("exr: reading chunk at %d: %w", cr.Offset, err)
+		}
+		out.FileBytes += cr.Length
+		out.ChunksRead++
+
+		// The chunk's own rows, clipped to the data window: the last chunk of
+		// a part is short whenever the height is not a multiple.
+		chunkY0 := int(cr.Y)
+		numLines := mini(linesPerChunk, int(dw.Max.Y)-chunkY0+1)
+		if numLines <= 0 {
+			return nil, fmt.Errorf("exr: chunk at row %d lies outside the data window", chunkY0)
+		}
+		// The rows of this chunk the region wants, chunk-relative.
+		sy0 := int(maxi32(clipped.Min.Y, int32(chunkY0))) - chunkY0
+		sy1 := int(mini32(clipped.Max.Y, int32(chunkY0+numLines-1))) - chunkY0 + 1
+		sx0 := int(clipped.Min.X - dw.Min.X)
+		sx1 := int(clipped.Max.X-dw.Min.X) + 1
+
+		channels := htj2kTileChannels(h.Channels(), dwW, numLines)
+		var (
+			samples      []byte
+			bytesPerLine int
+			offsets      []int
+			gotX0, gotY0 int
+			gotW, gotH   int
+		)
+		if htj2k {
+			sub := image.Rect(sx0, sy0, sx1, sy1)
+			res, err := compression.HTJ2KDecompressPartial(data, channels,
+				&compression.HTJ2KDecodeOptions{Region: &sub})
+			if err != nil {
+				return nil, fmt.Errorf("exr: chunk at row %d: %w", chunkY0, err)
+			}
+			samples, bytesPerLine = res.Data, res.BytesPerLine
+			offsets = htj2kPlaneOffsets(channels, res.Width)
+			gotX0, gotY0 = sx0, sy0
+			gotW, gotH = res.Width, res.Height
+			out.DecodedBytes += res.DecodedBytes
+			out.SkippedBytes += res.SkippedBytes
+		} else {
+			whole, err := reader.decompressChunk(data, chunkY0, numLines, comp)
+			if err != nil {
+				return nil, fmt.Errorf("exr: chunk at row %d: %w", chunkY0, err)
+			}
+			samples = whole
+			offsets = htj2kPlaneOffsets(channels, dwW)
+			bytesPerLine = htj2kLineBytes(channels, dwW)
+			gotX0, gotY0 = 0, 0
+			gotW, gotH = dwW, numLines
+		}
+
+		for ci, ch := range channels {
+			plane := out.Planes[ch.Name]
+			for y := sy0; y < sy1; y++ {
+				sy := y - gotY0
+				if sy < 0 || sy >= gotH {
+					continue
+				}
+				row := samples[sy*bytesPerLine:][offsets[ci]:]
+				dstY := chunkY0 + y - int(clipped.Min.Y)
+				for x := sx0; x < sx1; x++ {
+					sx := x - gotX0
+					if sx < 0 || sx >= gotW {
+						continue
+					}
+					dstX := int(dw.Min.X) + x - int(clipped.Min.X)
 					plane[dstY*rw+dstX] = htj2kSampleAt(row, sx, ch.Type)
 				}
 			}

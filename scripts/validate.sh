@@ -2051,6 +2051,65 @@ else
 		fi
 	fi
 
+	# ---- a rectangle of a scanline part, on a file the reference wrote ----
+	#
+	# Scanline is the format's default storage and most EXRs in the world use
+	# it; ReadRegion refused those outright until now. The geometry differs
+	# from a tiled part in both directions: a chunk is the full width of the
+	# data window by 32 or 256 rows, so a viewport pulls whole rows and the
+	# chunk-level saving is weaker — while for HTJ2K the viewport is a small
+	# part of a very wide chunk, which is where the codestream saving is
+	# largest.
+	#
+	# The fixture here is written by oiiotool, so nothing this library produced
+	# is involved, and scripts/exrpartdump reads it with libOpenEXR. Its
+	# coordinates are the channel's own, which for unsubsampled channels are
+	# the data window's, so the two dumps share a key space after the
+	# reordering awk does below.
+	# exrpartdump is built by the multi-part section above, which may not have
+	# run; build it here so the two sections stay independent of each other's
+	# order.
+	PARTDUMP="${PARTDUMP:-$WORK/exrpartdump}"
+	if [ ! -x "$PARTDUMP" ] && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists OpenEXR; then
+		c++ -std=c++17 -O1 -o "$PARTDUMP" scripts/exrpartdump/exrpartdump.cpp \
+			$(pkg-config --cflags --libs OpenEXR) >"$VPDIR/pd.err" 2>&1 || true
+	fi
+	if ! command -v oiiotool >/dev/null 2>&1; then
+		skip "scanline viewport: oiiotool is not installed (brew install openimageio)"
+	elif [ ! -x "$PARTDUMP" ]; then
+		skip "scanline viewport: exrpartdump could not be built against the reference"
+	elif ! oiiotool --pattern noise:type=uniform 512x512 3 -d half -o "$VPDIR/scan.exr" >"$VPDIR/scan.log" 2>&1; then
+		fail "scanline viewport: oiiotool would not write the fixture: $(head -1 "$VPDIR/scan.log")"
+	elif ! "$PARTDUMP" "$VPDIR/scan.exr" >"$VPDIR/scan_truth.dump" 2>"$VPDIR/scan_dump.err"; then
+		fail "scanline viewport: the reference would not read it: $(head -1 "$VPDIR/scan_dump.err")"
+	elif ! "$VIEWPORT" "$VPDIR/scan.exr" 100 100 227 227 >"$VPDIR/scan_vp.dump" 2>"$VPDIR/scan_vp.err"; then
+		fail "scanline viewport: exrviewport would not read the rectangle: $(head -1 "$VPDIR/scan_vp.err")"
+	else
+		# exrpartdump prints "<channel> <x> <y> <value>"; tilecmp wants
+		# "<lx> <ly> <x> <y> <channel> <value>".
+		awk '''!/^#/ && NF==4 && $2>=100 && $2<=227 && $3>=100 && $3<=227 {
+			print 0, 0, $2, $3, $1, $4 }''' "$VPDIR/scan_truth.dump" >"$VPDIR/scan_vp.expect"
+		awk '''!/^#/''' "$VPDIR/scan_vp.dump" >"$VPDIR/scan_vp.samples"
+		if [ ! -s "$VPDIR/scan_vp.expect" ]; then
+			fail "scanline viewport: the expectation is empty; nothing was compared"
+		else
+			tilecmp "$VPDIR/scan_vp.expect" "$VPDIR/scan_vp.samples"
+			if [ "$CMP_MISSING" = 0 ] && [ "$CMP_EXTRA" = 0 ] && [ "$CMP_MAXERR" = "0" ]; then
+				sread=$(awk '''/^# chunks/ {print $3}''' "$VPDIR/scan_vp.dump")
+				sall=$(awk '''/^# chunks/ {print $4}''' "$VPDIR/scan_vp.dump")
+				sb=$(awk '''/^# filebytes/ {print $3}''' "$VPDIR/scan_vp.dump")
+				sbt=$(awk '''/^# filebytes/ {print $4}''' "$VPDIR/scan_vp.dump")
+				if [ "${sread:-0}" -lt "${sall:-0}" ] && [ "${sb:-0}" -lt "${sbt:-0}" ]; then
+					pass "scanline viewport: a rectangle of a file oiiotool wrote matches the reference exactly ($CMP_SAMPLES samples), reading $sread of $sall chunks and $sb of $sbt bytes"
+				else
+					fail "scanline viewport: samples match but it read $sread of $sall chunks and $sb of $sbt bytes; a rectangle must read less"
+				fi
+			else
+				fail "scanline viewport: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+			fi
+		fi
+	fi
+
 	# ---- reduced-resolution decode of a chunk ----------------------------
 	#
 	# The other dimension the codestream offers. libOpenEXR has no reduced
