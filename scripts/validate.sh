@@ -2116,6 +2116,50 @@ else
 		fi
 	fi
 
+	# ---- line order ------------------------------------------------------
+	#
+	# lineOrder was stored in the header and ignored: every scanline file was
+	# written ascending whatever it declared. Nothing could notice. The
+	# reference reads through the chunk offset table and does not care about
+	# the physical order, so it accepts such a file happily, and a round trip
+	# through this library is equally blind — the header said one thing and the
+	# bytes did another, and only the layout shows it.
+	#
+	# DECREASING_Y means the first scan line in the file has the highest y
+	# (ImfLineOrder.h). RANDOM_Y is tiled-only by the same header's definition,
+	# and used to be accepted on a scanline part and written as increasing.
+	if ! out=$(go run ./scripts/lineordergen "$WORK/lineorder" 2>&1); then
+		fail "line order: could not write the fixtures: $(printf '%s' "$out" | head -1)"
+	else
+		inc=$(printf '%s\n' "$out" | sed -n 's/.*increasing.*file order: //p')
+		dec=$(printf '%s\n' "$out" | sed -n 's/.*decreasing.*file order: //p')
+		rnd=$(printf '%s\n' "$out" | grep -c "random.*refused")
+		if [ "$inc" != "[0 1 2 3 4 5 6 7 8 9 10 11]" ]; then
+			fail "line order: an INCREASING_Y file is laid out $inc"
+		elif [ "$dec" != "[11 10 9 8 7 6 5 4 3 2 1 0]" ]; then
+			fail "line order: a DECREASING_Y file is laid out $dec; the header promises the first scan line has the highest y"
+		elif [ "$rnd" != "1" ]; then
+			fail "line order: RANDOM_Y was accepted on a scanline part; it is tiled-only"
+		else
+			pass "line order: a DECREASING_Y file is laid out back to front as its header promises, INCREASING_Y front to back, and RANDOM_Y is refused on a scanline part"
+		fi
+
+		# The reference must still read both, since the offset table is what it
+		# seeks with and reordering the chunks must not disturb it.
+		lo_fail=0
+		for n in increasing decreasing; do
+			if ! "$PARTDUMP" "$WORK/lineorder/$n.exr" >"$WORK/lineorder/$n.dump" 2>"$WORK/lineorder/err"; then
+				fail "line order: the reference refused the $n file: $(head -1 "$WORK/lineorder/err")"
+				lo_fail=1
+			fi
+		done
+		if [ "$lo_fail" = "0" ] && ! diff -q "$WORK/lineorder/increasing.dump" "$WORK/lineorder/decreasing.dump" >/dev/null 2>&1; then
+			fail "line order: the reference reads different samples from the two orders; they hold the same image"
+		elif [ "$lo_fail" = "0" ]; then
+			pass "line order: the reference reads the same samples from both orders, so the offset table survived the reordering"
+		fi
+	fi
+
 	# ---- luminance/chroma, against the format's own definition -----------
 	#
 	# A round trip cannot check a colour encoding. This library stored the

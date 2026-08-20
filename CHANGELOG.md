@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.18] - 2026-08-20
+
+Fifth fix from the parity audit: line order.
+
+### Fixed
+- **`lineOrder` was stored in the header and ignored.** Every scanline file was
+  written front to back whatever it declared, so a file saying DECREASING_Y —
+  "first scan line has highest y coordinate", in the reference's own words —
+  was laid out ascending. A reader streaming the file rather than seeking
+  through the chunk offset table gets the rows in the opposite order to the one
+  the header promises.
+
+  Nothing could catch this. libOpenEXR seeks through the offset table and does
+  not care about the physical order, so it reads such a file without complaint;
+  a round trip through this library is equally blind. Only inspecting the
+  layout shows it, and the check added here does that by sorting the offsets
+  rather than walking the table — walking the table shows ascending y for every
+  file and measures nothing, which is part of why this survived.
+
+  The offset table stays ordered by increasing y in both orders, because that
+  is the index a reader seeks with. `Writer.WriteChunkPartAt` is new, so a
+  writer emitting chunks out of order can say which slot it means rather than
+  having it inferred from arrival.
+
+### Added
+- **RANDOM_Y is refused on a scanline part**, quoting the reference's own
+  definition: `ImfLineOrder.h` says it is "only for tiled files; tiles are
+  written in random order". A scanline part is chunks of consecutive rows and
+  has no way to express it. It used to be accepted and written as increasing,
+  producing a file whose header claimed something the format does not allow.
+
+### Gate
+- 262 checks, 0 failures, 0 skipped. Two new checks: the physical layout of a
+  file in each order, and that the reference reads the same samples from both —
+  so reordering the chunks is proved not to have disturbed the offset table.
+- Mutations 47 and 48: `lineorder-ignored` and
+  `random-y-accepted-on-scanline`. Both survive the pre-existing tests.
+
+### A correction to the audit
+The parity audit reported that the reference *refuses* a scanline file
+declaring RANDOM_Y. It does not — `exrheader`, `exrpartdump` and `oiiotool` all
+read one without complaint, because they seek through the offset table. The
+defect is real and worth fixing, but it is a silent divergence from the
+format's own definition rather than a loud failure, which is a different and
+somewhat worse thing.
+
 ## [1.4.17] - 2026-08-20
 
 Fourth fix from the parity audit: luminance/chroma. Three defects, and the

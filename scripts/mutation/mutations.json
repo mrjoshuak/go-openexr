@@ -1703,6 +1703,68 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "lineorder-ignored",
+      "codec": "core",
+      "description": "A DECREASING_Y file is written front to back, as every file was before v1.4.18",
+      "spec": "ImfLineOrder.h defines DECREASING_Y as 'first scan line has highest y coordinate' — it describes where the chunks sit in the file. Declaring it and writing ascending produces a file whose header says the opposite of what the file does. Nothing catches it by reading: the reference seeks through the chunk offset table, which is ordered by increasing y whatever the line order is, so it accepts such a file without complaint and a round trip through this library is equally blind. Only inspecting the physical layout can see it, which is why the added test sorts the offsets rather than walking the table.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/scanline.go",
+          "count": 1,
+          "old": "\tdecreasing := w.header.LineOrder() == LineOrderDecreasing",
+          "new": "\tdecreasing := false"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestLineOrderIsHonoured"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "random-y-accepted-on-scanline",
+      "codec": "core",
+      "description": "RANDOM_Y is accepted on a scanline part",
+      "spec": "ImfLineOrder.h: RANDOM_Y is 'only for tiled files; tiles are written in random order'. A scanline part is chunks of consecutive rows and has no way to express it, so declaring it produces a file the format does not allow. The reference reads such a file anyway — it seeks through the offset table — so accepting it is a silent divergence rather than a loud one.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/scanline.go",
+          "count": 1,
+          "old": "\tif w.header.LineOrder() == LineOrderRandom {",
+          "new": "\tif false && w.header.LineOrder() == LineOrderRandom {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestScanlineWriteAndRead"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestRandomYIsRefusedOnAScanlinePart"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

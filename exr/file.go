@@ -889,17 +889,37 @@ func (w *Writer) WriteChunk(y int32, data []byte) error {
 // WriteChunkPart writes a chunk of pixel data to the specified part.
 // For scanline files, y is the y-coordinate of the first scanline in the chunk.
 // data should be the compressed pixel data.
+//
+// The chunk's offset is recorded in the next free slot, so chunks arriving in
+// increasing y order fill the table in order. A writer emitting them in another
+// order — which DECREASING_Y requires — must say which slot it means; see
+// WriteChunkPartAt.
 func (w *Writer) WriteChunkPart(part int, y int32, data []byte) error {
+	if part < 0 || part >= len(w.offsets) {
+		return errors.New("exr: invalid part index")
+	}
+	return w.WriteChunkPartAt(part, w.chunkIndex[part], y, data)
+}
+
+// WriteChunkPartAt writes a chunk and records its offset in a given slot of the
+// part's chunk offset table.
+//
+// The offset table is always ordered by increasing y whatever the file's line
+// order is: it is the index a reader seeks with. lineOrder describes the order
+// the chunks are laid out in the file, not the order of the table. Writing a
+// DECREASING_Y file therefore means emitting the chunks back to front while
+// still filling the table front to back, and that needs the slot stated rather
+// than inferred from arrival.
+func (w *Writer) WriteChunkPartAt(part int, idx int, y int32, data []byte) error {
 	if w.finalized {
 		return errors.New("exr: cannot write to finalized file")
 	}
 	if part < 0 || part >= len(w.offsets) {
 		return errors.New("exr: invalid part index")
 	}
-
-	idx := w.chunkIndex[part]
-	if idx >= len(w.offsets[part]) {
-		return errors.New("exr: too many chunks written")
+	if idx < 0 || idx >= len(w.offsets[part]) {
+		return fmt.Errorf("exr: chunk slot %d is outside the part's %d chunks",
+			idx, len(w.offsets[part]))
 	}
 
 	// Record the offset

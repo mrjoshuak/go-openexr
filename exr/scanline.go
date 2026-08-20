@@ -974,6 +974,18 @@ func (w *ScanlineWriter) WritePixels(y1, y2 int) error {
 		return ErrScanlineOutOfRange
 	}
 
+	// RANDOM_Y is a tiled-only order. The reference's own enum says so —
+	// ImfLineOrder.h: "only for tiled files; tiles are written in random
+	// order" — and there is no way to express it for scanlines, which are
+	// chunks of consecutive rows. It used to be accepted and written as
+	// increasing, producing a file whose header claimed something the format
+	// does not allow.
+	if w.header.LineOrder() == LineOrderRandom {
+		return fmt.Errorf("exr: lineOrder RANDOM_Y is only for tiled files "+
+			"(ImfLineOrder.h: %q); a scanline part must be INCREASING_Y or DECREASING_Y",
+			"only for tiled files; tiles are written in random order")
+	}
+
 	// The same check the reader makes, for the same reason: a frame buffer
 	// that does not cover these rows would otherwise be read past its end and
 	// the file written from whatever followed it.
@@ -1006,7 +1018,11 @@ func (w *ScanlineWriter) WritePixels(y1, y2 int) error {
 	numWorkers := effectiveWorkers(config)
 	useParallel := numWorkers > 1 && numChunks >= config.GrainSize
 
-	if !useParallel {
+	// A decreasing-order file has to be emitted back to front, which means
+	// every chunk must exist before any is written. The collect-then-write
+	// path already works that way, so it serves both orders; the sequential
+	// path streams chunk by chunk and cannot.
+	if !useParallel && w.header.LineOrder() != LineOrderDecreasing {
 		// Sequential processing (original path)
 		return w.writePixelsSequential(y1, y2)
 	}
@@ -1209,13 +1225,30 @@ func (w *ScanlineWriter) writePixelsParallel(y1, y2, minY, maxY int, comp Compre
 		return err
 	}
 
-	// Phase 4: Write chunks sequentially (must maintain file order)
-	for i := 0; i < numChunks; i++ {
+	// Phase 4: write the chunks, in the order the header promises.
+	//
+	// DECREASING_Y means the first scan line in the file has the highest y
+	// (ImfLineOrder.h), so the chunks go out back to front. The offset table
+	// stays ordered by increasing y either way — it is what a reader seeks
+	// with — which is why the slot is stated rather than taken from arrival
+	// order.
+	//
+	// This was ignored: the order was declared in the header and every file
+	// was written ascending, so a reader streaming the file rather than
+	// seeking through the table got the rows in the opposite order to the one
+	// the header promised.
+	decreasing := w.header.LineOrder() == LineOrderDecreasing
+	for n := 0; n < numChunks; n++ {
+		i := n
+		if decreasing {
+			i = numChunks - 1 - n
+		}
 		chunk := &chunks[i]
 		if chunk.err != nil {
 			return chunk.err
 		}
-		if err := w.writer.WriteChunk(int32(chunk.chunkStart), chunk.compressed); err != nil {
+		idx := (chunk.chunkStart - int(w.dataWindow.Min.Y)) / comp.ScanlinesPerChunk()
+		if err := w.writer.WriteChunkPartAt(0, idx, int32(chunk.chunkStart), chunk.compressed); err != nil {
 			return err
 		}
 	}
