@@ -1618,7 +1618,12 @@ fi
 			dump_deep "$MPD/sep.2.exr" >"$MPD/got.dump"
 			pix=$(grep -c 'Pixel' "$MPD/got.dump")
 			if [ "${pix:-0}" -lt 100 ]; then
-				fail "deep multi-part: the reference read $pix pixels from the deep part; it holds 117"
+				# dump_deep folds stderr into its output, so when the reference
+				# refuses the file the reason is in the dump rather than in the
+				# count. Saying only "0 pixels" sends the reader looking at the
+				# writer for a problem that is in the oracle.
+				why=$(head -3 "$MPD/got.dump" | tr '\n' ' ' | cut -c1-140)
+				fail "deep multi-part: the reference read $pix pixels from the deep part; it holds 117. The dump begins: $why"
 			elif sed -e 's/[():,]/ /g' "$MPD/mp_deep.txt" >"$MPD/want.dump" &&
 				out=$(awk -v TOL="$DEEP_TOL" -f scripts/deepdiff.awk \
 					"$MPD/want.dump" "$MPD/got.dump" 2>&1); then
