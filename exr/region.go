@@ -86,6 +86,16 @@ func (f *File) ReadRegionLevel(part int, region Box2i, levelX, levelY int) (*Reg
 	if h == nil {
 		return nil, errors.New("exr: invalid part index")
 	}
+	// A deep part's chunks hold a sample-count table and a variable number of
+	// samples per pixel, not a rectangle of fixed-size ones, so none of the
+	// addressing below applies to it. It used to be attempted anyway and
+	// failed downstream in the codec — "compression: corrupted ZIP data" —
+	// which is a refusal by accident, naming the wrong thing.
+	if headerIsDeep(h) {
+		return nil, fmt.Errorf("exr: part %d is deep; ReadRegion addresses chunks of "+
+			"fixed-size pixels and a deep chunk holds a sample count table and a "+
+			"variable number of samples per pixel", part)
+	}
 	if !f.partIsTiled(part) {
 		if levelX != 0 || levelY != 0 {
 			return nil, fmt.Errorf("exr: a scanline part has only level (0,0); asked for (%d,%d)",

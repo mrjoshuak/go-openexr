@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.19] - 2026-08-20
+
+The last four areas from the parity audit, all of them deep. Three of its
+claims reproduced, one did not.
+
+### Fixed
+- **Deep tiled levels below the tile size were unreadable.** A tile is short
+  wherever it runs off the edge of the level it belongs to, and every level
+  below the tile size is entirely short — level 3 of a 64x64 image tiled at
+  16x16 is 8x8. The reader clipped tiles against the *data window* instead, so
+  it expected a full-size tile at every level and the codec reported "corrupted
+  ZIP data". Measured: levels 3 through 6 of a 7-level file unreadable, levels
+  0 to 2 fine. The write direction was already gated, which is exactly why this
+  survived — the gate exercised writing the levels, not reading the small ones
+  back.
+
+- **The deep compositor dropped every channel that was not R, G, B or A.**
+  Measured at 0 of 192 Z samples and 0 of 192 AOV samples written, which for
+  deep data is most of the point of having it. Z and ZBack needed handling of
+  their own besides: they live in dedicated fields rather than in the sample's
+  channel map, so the generic loop never reached them.
+
+- **The deep compositor panicked on any band not starting at the top.** It
+  sized its deep buffers for the band being composited while the deep reader
+  addresses a frame buffer from the data window's first row, as every reader in
+  this package does: "index out of range [4] with length 4" for rows 4 to 7 of
+  a 12-row image.
+
+- **`ReadRegion` refused a deep part by accident.** A deep chunk holds a
+  sample-count table and a variable number of samples per pixel, so byte-range
+  addressing does not apply to it — but it was attempted anyway and failed
+  downstream with "compression: corrupted ZIP data", naming the wrong subsystem
+  and sending anyone debugging it to the compression code. It now refuses by
+  name.
+
+### Not reproduced
+The audit reported that a deep scanline read drops the top rows of any part
+whose data window does not start at y=0, citing 318 of 760 rows zeroed on a
+corpus. It does not reproduce: measured at windows of (0,0) and (5,7), every
+pixel present and correct. The deep reader derives its chunk index from the
+window's first row, which is what would have caused it, and does so correctly.
+The corpus file in this repository has a window at (0,0) and so cannot be the
+case described. A check is added anyway, so the behaviour is pinned either way
+rather than resting on this having been looked at once.
+
+### Gate
+- 263 checks, 0 failures, 0 skipped. Three of these four are Go-side invariants
+  with no external counterpart — the reference has no API for "composite this
+  band and tell me which channels you wrote", and a refusal cannot be checked by
+  asking another implementation to perform it. The reference still gates the
+  deep formats themselves, sample by sample, in the deep sections above.
+- Mutations 49 to 52: `deep-tile-clipped-to-image`, `composite-rgba-only`,
+  `composite-band-sized-buffers` and `readregion-accepts-deep`. All four survive
+  the pre-existing tests.
+
 ## [1.4.18] - 2026-08-20
 
 Fifth fix from the parity audit: line order.

@@ -1160,7 +1160,7 @@ func (r *DeepTiledReader) ReadTileSampleCountsLevel(tileX, tileY, levelX, levelY
 	}
 
 	// Calculate tile boundaries, clipped to the data window
-	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY)
+	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY, levelX, levelY)
 
 	// Decompress sample count table
 	numPixelsInTile := tileW * tileH
@@ -1205,18 +1205,28 @@ func (r *DeepTiledReader) ReadTileSampleCountsLevel(tileX, tileY, levelX, levelY
 // Levels are not accounted for: this library writes deep tiled images with a
 // single level, and the level size would have to be folded in here for the
 // mipmapped case.
-func (r *DeepTiledReader) tileExtent(tileX, tileY int) (startX, startY, w, h int) {
+func (r *DeepTiledReader) tileExtent(tileX, tileY, levelX, levelY int) (startX, startY, w, h int) {
 	tw := int(r.tileDesc.XSize)
 	th := int(r.tileDesc.YSize)
-	dw := r.header.DataWindow()
+	// Clipped to the level's own extent, not the image's.
+	//
+	// A tile is short wherever it runs off the edge of the level it belongs
+	// to, and every level below the tile size is entirely short: level 3 of a
+	// 64x64 image tiled at 16x16 is 8x8, one tile of 8x8. Clipping against the
+	// data window instead said 16x16, so the reader expected four times the
+	// sample-count table the file holds and the codec reported "corrupted ZIP
+	// data" — measured on levels 3 through 6 of a 7-level file, while levels 0
+	// to 2, all at or above the tile size, read correctly.
+	levelW := r.header.LevelWidth(levelX)
+	levelH := r.header.LevelHeight(levelY)
 	startX = tileX * tw
 	startY = tileY * th
 	w, h = tw, th
-	if startX+w > int(dw.Width()) {
-		w = int(dw.Width()) - startX
+	if startX+w > levelW {
+		w = levelW - startX
 	}
-	if startY+h > int(dw.Height()) {
-		h = int(dw.Height()) - startY
+	if startY+h > levelH {
+		h = levelH - startY
 	}
 	if w < 0 {
 		w = 0
@@ -1251,7 +1261,7 @@ func (r *DeepTiledReader) ReadTileLevel(tileX, tileY, levelX, levelY int) error 
 	}
 
 	// Calculate tile boundaries, clipped to the data window
-	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY)
+	tileStartX, tileStartY, tileW, tileH := r.tileExtent(tileX, tileY, levelX, levelY)
 
 	comp := r.header.Compression()
 	sortedChannels := r.getSortedChannels()

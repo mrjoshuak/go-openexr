@@ -2116,6 +2116,39 @@ else
 		fi
 	fi
 
+	# ---- the four deep areas ---------------------------------------------
+	#
+	# Three of these are Go-side invariants with no external counterpart: the
+	# reference has no API for "composite this band and tell me which channels
+	# you wrote", and a refusal cannot be checked by asking another
+	# implementation to perform it. The reference does gate the deep formats
+	# themselves, sample by sample, in the deep sections above; what is checked
+	# here is the behaviour those sections do not reach.
+	#
+	# Measured before the fixes: the compositor wrote 0 of 192 Z samples and 0
+	# of 192 AOV samples, because it composited only R, G, B and A; it panicked
+	# with "index out of range [4] with length 4" on any band not starting at
+	# the top, because it sized its deep buffers for the band while the reader
+	# addresses them from the data window; deep tiled levels 3 through 6 of a
+	# 7-level file were unreadable, because tiles were clipped to the image
+	# rather than to their own level; and ReadRegion attempted a deep part and
+	# failed inside the codec with "corrupted ZIP data", naming the wrong
+	# thing entirely.
+	#
+	# The fourth, a deep scanline read through a non-origin data window, is
+	# pinned rather than fixed: the audit reported it broken and it does not
+	# reproduce. See the test for the measurement.
+	if out=$(go test ./exr/ -run 'TestDeepScanlineReadThroughANonOriginWindow|TestReadRegionRefusesADeepPart|TestDeepCompositingCoversEveryChannelAndAnyBand|TestDeepTiledLevelsBelowTheTileSize' -v 2>&1); then
+		n=$(printf '%s\n' "$out" | grep -cE '^\s*--- PASS')
+		if [ "$n" -lt 4 ]; then
+			fail "deep areas: only $n of the four assertions ran"
+		else
+			pass "deep areas: $n checks — every mipmap level of a deep tiled part reads back, the compositor covers every channel and any band, ReadRegion refuses a deep part by name, and a non-origin deep window reads correctly"
+		fi
+	else
+		fail "deep areas: $(printf '%s\n' "$out" | grep -E 'deep_areas_test' | head -1 | cut -c1-110)"
+	fi
+
 	# ---- line order ------------------------------------------------------
 	#
 	# lineOrder was stored in the header and ignored: every scanline file was

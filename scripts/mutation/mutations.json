@@ -1765,6 +1765,130 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "deep-tile-clipped-to-image",
+      "codec": "core",
+      "description": "A deep tile is clipped to the image rather than to its own resolution level",
+      "spec": "OpenEXR 3.x tiled images: a tile is short wherever it runs off the edge of the level it belongs to, and every level below the tile size is entirely short — level 3 of a 64x64 image tiled at 16x16 is 8x8, one tile of 8x8. Clipping against the data window instead claims a full-size tile at every level, so the reader expects four times the sample-count table the file holds. Measured: levels 3 through 6 of a 7-level deep tiled file were unreadable with 'compression: corrupted ZIP data', while levels 0 to 2, at or above the tile size, read correctly. The write direction was already gated, which is why this survived: the gate exercised writing the levels, not reading the small ones back.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/deep.go",
+          "count": 1,
+          "old": "\tlevelW := r.header.LevelWidth(levelX)\n\tlevelH := r.header.LevelHeight(levelY)",
+          "new": "\tlevelW := int(r.header.DataWindow().Width())\n\tlevelH := int(r.header.DataWindow().Height())"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepTiledRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepTiledLevelsBelowTheTileSize"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "composite-rgba-only",
+      "codec": "core",
+      "description": "The deep compositor writes only R, G, B and A, dropping Z and every AOV",
+      "spec": "OpenEXR's deep compositing composites every channel the sources carry, not a fixed four. Writing only RGBA leaves Z and every AOV at whatever the output frame buffer held — measured at 0 of 192 samples written for both on a file carrying Z and one AOV — which for deep data is most of the point of having it. Nothing caught it because the round trip checked the four channels it did write.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/composite.go",
+          "count": 1,
+          "old": "\t\t\tvalues := c.compositing.CompositePixelAllChannels(samples, names)\n\t\t\tc.writeAllChannels(x, y-minY, values)",
+          "new": "\t\t\t_ = names\n\t\t\tr, g, b, a := c.compositing.CompositePixel(samples)\n\t\t\tc.writeAllChannels(x, y-minY, map[string]float32{\"R\": r, \"G\": g, \"B\": b, \"A\": a})"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestCompositeDeepScanLine"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepCompositingCoversEveryChannelAndAnyBand"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "composite-band-sized-buffers",
+      "codec": "core",
+      "description": "The deep compositor sizes its buffers for the band rather than the data window",
+      "spec": "Every reader in this package addresses a frame buffer from the data window's first row, and the deep reader is no exception. Allocating the compositor's deep buffers for the band being composited therefore leaves them indexed past their end for any band that does not start at the top: measured, 'index out of range [4] with length 4' for rows 4 to 7 of a 12-row image. It is a panic rather than a wrong answer, which no comparison of samples would ever reach.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/composite.go",
+          "count": 1,
+          "old": "\t\tdfb := NewDeepFrameBuffer(width, int(c.dataWindow.Height()))",
+          "new": "\t\tdfb := NewDeepFrameBuffer(width, y2-y1+1)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestCompositeDeepScanLine"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestDeepCompositingCoversEveryChannelAndAnyBand"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "readregion-accepts-deep",
+      "codec": "core",
+      "description": "ReadRegion attempts a deep part instead of refusing it",
+      "spec": "A deep chunk holds a sample-count table and a variable number of samples per pixel, not a rectangle of fixed-size ones, so byte-range addressing does not apply to it. Attempting it anyway fails downstream in the codec with 'compression: corrupted ZIP data' — a refusal by accident that names the wrong subsystem and would send anyone debugging it to the compression code.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/region.go",
+          "count": 1,
+          "old": "\tif headerIsDeep(h) {",
+          "new": "\tif false && headerIsDeep(h) {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionMatchesTheWholeImage"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionRefusesADeepPart"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

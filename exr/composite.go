@@ -169,6 +169,17 @@ func (d *DefaultDeepCompositing) CompositePixelAllChannels(samples []DeepSample,
 			result[name] += oneMinusAlpha * value
 		}
 
+		// Z and ZBack live in their own fields rather than in Channels, so the
+		// loop above never reached them and a composited image came back with
+		// depth of zero everywhere — measured at 0 of 192 samples written.
+		// They composite like any other channel.
+		if _, want := result["Z"]; want {
+			result["Z"] += oneMinusAlpha * sample.Z
+		}
+		if _, want := result["ZBack"]; want {
+			result["ZBack"] += oneMinusAlpha * sample.ZBack
+		}
+
 		alpha = result["A"]
 	}
 
@@ -321,9 +332,14 @@ func (c *CompositeDeepScanLine) ReadPixels(y1, y2 int) error {
 	minY := int(c.dataWindow.Min.Y)
 
 	// Create deep frame buffers for each source
+	// The buffers cover the whole data window, not the band being composited.
+	// The deep reader addresses a frame buffer from the window's first row —
+	// as every reader in this package does — so a band-sized buffer was
+	// indexed past its end for any band that did not start at the top:
+	// "index out of range [4] with length 4" for rows 4..7 of a 12-row image.
 	deepBuffers := make([]*DeepFrameBuffer, len(c.sources))
 	for i, source := range c.sources {
-		dfb := NewDeepFrameBuffer(width, y2-y1+1)
+		dfb := NewDeepFrameBuffer(width, int(c.dataWindow.Height()))
 
 		// Add channels based on source header
 		channels := source.header.Channels()
@@ -361,28 +377,58 @@ func (c *CompositeDeepScanLine) ReadPixels(y1, y2 int) error {
 		}
 	}
 
-	// Composite each pixel
+	// The names every source carries, so the compositor can carry them too.
+	names := c.sourceChannelNames()
+
+	// Composite each pixel.
+	//
 	for y := y1; y <= y2; y++ {
 		for x := 0; x < width; x++ {
 			samples := c.collectSamples(deepBuffers, x, y-minY)
 
-			if len(samples) > 0 {
-				// Sort if multiple sources
-				if len(c.sources) > 1 {
-					c.compositing.SortPixel(samples)
-				}
+			if len(samples) > 1 || len(c.sources) > 1 {
+				c.compositing.SortPixel(samples)
 			}
 
-			// Composite
-			r, g, b, a := c.compositing.CompositePixel(samples)
-
-			// Write to output frame buffer
-			fbY := y - minY
-			c.writePixel(x, fbY, r, g, b, a)
+			// Every channel, not only RGBA. Compositing only R, G, B and A
+			// left Z and every AOV untouched in the output — measured as 0 of
+			// 192 samples written for both — which for deep data is most of
+			// the point of having it.
+			values := c.compositing.CompositePixelAllChannels(samples, names)
+			c.writeAllChannels(x, y-minY, values)
 		}
 	}
 
 	return nil
+}
+
+// sourceChannelNames returns every channel name the sources carry, in the order
+// the first source lists them, so the compositor covers the whole image rather
+// than the four channels it happens to know about.
+func (c *CompositeDeepScanLine) sourceChannelNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for _, source := range c.sources {
+		channels := source.header.Channels()
+		for j := 0; j < channels.Len(); j++ {
+			n := channels.At(j).Name
+			if !seen[n] {
+				seen[n] = true
+				names = append(names, n)
+			}
+		}
+	}
+	return names
+}
+
+// writeAllChannels writes every composited channel the output frame buffer
+// holds a slice for.
+func (c *CompositeDeepScanLine) writeAllChannels(x, y int, values map[string]float32) {
+	for name, v := range values {
+		if s := c.outputFrameBuffer.Get(name); s != nil {
+			s.SetFloat32(x, y, v)
+		}
+	}
 }
 
 // collectSamples gathers all samples from all sources at a pixel location.
@@ -473,25 +519,6 @@ func (c *CompositeDeepScanLine) getDeepFloat32(slice *DeepSlice, x, y, sampleIdx
 		}
 	}
 	return 0
-}
-
-// writePixel writes composited values to the output frame buffer.
-func (c *CompositeDeepScanLine) writePixel(x, y int, r, g, b, a float32) {
-	if rSlice := c.outputFrameBuffer.Get("R"); rSlice != nil {
-		rSlice.SetFloat32(x, y, r)
-	}
-	if gSlice := c.outputFrameBuffer.Get("G"); gSlice != nil {
-		gSlice.SetFloat32(x, y, g)
-	}
-	if bSlice := c.outputFrameBuffer.Get("B"); bSlice != nil {
-		bSlice.SetFloat32(x, y, b)
-	}
-	if aSlice := c.outputFrameBuffer.Get("A"); aSlice != nil {
-		aSlice.SetFloat32(x, y, a)
-	}
-
-	// Write Z and ZBack as their original values are lost in compositing
-	// The compositor outputs only RGBA
 }
 
 // CompositeDeepTiled composites deep tiled images into a flat frame buffer.
