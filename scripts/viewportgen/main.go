@@ -4,7 +4,11 @@
 //	viewportgen <outdir>
 //
 // Writes vp_htj2k.exr: 512x512 in 256x256 tiles, two float channels, data window
-// at (13, -7).
+// at (13, -7); and vp_htj2k_1ch.exr, the same geometry with a single channel.
+//
+// The single-channel file exists so a chunk's codestream can be handed to
+// ojph_expand, which writes PFM — a one- or three-component raster. Two
+// components have nowhere to go.
 //
 // The sizes are not arbitrary. The reference codec's HTJ2K parameters are fixed
 // at 128x32 code-blocks and five decompositions (internal_ht.cpp), and a
@@ -109,4 +113,58 @@ func main() {
 	}
 	fmt.Printf("wrote %s: %dx%d, %dx%d tiles, window at (%d,%d)\n",
 		path, imgW, imgH, tileSize, tileSize, offX, offY)
+
+	writeSingleChannel(dir)
+}
+
+// writeSingleChannel writes the same geometry with one channel, so a chunk's
+// codestream can be compared against ojph_expand's own reduced decode of it.
+func writeSingleChannel(dir string) {
+	h := exr.NewTiledHeader(imgW, imgH, tileSize, tileSize)
+	h.SetDataWindow(exr.Box2i{
+		Min: exr.V2i{X: offX, Y: offY},
+		Max: exr.V2i{X: offX + imgW - 1, Y: offY + imgH - 1},
+	})
+	h.SetCompression(exr.CompressionHTJ2K256)
+	cl := exr.NewChannelList()
+	cl.Add(exr.Channel{Name: "Y", Type: exr.PixelTypeFloat, XSampling: 1, YSampling: 1})
+	h.SetChannels(cl)
+
+	dw := h.DataWindow()
+	fb, _ := exr.AllocateChannels(h.Channels(), dw)
+	s := fb.Get("Y")
+	for y := int(dw.Min.Y); y <= int(dw.Max.Y); y++ {
+		for x := int(dw.Min.X); x <= int(dw.Max.X); x++ {
+			s.SetFloat32(x, y, sample(0, x-int(dw.Min.X), y-int(dw.Min.Y)))
+		}
+	}
+
+	path := filepath.Join(dir, "vp_htj2k_1ch.exr")
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	w, err := exr.NewTiledWriter(f, h)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "NewTiledWriter:", err)
+		os.Exit(1)
+	}
+	w.SetFrameBuffer(fb)
+	n := (imgW + tileSize - 1) / tileSize
+	m := (imgH + tileSize - 1) / tileSize
+	for ty := 0; ty < m; ty++ {
+		for tx := 0; tx < n; tx++ {
+			if err := w.WriteTile(tx, ty); err != nil {
+				fmt.Fprintf(os.Stderr, "WriteTile(%d,%d): %v\n", tx, ty, err)
+				os.Exit(1)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "Close:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s: one channel, same geometry\n", path)
 }

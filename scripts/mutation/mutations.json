@@ -1301,6 +1301,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "htj2k-reduce-dropped",
+      "codec": "HTJ2K",
+      "description": "HTJ2KDecodeOptions.config drops ReduceResolution, so a reduced decode silently returns the whole chunk",
+      "spec": "ISO/IEC 15444-1 Annex B: a codestream carries its resolution levels and a decoder may reconstruct any prefix of them. The option is this package's way of asking for that, and an option that is declared, documented and then not passed on is the exact defect this whole area was built around — Config.DecodeArea was documented as 'specifies a region to decode' and read by nothing, and a caller sizing a buffer for a half-resolution chunk and receiving a full one gets no indication the request was dropped. The dimensions are what notice, which is why the added test checks them before anything else.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/htj2k_partial.go",
+          "count": 1,
+          "old": "\t\tReduceResolution: o.ReduceResolution,",
+          "new": "\t\tReduceResolution: 0,"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KPartialFullDecodeMatches"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KPartialReducedResolution"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

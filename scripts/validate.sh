@@ -2051,6 +2051,66 @@ else
 		fi
 	fi
 
+	# ---- reduced-resolution decode of a chunk ----------------------------
+	#
+	# The other dimension the codestream offers. libOpenEXR has no reduced
+	# decode to compare against — a chunk decompresses whole there, which is
+	# what makes this an extension — so the oracle is one layer down: an HTJ2K
+	# chunk is a JPEG 2000 codestream and ojph_expand -skip_res reconstructs
+	# exactly the resolution this library is asked for. scripts/exrreduce reads
+	# the tile through the EXR API and writes the codestream out beside its
+	# result, so the two decoders are compared on the same bytes.
+	#
+	# What is NOT asserted is that the result looks like a downsample. It does
+	# not, and the reference agrees it does not: an EXR chunk carries float
+	# samples as reinterpreted bit patterns, so the wavelet runs over bit
+	# patterns and the LL band is a log-domain average. On a ramp over [0, 2)
+	# one level of reduction produces values from 2.2e-23 to 17.75, from this
+	# library and from ojph_expand alike. Comparing against a downsample
+	# instead of against the reference is exactly what had this capability
+	# refused for a year, so the gate compares against the reference.
+	REDUCE="$WORK/exrreduce"
+	if ! command -v ojph_expand >/dev/null 2>&1; then
+		skip "reduced-resolution chunk decode: ojph_expand is not installed (brew install openjph)"
+	elif [ ! -f "$VPDIR/vp_htj2k_1ch.exr" ]; then
+		fail "reduced-resolution chunk decode: the single-channel fixture was not written"
+	elif ! go build -o "$REDUCE" ./scripts/exrreduce/ 2>"$VPDIR/red.err"; then
+		fail "reduced-resolution chunk decode: could not build scripts/exrreduce: $(head -1 "$VPDIR/red.err")"
+	else
+		rd_fail=0
+		rd_ran=0
+		rd_line=""
+		for r in 0 1 2 3; do
+			if ! out=$("$REDUCE" "$VPDIR/vp_htj2k_1ch.exr" 0 0 "$r" \
+				"$VPDIR/red_ours$r.pfm" "$VPDIR/red_cs.j2c" 2>&1); then
+				fail "reduced-resolution chunk decode r=$r: $(printf '%s\n' "$out" | head -1)"
+				rd_fail=1
+				continue
+			fi
+			if [ "$r" = "0" ]; then
+				ojph_expand -i "$VPDIR/red_cs.j2c" -o "$VPDIR/red_ref$r.pfm" >/dev/null 2>&1
+			else
+				ojph_expand -i "$VPDIR/red_cs.j2c" -o "$VPDIR/red_ref$r.pfm" -skip_res "$r" >/dev/null 2>&1
+			fi
+			if [ ! -s "$VPDIR/red_ref$r.pfm" ]; then
+				gap "reduced-resolution chunk decode r=$r: the oracle would not produce it"
+				continue
+			fi
+			rd_ran=$((rd_ran + 1))
+			if ! d=$("$REDUCE" cmp "$VPDIR/red_ref$r.pfm" "$VPDIR/red_ours$r.pfm" 2>&1); then
+				fail "reduced-resolution chunk decode r=$r: $d"
+				rd_fail=1
+			elif [ "$r" != "0" ]; then
+				rd_line=$(printf '%s\n' "$out" | head -1)
+			fi
+		done
+		if [ "$rd_ran" -eq 0 ]; then
+			fail "reduced-resolution chunk decode: nothing was compared"
+		elif [ "$rd_fail" -eq 0 ]; then
+			pass "reduced-resolution chunk decode: $rd_ran levels bit-identical to ojph_expand -skip_res on the same codestream (${rd_line:-measured})"
+		fi
+	fi
+
 	# ---- the same read, on a file the reference wrote --------------------
 	#
 	# Everything above starts from a file this library produced. A viewport

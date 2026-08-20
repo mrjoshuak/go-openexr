@@ -64,6 +64,41 @@ code-blocks the rectangle can reach.
 Nothing open. Every item that stood here is struck through below, with what it
 measured. The work that remains is under Later.
 
+### ~~Reduced-resolution decode of an HTJ2K chunk~~ — done, and the refusal was a measurement error
+
+`HTJ2KDecodeOptions.ReduceResolution` works. A chunk decodes at half, quarter or
+eighth resolution, and costs proportionally less: on a 256x256 float chunk,
+reduce 1 puts 66% of the code-block bytes through the block coder, reduce 2 34%,
+reduce 3 15%. Gated against `ojph_expand -skip_res` on the chunk's own
+codestream at four levels, bit-identical at every one.
+
+It was refused, and the refusal is worth recording because it cost a working
+capability. The measurement behind it — "samples off by 175 on a ramp spanning
+0 to 2" — compared a reduced decode against a downsample of the full decode.
+That is not what a reduced decode produces: the LL band at resolution r is the
+image the wavelet reconstructs at that scale, not an arithmetic average of the
+finer one, so the two disagree by construction. Against the reference's own
+reduced decode, this library was already exact. The oracle was wrong, not the
+code.
+
+**What a reduced decode is not.** It is not a proxy image, and this is a
+property of the format rather than of this implementation. An EXR HTJ2K chunk
+carries float samples as reinterpreted bit patterns under an NLT point
+transform, so the wavelet runs over bit patterns and the reduced LL is a
+log-domain average of them. Measured on a ramp over [0, 2): one level of
+reduction produces values from 2.2e-23 to 17.75 — and `ojph_expand` produces the
+same values, bit for bit. Anything wanting a viewable half-resolution frame has
+to downsample the samples, not the codestream. What a reduced decode is good for
+is cost: fewer bytes through the block coder for a correctly reconstructed
+lower-resolution signal.
+
+Fixing this also closed a silent defect one layer down. A reduced decode of
+binary32 content using the extremes of the NLT word produces a coefficient with
+no float bit pattern to map back to, and go-jpeg2000 narrowed it with a plain
+int32 conversion and returned the wrapped value — 9 of 256 samples wrong against
+OpenJPH, each by exactly the sign-magnitude complement, with nothing reported.
+It returns an error naming the sample now, as of v1.5.6.
+
 ### ~~Codestream-level decode through the EXR API~~ — done, and measured
 
 `File.ReadRegion` reads a rectangle of a tiled part without reading or
@@ -364,18 +399,6 @@ now refuses a chunk with no channels rather than producing one.
 
 ## Later
 
-### Reduced-resolution decode of an HTJ2K chunk
-
-`HTJ2KDecodeOptions.ReduceResolution` is refused, and its tests assert the
-refusal. An EXR HTJ2K chunk always carries an NLT point transform; a reduced
-decode stops the inverse wavelet at an LL subband, so what comes out is
-wavelet-domain values that NLT then maps back from as though they were samples
-— dimensions right, values off by 175 on a ramp spanning 0 to 2 when measured.
-
-Done when a reduced decode of an NLT codestream produces the samples a full
-decode's own downsample produces, held to the wavelet's own error rather than to
-a tolerance chosen to fit. It needs the fix in go-jpeg2000, not here.
-
 ### Lossy codec tolerances derived rather than measured
 
 B44, B44A, DWAA and DWAB are gated with bounds stated in the script header. The
@@ -409,7 +432,7 @@ complete.
 
 ## Dependency note
 
-HTJ2K support requires go-jpeg2000 v1.5.4, which this module pins. Earlier versions cannot emit
+HTJ2K support requires go-jpeg2000 v1.5.6, which this module pins. Earlier versions cannot emit
 a codestream the reference accepts, for two reasons that were measured:
 `EncodeHalf`/`EncodeFloat` ignored `Options.HighThroughput` so Rsiz bit 14 was
 never set, and the NLT segment was written short. `scripts/validate.sh` excuses

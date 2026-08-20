@@ -163,27 +163,164 @@ func TestHTJ2KPartialRegionCostsLess(t *testing.T) {
 		100*float64(part.DecodedBytes)/float64(whole.DecodedBytes), part.SkippedBytes)
 }
 
-// TestHTJ2KPartialReducedResolutionIsRefused records what the codec still
-// cannot do, so this package does not appear to offer more than it delivers.
+// TestHTJ2KPartialReducedResolution is what a sequence player actually wants:
+// a chunk decoded at a fraction of its resolution, for a fraction of the cost.
 //
-// An EXR HTJ2K chunk always carries an NLT point transform, and a
-// reduced-resolution decode stops the inverse wavelet at an LL subband, leaving
-// values NLT maps back from rather than samples. Measured before the refusal
-// landed: dimensions correct, samples off by 175 on a ramp spanning 0 to 2.
-func TestHTJ2KPartialReducedResolutionIsRefused(t *testing.T) {
-	const w, h = 64, 32
+// This replaces a test that pinned a refusal. The refusal was withdrawn in
+// go-jpeg2000 v1.5.6, where it turned out to rest on the wrong comparison — a
+// reduced decode was measured against a downsample of the full decode, which is
+// not what it produces, and against the reference implementation's own reduced
+// decode this library was already exact.
+//
+// What is checked here is what this package can check without an oracle: the
+// dimensions and the cost. The values are the gate's business, and deliberately
+// so — see TestHTJ2KReducedResolutionIsNotADownsample for why an obvious-looking
+// range assertion here would be wrong.
+func TestHTJ2KPartialReducedResolution(t *testing.T) {
+	const w, h = 256, 256
 	chunk, channels, _ := buildHTJ2KChunk(t, w, h)
 
-	if _, err := HTJ2KDecompressPartial(chunk, channels, &HTJ2KDecodeOptions{ReduceResolution: 1}); err == nil {
-		t.Error("ReduceResolution was accepted; it must fail while the codec cannot honour it")
-	}
-	// The control: the whole-chunk path must keep working, or this is
-	// satisfied by a function that fails at everything.
-	res, err := HTJ2KDecompressPartial(chunk, channels, nil)
+	whole, err := HTJ2KDecompressPartial(chunk, channels, nil)
 	if err != nil {
-		t.Fatalf("whole-chunk decode must still work: %v", err)
+		t.Fatalf("whole chunk: %v", err)
 	}
-	if res.Width != w || res.Height != h {
-		t.Errorf("whole-chunk decode produced %dx%d, want %dx%d", res.Width, res.Height, w, h)
+
+	for _, reduce := range []int{1, 2, 3} {
+		res, err := HTJ2KDecompressPartial(chunk, channels,
+			&HTJ2KDecodeOptions{ReduceResolution: reduce})
+		if err != nil {
+			t.Fatalf("reduce %d: %v", reduce, err)
+		}
+		wantW, wantH := w>>uint(reduce), h>>uint(reduce)
+		if res.Width != wantW || res.Height != wantH {
+			t.Fatalf("reduce %d produced %dx%d, want %dx%d",
+				reduce, res.Width, res.Height, wantW, wantH)
+		}
+		if res.SkippedBytes == 0 {
+			t.Errorf("reduce %d skipped no code-blocks; it decoded every resolution "+
+				"and discarded the ones it had just spent the time on", reduce)
+		}
+		if res.DecodedBytes >= whole.DecodedBytes {
+			t.Errorf("reduce %d decoded %d code-block bytes and the whole chunk %d; "+
+				"a reduced decode must cost less", reduce, res.DecodedBytes, whole.DecodedBytes)
+		}
+
+		t.Logf("reduce %d: %dx%d, decoded %d of %d code-block bytes (%.0f%%), skipped %d",
+			reduce, res.Width, res.Height, res.DecodedBytes, whole.DecodedBytes,
+			100*float64(res.DecodedBytes)/float64(whole.DecodedBytes), res.SkippedBytes)
+	}
+
+	// The control: the whole-chunk path must still work, or this is satisfied
+	// by a function that returns something smaller for every request.
+	if whole.Width != w || whole.Height != h {
+		t.Errorf("whole-chunk decode produced %dx%d, want %dx%d", whole.Width, whole.Height, w, h)
+	}
+}
+
+// TestHTJ2KReducedResolutionIsNotADownsample records what a reduced decode of a
+// float chunk actually produces, because the obvious assumption is wrong and
+// acting on it has already cost this project a year of a working capability.
+//
+// An EXR HTJ2K chunk carries float samples as reinterpreted bit patterns under
+// an NLT Type 3 point transform. The wavelet therefore runs over bit patterns,
+// not values. That is exact and reversible for a full decode, which is all the
+// format asks of it. But the LL band of a reduced decode is a lowpass of bit
+// patterns, and a float's bit pattern is roughly logarithmic in its value, so
+// the result is a log-domain average — and near zero, whose bit pattern is an
+// outlier among its neighbours, it is not even that.
+//
+// Measured on a ramp over [0, 2): one level of reduction produces values from
+// 2.2e-23 to 17.75. The reference implementation produces the same values, bit
+// for bit, at every level — this is the format's behaviour and not a defect.
+//
+// The consequence is worth stating where someone will find it: a reduced
+// decode is a correct JPEG 2000 operation and is NOT a proxy image. Anything
+// wanting a viewable half-resolution frame has to downsample the samples, not
+// the codestream.
+func TestHTJ2KReducedResolutionIsNotADownsample(t *testing.T) {
+	const w, h = 256, 256
+	chunk, channels, want := buildHTJ2KChunk(t, w, h)
+
+	lo, hi := want[0], want[0]
+	for _, v := range want {
+		if v < lo {
+			lo = v
+		}
+		if v > hi {
+			hi = v
+		}
+	}
+
+	res, err := HTJ2KDecompressPartial(chunk, channels, &HTJ2KDecodeOptions{ReduceResolution: 1})
+	if err != nil {
+		t.Fatalf("reduce 1: %v", err)
+	}
+	outside := 0
+	rlo, rhi := float32(math.Inf(1)), float32(math.Inf(-1))
+	for y := 0; y < res.Height; y++ {
+		line := res.Data[y*res.BytesPerLine:]
+		for x := 0; x < res.Width; x++ {
+			v := math.Float32frombits(binary.LittleEndian.Uint32(line[x*4:]))
+			if v < rlo {
+				rlo = v
+			}
+			if v > rhi {
+				rhi = v
+			}
+			if v < lo || v > hi {
+				outside++
+			}
+		}
+	}
+	if outside == 0 {
+		t.Fatalf("every reduced sample fell inside the chunk's range [%v, %v]; this test "+
+			"exists because they do not, and if that has changed the documentation "+
+			"above and in the roadmap is now wrong", lo, hi)
+	}
+	t.Logf("chunk range [%v, %v]; reduced by 1 the range is [%v, %v], with %d of %d "+
+		"samples outside the chunk's own range — a reduced decode is not a downsample",
+		lo, hi, rlo, rhi, outside, res.Width*res.Height)
+}
+
+// TestHTJ2KReducedResolutionOfAConstantChunk is the oracle-free correctness
+// check: every resolution of a constant image is that constant, whatever the
+// wavelet is running over, so this catches a decode that stopped in the wavelet
+// domain without assuming anything about what a reduced decode of real content
+// should look like.
+func TestHTJ2KReducedResolutionOfAConstantChunk(t *testing.T) {
+	const w, h = 128, 128
+	const constant = float32(0.75)
+
+	channels := []HTJ2KChannelInfo{
+		{Type: HTJ2KPixelTypeFloat, Width: w, Height: h, XSampling: 1, YSampling: 1, Name: "Y"},
+	}
+	src := make([]byte, w*h*4)
+	for i := 0; i < w*h; i++ {
+		binary.LittleEndian.PutUint32(src[i*4:], math.Float32bits(constant))
+	}
+	chunk, err := HTJ2KCompress(src, h, channels, 128)
+	if err != nil {
+		t.Fatalf("HTJ2KCompress: %v", err)
+	}
+
+	for _, reduce := range []int{0, 1, 2, 3} {
+		var opts *HTJ2KDecodeOptions
+		if reduce > 0 {
+			opts = &HTJ2KDecodeOptions{ReduceResolution: reduce}
+		}
+		res, err := HTJ2KDecompressPartial(chunk, channels, opts)
+		if err != nil {
+			t.Fatalf("reduce %d: %v", reduce, err)
+		}
+		for y := 0; y < res.Height; y++ {
+			line := res.Data[y*res.BytesPerLine:]
+			for x := 0; x < res.Width; x++ {
+				v := math.Float32frombits(binary.LittleEndian.Uint32(line[x*4:]))
+				if v != constant {
+					t.Fatalf("reduce %d sample (%d,%d) = %v, want %v; every level of a "+
+						"constant chunk is that constant", reduce, x, y, v, constant)
+				}
+			}
+		}
 	}
 }
