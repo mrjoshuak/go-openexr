@@ -162,7 +162,6 @@ jobs:
       - name: Run the conformance gate
         env:
           STRICT: "1"
-          PATH: /usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
         run: bash scripts/validate.sh
 
       # The gate says the code is right; the mutation harness says the gate
