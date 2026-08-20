@@ -37,6 +37,19 @@ supposed to mean all along and did not.
   has been reporting "green CI" beside gate output produced locally. Both were
   true; together they read as more than they were.
 
+  It runs on **both** architectures. A host can cross-compile and cross-vet the
+  other one but cannot execute it, so running both suites means running the gate
+  twice; that check is recorded as a note on each host rather than counted as a
+  skip, because no machine can satisfy it and the sibling job does. Getting
+  there took four attempts, each worth recording: a PATH override that removed
+  the Go toolchain, `go build`'s "go: downloading" on a cold cache tripping the
+  gate's requirement that it print nothing, the distribution's OpenImageIO being
+  linked against a pre-HTJ2K OpenEXR, and OpenImageIO defaulting its install
+  prefix to `<source>/dist` so it installed successfully somewhere nothing
+  looks. The last of those presented as `oiiotool: command not found` inside a
+  check that reported only "0 pixels", which is why that check now says what the
+  dump began with.
+
 ## [1.4.19] - 2026-08-20
 
 The last four areas from the parity audit, all of them deep. Three of its
