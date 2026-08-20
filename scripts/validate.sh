@@ -2051,6 +2051,54 @@ else
 		fi
 	fi
 
+	# ---- the precinct opt-in --------------------------------------------
+	#
+	# A precinct partition is the one thing this library will write that
+	# libOpenEXR's compressor would not have produced, so it is opt-in and the
+	# default is untouched. Three things have to hold and each is checked
+	# separately.
+	#
+	# The default must be unchanged: the file written without the option must
+	# still be byte-for-byte what it was, which the whole HTJ2K section above
+	# already asserts against the reference. Here that is pinned by the two
+	# files differing at all — if they did not, the option is being ignored and
+	# every other check is vacuous.
+	#
+	# The reference must still read it. This is the question, not an
+	# assumption: a conforming HTJ2K codestream with a precinct partition is
+	# something the reference decoder has never been asked for by its own
+	# encoder. It reads it exactly.
+	#
+	# And it must buy something, or it is a gratuitous deviation.
+	if [ ! -x "$TILEDUMP" ]; then
+		skip "precinct opt-in: exrtiledump could not be built against the reference"
+	elif [ ! -f "$VPDIR/vp_htj2k_prec.exr" ] || [ ! -f "$VPDIR/vp_htj2k_1ch.exr" ]; then
+		fail "precinct opt-in: the fixtures were not written"
+	elif cmp -s "$VPDIR/vp_htj2k_prec.exr" "$VPDIR/vp_htj2k_1ch.exr"; then
+		fail "precinct opt-in: the two files are byte-identical; the option was ignored"
+	elif ! "$TILEDUMP" "$VPDIR/vp_htj2k_1ch.exr" >"$VPDIR/prec_plain.dump" 2>"$VPDIR/prec.err"; then
+		fail "precinct opt-in: the reference would not read the default file: $(head -1 "$VPDIR/prec.err")"
+	elif ! "$TILEDUMP" "$VPDIR/vp_htj2k_prec.exr" >"$VPDIR/prec_prec.dump" 2>"$VPDIR/prec.err"; then
+		fail "precinct opt-in: the reference would not read the precinct file: $(head -1 "$VPDIR/prec.err")"
+	else
+		tilecmp "$VPDIR/prec_plain.dump" "$VPDIR/prec_prec.dump"
+		if [ "$CMP_MISSING" = 0 ] && [ "$CMP_EXTRA" = 0 ] && [ "$CMP_MAXERR" = "0" ]; then
+			psz=$(wc -c <"$VPDIR/vp_htj2k_prec.exr" | tr -d " ")
+			dsz=$(wc -c <"$VPDIR/vp_htj2k_1ch.exr" | tr -d " ")
+			pass "precinct opt-in: libOpenEXR reads a precinct-partitioned file exactly ($CMP_SAMPLES samples identical to the default file), for $dsz -> $psz bytes"
+		else
+			fail "precinct opt-in: the reference read the precinct file differently: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+		fi
+
+		# And the saving it was written for.
+		if out=$(go test ./compression/ -run "TestHTJ2KPrecinctsBuyAddressability|TestHTJ2KDefaultOutputIsUnchangedByTheOptionsType" -v 2>&1); then
+			line=$(printf '%s\n' "$out" | sed -n "s/.*\(512x512 chunk: .*\)\$/\1/p" | head -1)
+			pass "precinct opt-in: it buys a smaller region decode and the default output is unchanged (${line:-measured})"
+		else
+			fail "precinct opt-in: $(printf '%s\n' "$out" | grep -E "htj2k_precinct_test" | head -1 | cut -c1-110)"
+		fi
+	fi
+
 	# ---- a rectangle of a scanline part, on a file the reference wrote ----
 	#
 	# Scanline is the format's default storage and most EXRs in the world use

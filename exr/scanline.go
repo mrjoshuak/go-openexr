@@ -853,6 +853,7 @@ type ScanlineWriter struct {
 	writer      *Writer
 	header      *Header
 	frameBuffer *FrameBuffer
+	htj2kEnc    *compression.HTJ2KEncodeOptions
 	dataWindow  Box2i
 	channelList *ChannelList
 	currentY    int32
@@ -1505,6 +1506,13 @@ func (r *ScanlineReader) decompressHTJ2K(data []byte, numLines int) ([]byte, err
 }
 
 // compressHTJ2K compresses chunk data using HTJ2K (High-Throughput JPEG 2000).
+// SetHTJ2KEncodeOptions asks for a codestream that differs from the one the
+// reference implementation writes. See TiledWriter.SetHTJ2KEncodeOptions; the
+// trade is the same, and the default is the reference's output.
+func (w *ScanlineWriter) SetHTJ2KEncodeOptions(opts *compression.HTJ2KEncodeOptions) {
+	w.htj2kEnc = opts
+}
+
 func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockWidth int) ([]byte, error) {
 	width := int(w.dataWindow.Width())
 
@@ -1534,7 +1542,7 @@ func (w *ScanlineWriter) compressHTJ2K(data []byte, numLines int, blockWidth int
 		}
 	}
 
-	return compression.HTJ2KCompress(data, numLines, channels, blockWidth)
+	return compression.HTJ2KCompressOptions(data, numLines, channels, blockWidth, w.htj2kEnc)
 }
 
 // compressDWA compresses chunk data using DWAA or DWAB. DWAA and DWAB differ

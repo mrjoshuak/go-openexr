@@ -1363,6 +1363,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "htj2k-precinct-default-on",
+      "codec": "HTJ2K",
+      "description": "HTJ2KEncodeOptions.apply writes a precinct partition even when none was asked for",
+      "spec": "OpenEXR 3.x HTJ2K (internal_ht.cpp) writes no precinct partition, so a chunk carrying one is not what the reference encoder would have produced for the same pixels. It is still conforming and libOpenEXR reads it exactly, which the gate measures — but it is a deviation, and a deviation that happens without being asked for is the failure this option exists to avoid. The default has to stay byte-identical, which is a property no external oracle can check for us: the reference reads both files identically, so only a byte comparison against the un-optioned path can see this.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "compression/htj2k_precinct.go",
+          "count": 1,
+          "old": "\tif o == nil || o.PrecinctSizeLog2 == 0 {\n\t\treturn opts\n\t}\n\tsizes := make([]jpeg2000.PrecinctSize, htj2kNumResolutions)",
+          "new": "\tsize := htj2kPrecinctMin\n\tif o != nil && o.PrecinctSizeLog2 != 0 {\n\t\tsize = o.PrecinctSizeLog2\n\t}\n\to = &HTJ2KEncodeOptions{PrecinctSizeLog2: size}\n\tsizes := make([]jpeg2000.PrecinctSize, htj2kNumResolutions)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KRoundTripFloat"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./compression/",
+          "run": "TestHTJ2KDefaultOutputIsUnchangedByTheOptionsType"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

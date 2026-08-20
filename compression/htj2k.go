@@ -396,6 +396,14 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockW
 	if len(channels) == 0 {
 		return nil, errors.New("htj2k: no channels specified")
 	}
+	return htj2kCompress(src, numLines, channels, blockWidth, nil)
+}
+
+// htj2kCompress is HTJ2KCompress with the encoder options threaded through.
+// Nil options are the reference's parameters, and that path must stay
+// byte-identical to what it produced before the options existed.
+func htj2kCompress(src []byte, numLines int, channels []HTJ2KChannelInfo,
+	blockWidth int, enc *HTJ2KEncodeOptions) ([]byte, error) {
 	width, height := channels[0].Width, numLines
 	if err := htj2kValidateChannels(channels, width); err != nil {
 		return nil, err
@@ -439,7 +447,7 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockW
 			}
 		}
 		img := &jpeg2000.HalfImage{Width: width, Height: height, Components: components}
-		if err := jpeg2000.EncodeHalf(&codestreamBuf, img, htj2kOptions(blockWidth)); err != nil {
+		if err := jpeg2000.EncodeHalf(&codestreamBuf, img, enc.apply(htj2kOptions(blockWidth))); err != nil {
 			return nil, fmt.Errorf("htj2k: jpeg2000 half encode failed: %w", err)
 		}
 	} else {
@@ -464,7 +472,7 @@ func HTJ2KCompress(src []byte, numLines int, channels []HTJ2KChannelInfo, blockW
 			Width: width, Height: height, Components: components,
 			BitDepth: 32, Signed: true,
 		}
-		if err := jpeg2000.EncodeFloat(&codestreamBuf, img, htj2kOptions(blockWidth)); err != nil {
+		if err := jpeg2000.EncodeFloat(&codestreamBuf, img, enc.apply(htj2kOptions(blockWidth))); err != nil {
 			return nil, fmt.Errorf("htj2k: jpeg2000 float encode failed: %w", err)
 		}
 	}

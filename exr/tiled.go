@@ -496,6 +496,7 @@ type TiledWriter struct {
 	writer      *Writer
 	header      *Header
 	frameBuffer *FrameBuffer
+	htj2kEnc    *compression.HTJ2KEncodeOptions
 	dataWindow  Box2i
 	channelList *ChannelList
 	tileDesc    *TileDescription

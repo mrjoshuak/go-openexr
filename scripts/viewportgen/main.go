@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mrjoshuak/go-openexr/compression"
 	"github.com/mrjoshuak/go-openexr/exr"
 )
 
@@ -115,6 +116,65 @@ func main() {
 		path, imgW, imgH, tileSize, tileSize, offX, offY)
 
 	writeSingleChannel(dir)
+	writePrecinct(dir)
+}
+
+// writePrecinct writes the same geometry with a precinct partition, so the gate
+// can ask the reference whether it reads one exactly.
+//
+// This is the one thing this library will write that libOpenEXR's compressor
+// would not have produced, and it is opt-in for that reason. Whether the
+// reference can still read it is not something to assume — it is the whole
+// question, and it is a measurement.
+func writePrecinct(dir string) {
+	h := exr.NewTiledHeader(imgW, imgH, tileSize, tileSize)
+	h.SetDataWindow(exr.Box2i{
+		Min: exr.V2i{X: offX, Y: offY},
+		Max: exr.V2i{X: offX + imgW - 1, Y: offY + imgH - 1},
+	})
+	h.SetCompression(exr.CompressionHTJ2K256)
+	cl := exr.NewChannelList()
+	cl.Add(exr.Channel{Name: "Y", Type: exr.PixelTypeFloat, XSampling: 1, YSampling: 1})
+	h.SetChannels(cl)
+
+	dw := h.DataWindow()
+	fb, _ := exr.AllocateChannels(h.Channels(), dw)
+	s := fb.Get("Y")
+	for y := int(dw.Min.Y); y <= int(dw.Max.Y); y++ {
+		for x := int(dw.Min.X); x <= int(dw.Max.X); x++ {
+			s.SetFloat32(x, y, sample(0, x-int(dw.Min.X), y-int(dw.Min.Y)))
+		}
+	}
+
+	path := filepath.Join(dir, "vp_htj2k_prec.exr")
+	f, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	w, err := exr.NewTiledWriter(f, h)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "NewTiledWriter:", err)
+		os.Exit(1)
+	}
+	w.SetHTJ2KEncodeOptions(&compression.HTJ2KEncodeOptions{PrecinctSizeLog2: 5})
+	w.SetFrameBuffer(fb)
+	n := (imgW + tileSize - 1) / tileSize
+	m := (imgH + tileSize - 1) / tileSize
+	for ty := 0; ty < m; ty++ {
+		for tx := 0; tx < n; tx++ {
+			if err := w.WriteTile(tx, ty); err != nil {
+				fmt.Fprintf(os.Stderr, "WriteTile(%d,%d): %v\n", tx, ty, err)
+				os.Exit(1)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "Close:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s: one channel, 32x32 precincts\n", path)
 }
 
 // writeSingleChannel writes the same geometry with one channel, so a chunk's

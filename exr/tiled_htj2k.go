@@ -54,7 +54,7 @@ func htj2kTileChannels(cl *ChannelList, tileWidth, tileHeight int) []compression
 // compressTileHTJ2K compresses one tile's packed samples into an HTJ2K chunk.
 func (w *TiledWriter) compressTileHTJ2K(data []byte, tileWidth, tileHeight, blockWidth int) ([]byte, error) {
 	channels := htj2kTileChannels(w.channelList, tileWidth, tileHeight)
-	return compression.HTJ2KCompress(data, tileHeight, channels, blockWidth)
+	return compression.HTJ2KCompressOptions(data, tileHeight, channels, blockWidth, w.htj2kEnc)
 }
 
 // decompressTileHTJ2K expands one HTJ2K tile chunk back to packed samples.
@@ -71,4 +71,20 @@ func htj2kBlockWidth(c Compression) int {
 		return 32
 	}
 	return 128
+}
+
+// SetHTJ2KEncodeOptions asks for a codestream that differs from the one the
+// reference implementation writes.
+//
+// The zero value, and never calling this, write what libOpenEXR would have
+// written — which is what every other reader is entitled to assume. A precinct
+// partition is the one thing on offer, and it is a real trade: it makes a
+// chunk's packets individually addressable, which is what a viewport read over
+// a network wants, at the price of a file the reference encoder would not have
+// produced. See compression.HTJ2KEncodeOptions for the measured figures.
+//
+// It has no effect on a part whose compression is not HTJ2K, since no other
+// codec in the format has an addressable interior.
+func (w *TiledWriter) SetHTJ2KEncodeOptions(opts *compression.HTJ2KEncodeOptions) {
+	w.htj2kEnc = opts
 }
