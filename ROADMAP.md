@@ -64,6 +64,51 @@ code-blocks the rectangle can reach.
 Nothing open. Every item that stood here is struck through below, with what it
 measured. The work that remains is under Later.
 
+### ~~A precinct partition, as an opt-in~~ — done, with the deviation named
+
+`HTJ2KEncodeOptions.PrecinctSizeLog2`, reachable from either writer through
+`SetHTJ2KEncodeOptions`. The default is untouched and stays what libOpenEXR
+would have written; asking for a partition is the one thing this library will
+write that the reference encoder would not.
+
+Three things had to hold and each is gated separately. **The default is
+unchanged** — pinned not only by comparing the optioned and un-optioned paths
+against each other, which a mutation showed is not enough (a change to what
+"default" means moves both together), but against Scod bit 0 of the COD marker,
+the codestream's own statement about whether it carries a partition. **The
+reference still reads it**: libOpenEXR 3.4.14 reads a precinct-partitioned file
+to the same 262144 samples as the plain one, exactly. That was the open question
+and it is now a measurement. **And it buys something**: on a 512x512 chunk, a
+128x128 region decodes 66794 code-block bytes instead of 151960, for 2.51% more
+file.
+
+What it is for is addressability inside a chunk. Without a partition a
+resolution is one packet covering everything, so the packet index can only ever
+return all of it however small the region — 18 of 18 packets, 100% of the bytes.
+That is the ceiling this lifts, and it is why the option exists rather than the
+partition simply being switched on: the trade is the caller's to make, not this
+library's to make silently.
+
+### ~~Viewport reads of a scanline part~~ — done, and it is where HTJ2K saves most
+
+`File.ReadRegion` serves a scanline part. It refused them outright before, which
+mattered more than it sounds: scanline is the format's default storage and most
+EXRs in the world use it, so the viewport path applied to the minority of files.
+
+The geometry differs from a tiled part in both directions, and the numbers say
+so. A scanline chunk is the full width of the data window by 32 or 256 rows, so
+a viewport pulls whole rows and the chunk-level saving is weaker — a 128x128
+rectangle of a reference-written 512x512 file reads 9 of 32 chunks and 299886 of
+1066785 bytes. But for HTJ2K the viewport is a small part of a very wide chunk,
+which is where the codestream saving is largest: a 256x256 viewport of a
+2048x512 scanline part decodes 31254 of 57096 code-block bytes, against a 256x256
+tile where the chunk is already viewport-sized and nothing can be skipped at all.
+
+Gated against libOpenEXR on a file oiiotool wrote, so nothing this library
+produced is involved, with a mutation that takes the region's columns as
+absolute rather than window-relative — invisible at a window of (0, 0), which is
+what every scanline fixture here used before.
+
 ### ~~Reduced-resolution decode of an HTJ2K chunk~~ — done, and the refusal was a measurement error
 
 `HTJ2KDecodeOptions.ReduceResolution` works. A chunk decodes at half, quarter or

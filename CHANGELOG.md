@@ -5,6 +5,195 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.12] - 2026-08-19
+
+### Documentation
+- Supplies the CHANGELOG entries for **1.4.8 through 1.4.11**, and the ROADMAP
+  items for the scanline viewport and the precinct opt-in. Those four tags
+  shipped without them.
+
+  Worth recording because the failure was silent and the shape is general. A
+  pre-commit hook rejected one release command, which killed the *whole* command
+  including the CHANGELOG edit in it; the commit was then re-issued on its own
+  and the edit was not. Every later entry anchored its insertion on the previous
+  version's heading, so once 1.4.8's entry was missing, 1.4.9's replacement
+  found no anchor and did nothing, and so did 1.4.10's and 1.4.11's. Four
+  releases of documentation disappeared without a single error.
+
+  An anchored text replacement that silently succeeds when it matches nothing is
+  the same defect as a test that passes when it checks nothing, and it was fixed
+  the same way: the script that supplied these asserts that each anchor exists
+  and is unique.
+
+  The code, gate and tests of 1.4.8 through 1.4.11 were unaffected — this is
+  documentation catching up with what those releases already did.
+
+## [1.4.11] - 2026-08-19
+
+### Added
+- **A precinct partition, as an opt-in.** `compression.HTJ2KEncodeOptions` with
+  `PrecinctSizeLog2`, reachable from either writer through
+  `SetHTJ2KEncodeOptions`, plus `HTJ2KCompressOptions`. The default is
+  untouched: a chunk written without asking is still what libOpenEXR would have
+  written, which is the bargain this package makes with every other reader.
+
+  Asking for a partition is the one thing this library will write that the
+  reference encoder would not, so three things are gated separately.
+
+  *The default is unchanged.* Pinned against Scod bit 0 of the COD marker — the
+  codestream's own statement about whether it carries a partition — and not only
+  by comparing the optioned and un-optioned paths against each other. That
+  comparison alone is not enough, and a mutation proved it: forcing precincts on
+  by default moves every entry point together and they still agree. The first
+  version of that test survived the mutation.
+
+  *The reference still reads it.* libOpenEXR 3.4.14 reads a precinct-partitioned
+  file to the same 262144 samples as the plain one, exactly. That was the open
+  question rather than an assumption.
+
+  *And it buys something.* On a 512x512 chunk a 128x128 region decodes 66794
+  code-block bytes instead of 151960, for 2.51% more file. What it is really for
+  is addressability: without a partition a resolution is a single packet
+  covering the whole chunk, so the packet index returns all of it however small
+  the region — 18 of 18 packets, 100% of the bytes. That is the ceiling this
+  lifts, and it is why the trade is offered rather than taken.
+
+### Gate
+- 248 checks, 0 failures, 0 skipped.
+- A 37th mutation, `htj2k-precinct-default-on`, writes a partition when none was
+  asked for. No external oracle can catch it — the reference reads both files
+  identically — so only the codestream's own signalling can.
+
+## [1.4.10] - 2026-08-19
+
+### Added
+- **`File.ReadRegion` serves a scanline part.** It refused them outright before,
+  which mattered more than it sounds: scanline is the format's default storage,
+  so the viewport path applied to a minority of the EXRs in the world.
+
+  The geometry differs from a tiled part in both directions. A scanline chunk is
+  the full width of the data window by 32 or 256 rows, so a viewport pulls whole
+  rows and the chunk-level saving is weaker — a 128x128 rectangle of a
+  reference-written 512x512 file reads 9 of 32 chunks and 299886 of 1066785
+  bytes. For HTJ2K, though, the viewport is a small part of a very wide chunk,
+  and that is where the codestream saving is largest: a 256x256 viewport of a
+  2048x512 scanline part decodes 31254 of 57096 code-block bytes, against a
+  256x256 tile where the chunk is already viewport-sized and nothing can be
+  skipped at all.
+
+  Subsampled channels are refused rather than guessed at, as on the tiled path.
+
+### Gate
+- 246 checks, 0 failures, 0 skipped. A new check reads a rectangle of a scanline
+  file oiiotool wrote and compares it against `scripts/exrpartdump`'s reading of
+  the same file, so nothing this library produced is in the comparison, and
+  asserts the chunk and byte counts fell.
+- A 36th mutation, `scanline-region-origin`, takes the region's columns as
+  absolute rather than relative to the data window — invisible at a window of
+  (0, 0), which is what every scanline fixture here used before.
+
+## [1.4.9] - 2026-08-19
+
+Reduced-resolution decode of an HTJ2K chunk works, and the refusal it replaces
+turned out to be a measurement error rather than a limitation.
+
+### Fixed
+- **`HTJ2KDecodeOptions.ReduceResolution` is honoured.** A chunk decodes at
+  half, quarter or eighth resolution and costs proportionally less — on a
+  256x256 float chunk, reduce 1 puts 66% of the code-block bytes through the
+  block coder, reduce 2 34%, reduce 3 15%. Bit-identical to
+  `ojph_expand -skip_res` on the chunk's own codestream at four levels.
+
+  The refusal rested on comparing a reduced decode against a downsample of the
+  full decode. That is not what a reduced decode produces — the LL band at
+  resolution r is the image the wavelet reconstructs at that scale, not an
+  arithmetic average of the finer one — so the two disagreed by construction and
+  the disagreement was read as a defect. Against the reference's own reduced
+  decode, this library was already exact.
+
+### Read this before using it
+A reduced decode is **not a proxy image**, and that is the format's doing rather
+than this implementation's. An EXR HTJ2K chunk carries float samples as
+reinterpreted bit patterns under an NLT point transform, so the wavelet runs
+over bit patterns and the reduced LL is a log-domain average of them. Measured
+on a ramp over [0, 2): one level of reduction produces values from 2.2e-23 to
+17.75, and `ojph_expand` produces the same values bit for bit. Anything wanting
+a viewable half-resolution frame must downsample the samples, not the
+codestream. What a reduced decode buys is cost.
+
+### Changed
+- `go-jpeg2000` is now v1.5.6, which is where the reduced decode lives, and
+  which also stopped silently wrapping a coefficient that has no sample to map
+  back to — 9 of 256 samples wrong against OpenJPH on extreme content, reported
+  now rather than returned.
+
+### Gate
+- 245 checks, 0 failures, 0 skipped. A new check decodes one tile through the
+  EXR API at four reduction levels and compares each against
+  `ojph_expand -skip_res` on the codestream it extracted from that same chunk,
+  so the two decoders are compared on identical bytes.
+- A 35th mutation, `htj2k-reduce-dropped`, has the option silently ignored. It
+  is the shape of defect this whole area was built around, and the dimensions
+  are what notice.
+- `scripts/exrreduce` (with a self-contained PFM comparator, so this
+  repository's gate needs nothing from go-jpeg2000's scripts) and a
+  single-channel fixture from `scripts/viewportgen`, since PFM carries one or
+  three components and two have nowhere to go.
+
+## [1.4.8] - 2026-08-19
+
+Opening a file no longer reads the file. Until now it did, which made the
+byte-range path worth nothing in the case it was built for.
+
+### Fixed
+- **`Open` fetched the entire file, and refused any file over 64 MiB.** The
+  header's length was computed as `size - 8` — the whole rest of the file — so
+  `Open` pulled all of it into memory, and the 64 MiB DoS bound meant for the
+  header was applied to that figure and rejected every larger file. A
+  4096x4096 float frame is 55 MiB; a 5632x5632 one is 100 MiB and could not be
+  opened at all.
+
+  Measured on v1.4.7, counting bytes at the `io.ReaderAt`:
+
+  ```
+  1024x1024  (3.7 MiB): Open read 3868638 bytes (100.0% of file)
+  2048x2048 (14.3 MiB): Open read 14950734 bytes (100.0% of file)
+  4096x4096 (54.6 MiB): Open read 57213503 bytes (100.0% of file)
+  ```
+
+  So `File.ReadRegion` fetching 2% of a frame was pure addition on top of 100%
+  already fetched. The chunk offset table, `ChunkRange`, `ChunksForRegion` and
+  the viewport read were all real and all pointless from a cold open.
+
+  `Open` now fetches a 64 KiB prefix and parses the headers and offset tables
+  out of it. When one prefix is not enough it grows — and grows *exactly*,
+  because once the headers have parsed the chunk counts are known and so is the
+  table's size, so a large file costs at most one further fetch rather than a
+  doubling search. The 64 MiB bound now applies to the header, which is what it
+  was for.
+
+  The same measurement after:
+
+  ```
+  1024x1024  (3.7 MiB): Open read 65544 bytes (1.7% of file)
+  4096x4096 (54.6 MiB): Open read 65544 bytes (0.1% of file)
+  5632x5632 (100.5 MiB): Open read 65544 bytes (0.1% of file)   <- previously refused
+  ```
+
+  End to end, a 256x256 viewport of a 5632x5632 HTJ2K frame now costs **1.0% of
+  the file**, open included. On v1.4.7 the same read cost 101.7% of a 4096x4096
+  frame, and the 5632 one could not be opened.
+
+### Gate
+- 244 checks, 0 failures, 0 skipped. A new check pins all three properties: a
+  prefix rather than the file, exact growth when the offset table is larger than
+  one prefix (16384 chunks, a 128 KiB table, opened in 196931 bytes across 4
+  calls), and a file past the header cap opening at all.
+- A 34th mutation, `open-reads-whole-file`, restores the whole-file prefix.
+  Nothing about correctness changes when it is applied — every sample still
+  reads back — so only a test that counts bytes at the `ReaderAt` can see it.
+  That is why the added test counts.
+
 ## [1.4.7] - 2026-08-19
 
 Fixes [#7](https://github.com/mrjoshuak/go-openexr/issues/7). A frame buffer
