@@ -1474,6 +1474,74 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "floatvector-count-prefix",
+      "codec": "core",
+      "description": "floatvector is written and read with a leading int32 count, as it was until v1.4.15",
+      "spec": "OpenEXR's floatvector attribute is the float values alone; the count is the attribute's declared size divided by four, which is how the reference derives it (ImfFloatVectorAttribute readValueFrom reads size/sizeof(float) values). A count prefix is wrong in both directions and each fails differently: a vector written with one is read by the reference as one value too many, with the count surfacing as a denormal — measured with oiiotool on (1.5, 2.5, 3.5), the reference reported 4.2039e-45, 1.5, 2.5, 3.5 — and a reference-written vector read with one fails the size check, which fails the open, so a single such attribute makes the whole file unreadable. The old tests asserted the prefix, so the round trip they checked was self-consistent and wrong; only a comparison against the reference can see this.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/types.go",
+          "count": 1,
+          "old": "\tsub := xdr.NewReader(data)\n\tfv := make(FloatVector, size/4)",
+          "new": "\tsub := xdr.NewReader(data)\n\tn := size / 4\n\tif size >= 4 {\n\t\t_, _ = sub.ReadInt32()\n\t\tn--\n\t}\n\tfv := make(FloatVector, n)"
+        },
+        {
+          "file": "exr/types.go",
+          "count": 1,
+          "old": "func WriteFloatVector(w *xdr.BufferWriter, fv FloatVector) {\n\tfor _, f := range fv {",
+          "new": "func WriteFloatVector(w *xdr.BufferWriter, fv FloatVector) {\n\tw.WriteInt32(int32(len(fv)))\n\tfor _, f := range fv {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestAttributeRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestWriteFloatVector"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "attribute-size-unchecked",
+      "codec": "core",
+      "description": "ReadAttribute does not reconcile the declared size against the bytes its type read",
+      "spec": "An OpenEXR attribute is name, type, a 32-bit size and a value of exactly that size. A reader that parses the value by type without checking it consumed the declared size carries on from the wrong offset when the two disagree: every attribute after it is read from the middle of something else, and because the header ends at an empty name it can stop early with a partial header. The observable result was Channels() returning nil for a file libOpenEXR refuses outright — the parse failure surfacing as missing data instead of an error, which is the worst available outcome. No external oracle can see this: the reference has no API for 'parse this header and tell me where you stopped'.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/attribute.go",
+          "count": 1,
+          "old": "\tif consumed := r.Pos() - valueStart; consumed != int(size) {",
+          "new": "\tif consumed := r.Pos() - valueStart; false && consumed != int(size) {"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestAttributeRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestAttributeSizeIsReconciled"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

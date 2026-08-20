@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.15] - 2026-08-20
+
+Second fix from the parity audit: header attribute parsing.
+
+### Fixed
+- **`floatvector` carried a count prefix the format does not have.** The
+  attribute is the float values alone; the count is the declared size divided
+  by four, which is how the reference derives it. This library wrote a leading
+  int32 and expected one, and each direction failed differently.
+
+  Writing: the reference read one value too many, the count surfacing as a
+  denormal. Measured with `oiiotool` on a vector of (1.5, 2.5, 3.5), the
+  reference reported `4.2039e-45, 1.5, 2.5, 3.5`.
+
+  Reading: a reference-written vector took the bits of its first float as a
+  count, failed the size check, and since an attribute error fails the open, a
+  single such attribute made the whole file unreadable.
+
+  The old tests asserted the prefix, so the round trip they checked was
+  self-consistent and wrong — the same shape as the ACES defect in 1.4.14.
+
+- **An attribute's declared size was never reconciled against what its type
+  read.** When the two disagreed the reader carried on from the wrong offset:
+  every attribute after it was parsed from the middle of something else, and
+  because the header ends at an empty name it could stop early with a partial
+  header. The observable result was `Channels()` returning nil for a file
+  libOpenEXR refuses outright — a parse failure surfacing as missing data
+  instead of an error, which is the worst available outcome. `ReadAttribute`
+  now checks it and names the offending attribute. An unknown type is still
+  preserved as raw bytes and still consumes exactly its declared size.
+
+### Gate
+- 254 checks, 0 failures, 0 skipped. Two new checks: the reference reading a
+  `floatvector` this library wrote, and nine Go-side assertions covering the
+  wire format, the lying-size refusal and unknown-type preservation. The size
+  reconciliation has no external counterpart — the reference has no API for
+  "parse this header and tell me where you stopped".
+- Mutations 40 and 41: `floatvector-count-prefix` and
+  `attribute-size-unchecked`. The first is marked symmetric, since it was
+  applied identically to reader and writer, which is exactly why no round trip
+  could see it.
+- The ACES fixture added in 1.4.14 used an unseeded noise pattern. A gate check
+  whose tolerance is one ULP cannot be built on content that changes every run:
+  it can pass repeatedly and then fail on an image nobody can regenerate. The
+  pattern is seeded now and confined to [0, 1], where one half-float ULP is at
+  most 2^-11, and the threshold is twice that — derived from the format rather
+  than from what happened to pass. Three consecutive runs at 254 checks, 0
+  failures.
+
 ## [1.4.14] - 2026-08-19
 
 First fix from the libOpenEXR parity audit.

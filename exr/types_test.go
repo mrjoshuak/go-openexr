@@ -688,68 +688,68 @@ func TestM44dSerialization(t *testing.T) {
 	}
 }
 
+// The floatvector tests below assert the wire format the reference uses: the
+// float values alone, with the count carried by the attribute's size field.
+//
+// They previously asserted a leading int32 count, which this library both wrote
+// and expected. That was wrong in both directions and each direction failed
+// differently. A reference-written vector of three floats took the bits of the
+// first as a count and failed the size check, and because an attribute error
+// fails the open, one such attribute made the whole file unreadable. A vector
+// this library wrote was read by the reference as one value too many, the count
+// surfacing as a denormal — measured with oiiotool on (1.5, 2.5, 3.5), the
+// reference reported "4.2039e-45, 1.5, 2.5, 3.5".
+//
+// The tests were the reason it survived: they encoded the defect as the
+// expectation, so the round trip they checked was self-consistent and wrong.
+
 func TestReadFloatVector(t *testing.T) {
-	// Create valid float vector data: count=3, followed by 3 floats
 	w := xdr.NewBufferWriter(32)
-	w.WriteInt32(3) // count
 	w.WriteFloat32(1.0)
 	w.WriteFloat32(2.0)
 	w.WriteFloat32(3.0)
 
 	r := xdr.NewReader(w.Bytes())
-	result, err := ReadFloatVector(r, 16) // 4 bytes count + 3*4 bytes floats
+	result, err := ReadFloatVector(r, 12) // three floats, no count prefix
 	if err != nil {
 		t.Fatalf("ReadFloatVector() error = %v", err)
 	}
 	if len(result) != 3 {
-		t.Errorf("ReadFloatVector() length = %d, want 3", len(result))
+		t.Fatalf("ReadFloatVector() length = %d, want 3", len(result))
 	}
 	if result[0] != 1.0 || result[1] != 2.0 || result[2] != 3.0 {
-		t.Errorf("ReadFloatVector() = %v, want [1.0, 2.0, 3.0]", result)
+		t.Errorf("ReadFloatVector() = %v, want [1 2 3]", result)
 	}
 }
 
 func TestReadFloatVectorErrors(t *testing.T) {
-	t.Run("TooSmallSize", func(t *testing.T) {
+	t.Run("NotAWholeNumberOfFloats", func(t *testing.T) {
+		r := xdr.NewReader([]byte{0, 0, 0, 0, 0, 0})
+		if _, err := ReadFloatVector(r, 6); err == nil {
+			t.Error("a size that is not a multiple of four should error")
+		}
+	})
+
+	t.Run("NegativeSize", func(t *testing.T) {
 		r := xdr.NewReader([]byte{0, 0, 0, 0})
-		_, err := ReadFloatVector(r, 3) // Size too small
-		if err == nil {
-			t.Error("ReadFloatVector with size < 4 should error")
+		if _, err := ReadFloatVector(r, -4); err == nil {
+			t.Error("a negative size should error")
 		}
 	})
 
-	t.Run("NegativeCount", func(t *testing.T) {
-		// Create data with negative count
+	t.Run("TruncatedPayload", func(t *testing.T) {
 		w := xdr.NewBufferWriter(8)
-		w.WriteInt32(-1)
-		r := xdr.NewReader(w.Bytes())
-		_, err := ReadFloatVector(r, 4)
-		if err == nil {
-			t.Error("ReadFloatVector with negative count should error")
-		}
-	})
-
-	t.Run("SizeMismatch", func(t *testing.T) {
-		// Create data with count=2 but provide wrong size
-		w := xdr.NewBufferWriter(32)
-		w.WriteInt32(2)
 		w.WriteFloat32(1.0)
-		w.WriteFloat32(2.0)
 		r := xdr.NewReader(w.Bytes())
-		_, err := ReadFloatVector(r, 8) // Wrong size - should be 12
-		if err == nil {
-			t.Error("ReadFloatVector with size mismatch should error")
+		if _, err := ReadFloatVector(r, 12); err == nil {
+			t.Error("a size larger than the available bytes should error")
 		}
 	})
 }
 
 func TestReadFloatVectorEmpty(t *testing.T) {
-	// Create valid float vector with count=0
-	w := xdr.NewBufferWriter(8)
-	w.WriteInt32(0) // count = 0
-
-	r := xdr.NewReader(w.Bytes())
-	result, err := ReadFloatVector(r, 4) // Just the count, no floats
+	r := xdr.NewReader(nil)
+	result, err := ReadFloatVector(r, 0)
 	if err != nil {
 		t.Fatalf("ReadFloatVector() error = %v", err)
 	}
@@ -763,14 +763,20 @@ func TestWriteFloatVector(t *testing.T) {
 	w := xdr.NewBufferWriter(32)
 	WriteFloatVector(w, original)
 
-	// Read back
+	// The size field is the whole story: no prefix, four bytes per value.
+	if w.Len() != len(original)*4 {
+		t.Fatalf("WriteFloatVector wrote %d bytes for %d values; the format carries "+
+			"no count prefix, so it must be exactly four bytes each",
+			w.Len(), len(original))
+	}
+
 	r := xdr.NewReader(w.Bytes())
-	result, err := ReadFloatVector(r, 16) // 4 + 3*4 = 16
+	result, err := ReadFloatVector(r, w.Len())
 	if err != nil {
 		t.Fatalf("ReadFloatVector() error = %v", err)
 	}
 	if len(result) != len(original) {
-		t.Errorf("Length = %d, want %d", len(result), len(original))
+		t.Fatalf("Length = %d, want %d", len(result), len(original))
 	}
 	for i := range original {
 		if result[i] != original[i] {

@@ -247,10 +247,24 @@ func ReadAttribute(r *xdr.Reader) (*Attribute, error) {
 		return nil, err
 	}
 
+	if size < 0 {
+		return nil, fmt.Errorf("exr: attribute %q declares a negative size %d", name, size)
+	}
+
 	attr := &Attribute{
 		Name: name,
 		Type: AttributeType(typeName),
 	}
+
+	// Where the value starts, so that what the type reads can be reconciled
+	// against what the header said the value occupies. Without that check a
+	// type whose encoding disagrees with the declared size desynchronises the
+	// parse: every attribute after it is read from the wrong offset, and
+	// because the loop ends at an empty name it can stop early with a
+	// half-built header. The observable result was Channels() returning nil
+	// where libOpenEXR refuses the file outright — a silent wrong answer in
+	// place of a refusal.
+	valueStart := r.Pos()
 
 	// Read attribute value based on type
 	switch attr.Type {
@@ -332,6 +346,12 @@ func ReadAttribute(r *xdr.Reader) (*Attribute, error) {
 
 	if err != nil {
 		return nil, err
+	}
+
+	if consumed := r.Pos() - valueStart; consumed != int(size) {
+		return nil, fmt.Errorf("exr: attribute %q of type %q declares %d bytes but its value read %d; "+
+			"the header cannot be parsed past this point",
+			name, typeName, size, consumed)
 	}
 
 	return attr, nil

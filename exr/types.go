@@ -8,6 +8,7 @@ package exr
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/mrjoshuak/go-openexr/internal/xdr"
 )
@@ -774,37 +775,31 @@ func WriteM44d(w *xdr.BufferWriter, m M44d) {
 }
 
 // ReadFloatVector reads a FloatVector from the reader.
-// The format is: count (int32) followed by count float32 values.
+//
+// The wire format is the float values and nothing else: the count is the
+// attribute's declared size divided by four, exactly as the reference derives
+// it (ImfFloatVectorAttribute readValueFrom reads size/sizeof(float) values).
+//
+// This used to expect a leading int32 count, and wrote one too. Both halves
+// were wrong and each was wrong in a different way. Reading a
+// reference-written vector of three floats took the bits of the first as a
+// count, failed the size check, and the error failed the whole open — one
+// unrecognised attribute made the file unreadable. Writing produced a payload
+// the reference happily read as one value too many, with the count leaking in
+// as a denormal: measured with oiiotool on a vector of (1.5, 2.5, 3.5), the
+// reference reported "4.2039e-45, 1.5, 2.5, 3.5".
 func ReadFloatVector(r *xdr.Reader, size int) (FloatVector, error) {
-	if size < 4 {
-		return nil, errors.New("floatvector: invalid size")
+	if size < 0 || size%4 != 0 {
+		return nil, fmt.Errorf("floatvector: attribute size %d is not a whole number of floats", size)
 	}
-	// Read the raw bytes first to determine count
 	data, err := r.ReadBytes(size)
 	if err != nil {
 		return nil, err
 	}
-
-	// Parse using a sub-reader
-	subReader := xdr.NewReader(data)
-	count, err := subReader.ReadInt32()
-	if err != nil {
-		return nil, err
-	}
-
-	if count < 0 {
-		return nil, errors.New("floatvector: negative count")
-	}
-
-	// Validate size matches expected
-	expectedSize := 4 + int(count)*4
-	if size != expectedSize {
-		return nil, errors.New("floatvector: size mismatch")
-	}
-
-	fv := make(FloatVector, count)
-	for i := int32(0); i < count; i++ {
-		fv[i], err = subReader.ReadFloat32()
+	sub := xdr.NewReader(data)
+	fv := make(FloatVector, size/4)
+	for i := range fv {
+		fv[i], err = sub.ReadFloat32()
 		if err != nil {
 			return nil, err
 		}
@@ -812,9 +807,9 @@ func ReadFloatVector(r *xdr.Reader, size int) (FloatVector, error) {
 	return fv, nil
 }
 
-// WriteFloatVector writes a FloatVector to the writer.
+// WriteFloatVector writes a FloatVector to the writer: the values alone, with
+// the count carried by the attribute's size field.
 func WriteFloatVector(w *xdr.BufferWriter, fv FloatVector) {
-	w.WriteInt32(int32(len(fv)))
 	for _, f := range fv {
 		w.WriteFloat32(f)
 	}

@@ -2099,6 +2099,57 @@ else
 		fi
 	fi
 
+	# ---- header attributes, against the reference ------------------------
+	#
+	# The gate had never asked the reference what it makes of a header this
+	# library writes, and the ROADMAP said so — attribute conformance sat under
+	# Later. Two defects lived in that gap and neither could fail a round trip.
+	#
+	# floatvector carried a leading int32 count in both directions. The format
+	# has none: the count is the attribute's declared size divided by four. So
+	# a vector written here was read by the reference as one value too many,
+	# the count surfacing as a denormal, and a vector the reference wrote made
+	# this library fail the size check — which fails the open, so one such
+	# attribute made the whole file unreadable.
+	#
+	# And ReadAttribute never reconciled the declared size against the bytes
+	# the type actually read, so a disagreement desynchronised everything after
+	# it and could end the header early. That surfaced as Channels() returning
+	# nil on a file libOpenEXR refuses outright: a silent wrong answer standing
+	# in for a refusal.
+	#
+	# oiiotool is the oracle because it prints attribute values, which
+	# exrheader does not for every type.
+	if ! command -v oiiotool >/dev/null 2>&1; then
+		skip "header attributes: oiiotool is not installed"
+	elif ! go build -o "$WORK/fvwrite" ./scripts/fvwrite/ 2>"$WORK/fv.err"; then
+		fail "header attributes: could not build scripts/fvwrite: $(head -1 "$WORK/fv.err")"
+	elif ! out=$("$WORK/fvwrite" "$WORK/attrs.exr" 2>&1); then
+		fail "header attributes: could not write the fixture: $(printf '%s' "$out" | head -1)"
+	else
+		got=$(oiiotool --info -v "$WORK/attrs.exr" 2>/dev/null | sed -n 's/.*myFloats: *//p' | head -1)
+		want="1.5, 2.5, 3.5"
+		if [ "$got" = "$want" ]; then
+			pass "header attributes: the reference reads a floatvector this library wrote as $want, with no count leaking in"
+		else
+			fail "header attributes: the reference reads our floatvector as \"$got\", want \"$want\""
+		fi
+
+		# The read direction, and the size reconciliation, are Go-side
+		# invariants with no external counterpart: the reference has no API for
+		# "parse this header and tell me where you stopped".
+		if out=$(go test ./exr/ -run 'TestAttributeSizeIsReconciled|TestUnknownAttributeStillRoundTrips|TestReadFloatVector|TestWriteFloatVector' -v 2>&1); then
+			n=$(printf '%s\n' "$out" | grep -cE '^\s*--- PASS')
+			if [ "$n" -lt 6 ]; then
+				fail "header attributes: only $n assertions ran"
+			else
+				pass "header attributes: $n assertions — the wire format carries no count prefix, a lying size is refused instead of desynchronising the parse, and an unknown type is still preserved"
+			fi
+		else
+			fail "header attributes: $(printf '%s\n' "$out" | grep -E 'attribute_size_test|types_test' | head -1 | cut -c1-110)"
+		fi
+	fi
+
 	# ---- ACES colour conversion, against the reference tool --------------
 	#
 	# This was wrong for a long time and nothing noticed, because every check it
@@ -2129,7 +2180,12 @@ else
 		mkdir -p "$ADIR"
 		aces_fail=0
 		aces_ran=0
-		for pat in "constant:color=0.8,0.2,0.1" "noise:type=uniform:min=0:max=4"; do
+		# The noise fixture is seeded. An unseeded pattern makes the gate
+		# non-reproducible, which for a check whose tolerance is one ULP means
+		# it can pass a hundred times and fail on content nobody can regenerate.
+		# The range is [0, 1] so that one half-float ULP is at most 2^-11, and
+		# the threshold below carries a factor of two over that.
+		for pat in "constant:color=0.8,0.2,0.1" "noise:type=uniform:min=0:max=1:seed=20260820"; do
 			tag=$(printf '%s' "$pat" | tr -c 'a-zA-Z0-9' '_')
 			if ! oiiotool --pattern "$pat" 64x64 3 -d half -o "$ADIR/$tag.exr" >/dev/null 2>&1; then
 				gap "ACES conversion: oiiotool would not write the $tag fixture"
@@ -2145,10 +2201,11 @@ else
 				continue
 			fi
 			aces_ran=$((aces_ran + 1))
-			# 2^-10 relative is one half ULP at these magnitudes; --diff takes an
-			# absolute threshold, so the bound is scaled by the pattern's own
-			# maximum of 4.
-			if ! d=$(oiiotool --diff --fail 0.004 --warn 0.004 \
+			# Both fixtures live in [0, 1], where one half-float ULP is at most
+			# 2^-11 = 0.00049. The threshold is 0.001, a factor of two above
+			# that, and it comes from the format's precision rather than from
+			# what happened to pass.
+			if ! d=$(oiiotool --diff --fail 0.001 --warn 0.001 \
 				"$ADIR/$tag.ref.exr" "$ADIR/$tag.ours.exr" 2>&1); then
 				fail "ACES conversion $tag: $(printf '%s' "$d" | grep -iE 'max error' | head -1 | cut -c1-100)"
 				aces_fail=1
@@ -2165,7 +2222,7 @@ else
 		# the check above — which is exactly the shape of the defect it exists
 		# to catch.
 		if [ -f "$ADIR/constant_color_0_8_0_2_0_1.exr" ]; then
-			if oiiotool --diff --fail 0.004 --warn 0.004 \
+			if oiiotool --diff --fail 0.001 --warn 0.001 \
 				"$ADIR/constant_color_0_8_0_2_0_1.ref.exr" \
 				"$ADIR/constant_color_0_8_0_2_0_1.exr" >/dev/null 2>&1; then
 				fail "ACES signal check: the unconverted Rec.709 file compared equal to the ACES one"
