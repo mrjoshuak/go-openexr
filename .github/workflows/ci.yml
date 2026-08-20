@@ -157,7 +157,12 @@ jobs:
       # reason that has nothing to do with this code.
       - name: Build OpenImageIO against that OpenEXR
         run: |
-          git clone --depth 1 --branch v3.0.8.1 \
+          # Pinned to the version the gate was written against. oiiotool's
+          # --dumpdata output for deep images differs between OIIO releases,
+          # and the deep sections parse it: 3.0.8 reported 0 pixels for a part
+          # holding 117. Pinning keeps the oracle the same one the checks were
+          # calibrated on rather than making them guess at a format.
+          git clone --depth 1 --branch v3.1.16.0 \
             https://github.com/AcademySoftwareFoundation/OpenImageIO.git /tmp/oiio
           cmake -S /tmp/oiio -B /tmp/oiio/build \
             -DCMAKE_BUILD_TYPE=Release \
