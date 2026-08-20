@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.17] - 2026-08-20
+
+Fourth fix from the parity audit: luminance/chroma. Three defects, and the
+first is the one that mattered most.
+
+### Fixed
+- **The chroma channels carried the wrong quantity.** The format stores
+  `(R-Y)/Y` and `(B-Y)/Y`; this library stored the plain differences `R-Y` and
+  `B-Y`. That is perfectly self-consistent — its own reader undid its own
+  writer exactly, so every round-trip test passed — and it means something
+  different from what the file declares. The chroma of every YC file written
+  here was wrong for every other reader, and every YC file written elsewhere
+  was read wrongly here.
+
+- **The chroma writer wrote each value at a quarter of its position.** It passed
+  chroma *plane* coordinates to `SetHalf`, which takes window-absolute ones and
+  divides by the channel's sampling — so the index was divided a second time and
+  three quarters of the chroma plane was never written at all. Measured: 48 of
+  64 cells left at zero on a 16x16 image.
+
+- **The chroma upsampler made the same mistake on the way back**, reading a
+  quarter of the plane over and over. This is the third and fourth instance of
+  one bug — the row functions in 1.4.16 were the first two — so both call sites
+  now scale by the slice's own sampling factor rather than by a literal.
+
+  Together with 1.4.16, a file this library writes is now read by libOpenEXR
+  with Y, RY and BY matching the format's definition to 2.4e-4, which is inside
+  half precision.
+
+### Changed
+- `TestYCRoundTrip` now states its tolerance per fixture and keeps a
+  deliberately pathological one. Storing the ratios is correct and worse
+  conditioned than storing the differences: as Y approaches zero the ratios grow
+  without bound, so averaging the chroma of a 2x2 block whose luminance varies
+  reconstructs its darkest pixel poorly. Measured, worst channel error against
+  the minimum luminance in the image: 0.0217 → 0.066, 0.275 → 0.0082,
+  0.575 → 0.0047. That is the format's conditioning, and the dark fixture is
+  kept to show it rather than removed to make a number look better.
+
+### Gate
+- 260 checks, 0 failures, 0 skipped. The check is deliberately not a round trip:
+  `scripts/ycgen` writes a file, libOpenEXR reads its Y, RY and BY planes, and
+  `scripts/yccheck.py` compares them against the definition computed
+  independently from the source. With a signal check that rescaled chroma is
+  rejected — the exact shape of the defect being fixed.
+- Mutations 45 and 46: `yc-plain-differences` (symmetric) and
+  `yc-chroma-plane-index`. Both survive the pre-existing tests.
+
 ## [1.4.16] - 2026-08-20
 
 Third fix from the parity audit: subsampled channels. This was the largest of

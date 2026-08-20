@@ -40,14 +40,24 @@ func RGBtoYC(r, g, b float32) (y, ry, by float32) {
 	// Compute luminance using Rec. 709 coefficients
 	y = float32(kr709)*r + float32(kg709)*g + float32(kb709)*b
 
-	// Compute chroma differences
-	// RY = (R - Y) normalized
-	// BY = (B - Y) normalized
-	// OpenEXR uses a specific normalization that allows reconstruction:
-	// RY = R - Y
-	// BY = B - Y
-	ry = r - y
-	by = b - y
+	// The chroma channels are the differences divided by the luminance, which
+	// is what the format stores and what every other reader assumes
+	// (ImfRgbaYca RGBAtoYCA: ycaOut.r = (rgbaIn.r - Y) / Y).
+	//
+	// This used to store the plain differences. That is self-consistent — this
+	// library's own round trip recovered the original pixels exactly — and it
+	// means something different from what the file says, so the chroma of
+	// every YC file written here was wrong for everyone else, and every YC
+	// file written elsewhere was read wrongly here. A round trip cannot see a
+	// convention that both ends share.
+	//
+	// Y of zero has no chroma to express, and the reference writes zero there
+	// rather than dividing.
+	if y == 0 {
+		return 0, 0, 0
+	}
+	ry = (r - y) / y
+	by = (b - y) / y
 
 	return y, ry, by
 }
@@ -55,9 +65,11 @@ func RGBtoYC(r, g, b float32) (y, ry, by float32) {
 // YCtoRGB converts OpenEXR luminance/chroma (Y, RY, BY) to linear RGB.
 // Uses ITU-R BT.709 primaries.
 func YCtoRGB(y, ry, by float32) (r, g, b float32) {
-	// Reconstruct R and B from chroma differences
-	r = ry + y
-	b = by + y
+	// The inverse of RGBtoYC: the chroma channels carry (R-Y)/Y and (B-Y)/Y,
+	// so recovering R and B is a multiply, not an add (ImfRgbaYca YCAtoRGBA:
+	// rgbaOut.r = (ycaIn.r + 1) * Y).
+	r = (ry + 1) * y
+	b = (by + 1) * y
 
 	// Reconstruct G from Y = kr*R + kg*G + kb*B
 	// G = (Y - kr*R - kb*B) / kg
@@ -353,8 +365,14 @@ func (w *YCOutputFile) convertToYC(img *RGBAImage, fb *FrameBuffer, withAlpha bo
 			if count > 0 {
 				avgRY := sumRY / count
 				avgBY := sumBY / count
-				fb.Get("RY").SetHalf(cx, cy, half.FromFloat32(avgRY))
-				fb.Get("BY").SetHalf(cx, cy, half.FromFloat32(avgBY))
+				// SetHalf takes window-absolute coordinates and divides by the
+				// channel's sampling, so a chroma plane column must be given
+				// as the image column it stands for. Passing the plane index
+				// straight in wrote each value at a quarter of its intended
+				// position and left three quarters of the chroma untouched.
+				ryS, byS := fb.Get("RY"), fb.Get("BY")
+				ryS.SetHalf(cx*ryS.XSampling, cy*ryS.YSampling, half.FromFloat32(avgRY))
+				byS.SetHalf(cx*byS.XSampling, cy*byS.YSampling, half.FromFloat32(avgBY))
 			}
 		}
 	}
@@ -563,11 +581,26 @@ func bilinearSample(slice *Slice, px, py, fullW, fullH, chromaW, chromaH int) fl
 	fracX := fx - float32(x0)
 	fracY := fy - float32(y0)
 
-	// Sample four corners
-	v00 := slice.GetFloat32(x0, y0)
-	v10 := slice.GetFloat32(x1, y0)
-	v01 := slice.GetFloat32(x0, y1)
-	v11 := slice.GetFloat32(x1, y1)
+	// Sample four corners.
+	//
+	// x0..y1 are chroma plane coordinates and GetFloat32 takes window-absolute
+	// ones, dividing by the channel's sampling itself — so the plane index has
+	// to be scaled back up by that same sampling. Passing it straight in
+	// divided twice and read a quarter of the plane over and over, which is
+	// the same mistake the row functions and the chroma writer both made.
+	// Scaling by the slice's own factor rather than by a literal 2 keeps this
+	// right for a caller whose slice is already plane-native.
+	sx, sy := slice.XSampling, slice.YSampling
+	if sx < 1 {
+		sx = 1
+	}
+	if sy < 1 {
+		sy = 1
+	}
+	v00 := slice.GetFloat32(x0*sx, y0*sy)
+	v10 := slice.GetFloat32(x1*sx, y0*sy)
+	v01 := slice.GetFloat32(x0*sx, y1*sy)
+	v11 := slice.GetFloat32(x1*sx, y1*sy)
 
 	// Bilinear interpolation
 	v0 := v00*(1-fracX) + v10*fracX

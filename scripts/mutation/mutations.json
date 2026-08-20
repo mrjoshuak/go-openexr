@@ -1635,6 +1635,74 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "yc-plain-differences",
+      "codec": "core",
+      "description": "The chroma channels carry R-Y and B-Y instead of the format's (R-Y)/Y and (B-Y)/Y",
+      "spec": "OpenEXR's luminance/chroma encoding stores the chroma channels as ratios: ImfRgbaYca RGBAtoYCA writes (rgbaIn.r - Y) / Y, and YCAtoRGBA recovers R as (ycaIn.r + 1) * Y. Storing the plain differences is self-consistent — this library's own reader undid its own writer exactly, so every round-trip test passed — and means something different from what the file declares, so the chroma of every YC file written here was wrong for every other reader and every YC file written elsewhere was read wrongly here. Only a comparison of the written planes against the format's definition can see it, which is why the check is against libOpenEXR's reading rather than a round trip.",
+      "symmetric": true,
+      "edits": [
+        {
+          "file": "exr/yc.go",
+          "count": 1,
+          "old": "\tif y == 0 {\n\t\treturn 0, 0, 0\n\t}\n\try = (r - y) / y\n\tby = (b - y) / y",
+          "new": "\try = r - y\n\tby = b - y"
+        },
+        {
+          "file": "exr/yc.go",
+          "count": 1,
+          "old": "\tr = (ry + 1) * y\n\tb = (by + 1) * y",
+          "new": "\tr = ry + y\n\tb = by + y"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestYCRoundTrip"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestYCEncodingMatchesTheFormat"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
+    },
+    {
+      "id": "yc-chroma-plane-index",
+      "codec": "core",
+      "description": "The chroma writer passes plane coordinates to an accessor that divides by the sampling",
+      "spec": "SetHalf takes window-absolute coordinates and divides by the channel's sampling to reach the stored plane, so a chroma plane column must be given as the image column it stands for. Passing the plane index straight in divides a second time: each chroma value lands at a quarter of its intended position and three quarters of the plane is never written. It is the same mistake the row functions and the chroma upsampler both made, and the reference reads the resulting file without complaint.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/yc.go",
+          "count": 1,
+          "old": "\t\t\t\tryS.SetHalf(cx*ryS.XSampling, cy*ryS.YSampling, half.FromFloat32(avgRY))\n\t\t\t\tbyS.SetHalf(cx*byS.XSampling, cy*byS.YSampling, half.FromFloat32(avgBY))",
+          "new": "\t\t\t\tryS.SetHalf(cx, cy, half.FromFloat32(avgRY))\n\t\t\t\tbyS.SetHalf(cx, cy, half.FromFloat32(avgBY))"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestBilinearSample"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestYCChromaLandsWhereItBelongs"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }

@@ -2116,6 +2116,56 @@ else
 		fi
 	fi
 
+	# ---- luminance/chroma, against the format's own definition -----------
+	#
+	# A round trip cannot check a colour encoding. This library stored the
+	# chroma channels as the plain differences R-Y and B-Y; the format stores
+	# (R-Y)/Y and (B-Y)/Y. The wrong form is perfectly self-consistent — the
+	# library's own reader undid its own writer exactly — and means something
+	# different to every other reader, so every YC file written here had chroma
+	# that was wrong for everyone else and every YC file written elsewhere was
+	# read wrongly here.
+	#
+	# So the check is not a round trip. scripts/ycgen writes a file, the
+	# reference reads its Y, RY and BY planes, and scripts/yccheck.py compares
+	# them against the definition computed independently from the source
+	# ramp. Two further defects showed up on the way, both the same shape as
+	# the subsampling ones: the chroma writer passed plane coordinates to an
+	# accessor that divides by the sampling, writing each value at a quarter of
+	# its position, and the chroma upsampler did the same on the way back.
+	if [ ! -x "$PARTDUMP" ]; then
+		skip "luminance/chroma: exrpartdump could not be built against the reference"
+	elif ! out=$(go run ./scripts/ycgen "$WORK/yc" 2>&1); then
+		fail "luminance/chroma: could not write the fixture: $(printf '%s' "$out" | head -1)"
+	elif ! "$PARTDUMP" "$WORK/yc/yc.exr" >"$WORK/yc/ref.dump" 2>"$WORK/yc/err"; then
+		fail "luminance/chroma: the reference refused the file: $(head -1 "$WORK/yc/err")"
+	elif ! d=$(python3 scripts/yccheck.py "$WORK/yc/ref.dump" 32 24 2>&1); then
+		fail "luminance/chroma: the encoded planes are not what the format defines: $d"
+	else
+		pass "luminance/chroma: the reference reads Y, RY and BY as the format defines them ($d)"
+
+		# Signal: the comparison must reject the encoding this library used to
+		# write, or it proves nothing. The plain difference is (R-Y), so
+		# multiplying the reference's chroma by Y reproduces it.
+		awk '/^#/ {print; next}
+		     $1 == "RY" || $1 == "BY" { $4 = $4 * 0.5; print; next }
+		     {print}' "$WORK/yc/ref.dump" >"$WORK/yc/bad.dump"
+		if python3 scripts/yccheck.py "$WORK/yc/bad.dump" 32 24 >/dev/null 2>&1; then
+			fail "luminance/chroma signal check: deliberately rescaled chroma compared clean"
+		else
+			pass "luminance/chroma signal check: the comparison rejects chroma on the wrong scale"
+		fi
+
+		# And the round trip must still work, since a correct encoding that
+		# this library cannot read back is no use.
+		if out=$(go test ./exr/ -run 'TestYCRoundTrip|TestBilinearSample' -v 2>&1); then
+			n=$(printf '%s\n' "$out" | grep -cE '^\s*--- PASS')
+			pass "luminance/chroma: $n round-trip assertions, with the tolerance stated per fixture — the (R-Y)/Y encoding is badly conditioned as Y approaches zero and the dark fixture is kept to show it"
+		else
+			fail "luminance/chroma round trip: $(printf '%s\n' "$out" | grep -E 'yc_test' | head -1 | cut -c1-110)"
+		fi
+	fi
+
 	# ---- subsampled channels, every codec that accepts them --------------
 	#
 	# Subsampling is the format's luminance/chroma mechanism and it was broken

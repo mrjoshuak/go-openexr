@@ -1,6 +1,7 @@
 package exr
 
 import (
+	"fmt"
 	"image"
 	"math"
 	"os"
@@ -302,59 +303,111 @@ func TestYCWriteYCA(t *testing.T) {
 	}
 }
 
+// TestYCRoundTrip measures what a luminance/chroma round trip costs, and ties
+// the tolerance to the encoding rather than to whatever happened to pass.
+//
+// The format stores (R-Y)/Y and (B-Y)/Y, not the plain differences. This
+// library stored the differences until v1.4.17: self-consistent, so its own
+// round trip was exact, and not what the file claims — every YC file it wrote
+// had chroma that meant something else to every other reader.
+//
+// Storing the ratios is correct and is worse conditioned, and that is a real
+// consequence rather than a regression. As Y approaches zero the ratios grow
+// without bound, so averaging the chroma of a 2x2 block whose luminance varies
+// reconstructs the darkest pixel of that block poorly. Measured on this
+// library, worst channel error against the minimum luminance in the image:
+//
+//	minimum Y 0.0217 -> 0.066     (R=G=0, B=0.3: chroma ratio near 13)
+//	minimum Y 0.2751 -> 0.0082
+//	minimum Y 0.5751 -> 0.0047
+//
+// So the bound is stated per fixture and the dark case is expected to be loose.
+// It is kept precisely because it is the case that exposes the conditioning.
 func TestYCRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test_yc_roundtrip.exr")
-
-	// Create test image
-	origImg := NewRGBAImage(image.Rect(0, 0, 64, 64))
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			r := float32(x) / 64.0
-			g := float32(y) / 64.0
-			b := float32(0.3)
-			origImg.SetRGBA(x, y, r, g, b, 1.0)
-		}
+	cases := []struct {
+		name  string
+		bound float32
+		pix   func(x, y int) (float32, float32, float32)
+	}{
+		{
+			// Well-conditioned content: nothing near black, so the ratios stay
+			// small and the only loss is the chroma subsampling itself.
+			name:  "well conditioned",
+			bound: 0.02,
+			pix: func(x, y int) (float32, float32, float32) {
+				return 0.2 + 0.6*float32(x)/64, 0.3 + 0.5*float32(y)/64,
+					0.25 + 0.4*float32(x+y)/128
+			},
+		},
+		{
+			// The pathological case: B constant while R and G fall to zero, so
+			// the darkest pixel has luminance 0.0217 and a chroma ratio near
+			// 13. This is the format's conditioning, not a defect, and the
+			// bound says so.
+			name:  "dark corner",
+			bound: 0.08,
+			pix: func(x, y int) (float32, float32, float32) {
+				return float32(x) / 64, float32(y) / 64, 0.3
+			},
+		},
 	}
 
-	// Write as YC
-	out, err := NewYCOutputFile(path, 64, 64, WriteYC)
-	if err != nil {
-		t.Fatalf("Failed to create output: %v", err)
-	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "yc.exr")
 
-	if err := out.WriteRGBA(origImg); err != nil {
-		t.Fatalf("Failed to write: %v", err)
-	}
-
-	// Read back using YCInputFile
-	input, err := OpenYCInputFile(path)
-	if err != nil {
-		t.Fatalf("Failed to open: %v", err)
-	}
-	defer input.Close()
-
-	if !input.IsYC() {
-		t.Error("Should detect YC image")
-	}
-
-	readImg, err := input.ReadRGBA()
-	if err != nil {
-		t.Fatalf("Failed to read: %v", err)
-	}
-
-	// Compare - allow some error due to chroma subsampling
-	maxError := float32(0.05) // 5% error tolerance due to subsampling
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			or, og, ob, _ := origImg.RGBA(x, y)
-			rr, rg, rb, _ := readImg.RGBA(x, y)
-
-			if absF32(or-rr) > maxError || absF32(og-rg) > maxError || absF32(ob-rb) > maxError {
-				t.Errorf("Pixel (%d,%d) mismatch: orig(%f,%f,%f) read(%f,%f,%f)",
-					x, y, or, og, ob, rr, rg, rb)
+			orig := NewRGBAImage(image.Rect(0, 0, 64, 64))
+			for y := 0; y < 64; y++ {
+				for x := 0; x < 64; x++ {
+					r, g, b := c.pix(x, y)
+					orig.SetRGBA(x, y, r, g, b, 1.0)
+				}
 			}
-		}
+
+			out, err := NewYCOutputFile(path, 64, 64, WriteYC)
+			if err != nil {
+				t.Fatalf("NewYCOutputFile: %v", err)
+			}
+			if err := out.WriteRGBA(orig); err != nil {
+				t.Fatalf("WriteRGBA: %v", err)
+			}
+
+			input, err := OpenYCInputFile(path)
+			if err != nil {
+				t.Fatalf("OpenYCInputFile: %v", err)
+			}
+			defer input.Close()
+			if !input.IsYC() {
+				t.Error("the file was not recognised as luminance/chroma")
+			}
+			readImg, err := input.ReadRGBA()
+			if err != nil {
+				t.Fatalf("ReadRGBA: %v", err)
+			}
+
+			var worst float32
+			var at string
+			for y := 0; y < 64; y++ {
+				for x := 0; x < 64; x++ {
+					or, og, ob, _ := orig.RGBA(x, y)
+					rr, rg, rb, _ := readImg.RGBA(x, y)
+					for _, d := range []struct {
+						n    string
+						a, b float32
+					}{{"R", or, rr}, {"G", og, rg}, {"B", ob, rb}} {
+						e := absF32(d.a - d.b)
+						if e > worst {
+							worst, at = e, fmt.Sprintf("%s at (%d,%d): %v vs %v", d.n, x, y, d.a, d.b)
+						}
+					}
+				}
+			}
+			if worst > c.bound {
+				t.Errorf("worst channel error %v exceeds %v (%s)", worst, c.bound, at)
+			}
+			t.Logf("worst channel error %v (%s)", worst, at)
+		})
 	}
 }
 
