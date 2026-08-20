@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.13] - 2026-08-19
+
+### Added
+- **`File.ReadRegionLevel`** — a viewport of a chosen resolution level.
+  `ReadRegion` is it at level (0, 0) and is unchanged.
+
+  This is the call an HD view of a 5K plate needs. Everything under it already
+  took a level; the one-call API was hardcoded to zero. Gated against libOpenEXR
+  at three mipmap levels, with a mutation that resolves every request at level 0
+  — the fixture's content differs per level by a constant, so a substituted
+  level is unmistakable rather than merely blurry.
+
+  Worth stating alongside it: the pyramid is the mechanism for lower-resolution
+  display, and the codestream's own resolution levels are not. A mipmap level is
+  computed by a real downsample filter when the file is written; a
+  reduced-resolution decode of a float chunk averages reinterpreted bit patterns
+  and is unusable for display wherever the image spans exponents or touches
+  zero.
+
+- `HTJ2KEncodeOptions.QualityLayers`, which **refuses**, and is present to say
+  so with the measurement attached.
+
+  Layers would be bitrate-scalable playback from the original frames. The
+  mechanism works — decoding a rate-allocated three-layer codestream of
+  half-float content, the first layer alone is 23.5% of the code-block data at
+  0.8% worst-case error, no pixel more than 10% off. Truncation perturbs each
+  coefficient by a bounded amount, and a float's bit pattern is roughly
+  logarithmic in its value, so a bounded error there is a bounded *relative*
+  error in the sample. That is the right behaviour for HDR and is emphatically
+  not the reduced-resolution case.
+
+  What stops it is the reference. libOpenEXR's HTJ2K support is OpenJPH, and
+  handing OpenJPH a four-layer chunk produces *"The current implementation
+  supports 1 quality layer only. This codestream has 4 quality layers"* — the
+  file is unreadable by anything else. Unlike a precinct partition, which the
+  reference reads exactly, that is not a trade worth offering, so it is refused
+  rather than written silently. See the roadmap for what would unblock it.
+
+### Gate
+- 250 checks, 0 failures, 0 skipped. Two new checks: an 8x8 rectangle of three
+  mipmap levels against libOpenEXR, and the multi-layer refusal beside a control
+  that a precinct request and a default request still work.
+- A 38th mutation, `region-level-ignored`.
+- The mutation harness rejected its own manifest partway through this work: the
+  precinct anchor had drifted when `apply` was edited, and it said so —
+  *"anchor text occurs 0 times, manifest says 1"* — instead of silently testing
+  nothing. That is the behaviour the anchor counts exist for, and it caught a
+  case where the CHANGELOG's own anchored edits had not.
+
 ## [1.4.12] - 2026-08-19
 
 ### Documentation

@@ -35,6 +35,33 @@ type HTJ2KEncodeOptions struct {
 	// bytes, and a region decode's code-block skip rises from 78.5% to 88.2%,
 	// for about 4.3% more file.
 	PrecinctSizeLog2 int
+
+	// QualityLayers is **refused**, and is here to say so with the measurement
+	// rather than leave the idea open.
+	//
+	// Writing a chunk in several quality layers would let a reader decode a
+	// prefix of them and get a lower-bitrate version of the same file — no
+	// proxy to generate, store or keep in sync. The mechanism works: decoding
+	// a rate-allocated three-layer codestream of half-float content, the first
+	// layer alone is 23.5% of the code-block data and its worst error is 0.8%
+	// of the true value, with no pixel more than 10% off. Truncation perturbs
+	// each coefficient by a bounded amount, and a float's bit pattern is
+	// roughly logarithmic in its value, so a bounded error there is a bounded
+	// *relative* error in the sample — the right behaviour for HDR, and not at
+	// all the reduced-resolution case, which averages bit patterns across
+	// discontinuities and fails badly.
+	//
+	// What stops it is the reference. libOpenEXR's HTJ2K support is OpenJPH,
+	// and OpenJPH refuses the file outright:
+	//
+	//	ojph error 0x00030053: The current implementation supports 1 quality
+	//	layer only. This codestream has 4 quality layers
+	//
+	// So a multi-layer chunk is not a trade like a precinct partition, which
+	// the reference reads exactly. It is a file nothing else can open, and
+	// this package will not write one silently. Setting it is an error until
+	// OpenJPH supports more than one layer.
+	QualityLayers int
 }
 
 // htj2kPrecinctMin is the smallest precinct this accepts. Below 32x32 the
@@ -43,7 +70,17 @@ type HTJ2KEncodeOptions struct {
 const htj2kPrecinctMin = 5
 
 func (o *HTJ2KEncodeOptions) validate() error {
-	if o == nil || o.PrecinctSizeLog2 == 0 {
+	if o == nil {
+		return nil
+	}
+	if o.QualityLayers != 0 {
+		return fmt.Errorf("htj2k: quality layers are not supported: libOpenEXR's HTJ2K "+
+			"support is OpenJPH, which refuses any codestream with more than one layer "+
+			"(\"The current implementation supports 1 quality layer only\"), so a "+
+			"%d-layer chunk would be unreadable by the reference implementation",
+			o.QualityLayers)
+	}
+	if o.PrecinctSizeLog2 == 0 {
 		return nil
 	}
 	if o.PrecinctSizeLog2 < htj2kPrecinctMin || o.PrecinctSizeLog2 > 15 {

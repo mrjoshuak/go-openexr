@@ -2099,6 +2099,77 @@ else
 		fi
 	fi
 
+	# ---- a rectangle of a mipmap level -----------------------------------
+	#
+	# This is the answer for HD playback of a 5K plate, and it is worth being
+	# explicit about why it rather than the codestream's own resolution levels.
+	# A mipmap level is computed by a real downsample filter when the file is
+	# written, so it is a proper image; a reduced-resolution decode of a float
+	# chunk averages reinterpreted bit patterns and is not. The pyramid is the
+	# mechanism, and this checks that a rectangle of one level comes back
+	# exactly.
+	#
+	# The fixture is the mipmapped HTJ2K file the tiled section already writes
+	# and the reference already reads level by level, so nothing new is being
+	# trusted here beyond the level argument itself.
+	MIPFIX="$TDIR/t_mip_half_htj2k256.exr"
+	if [ ! -f "$MIPFIX" ]; then
+		skip "mipmap level viewport: the mipmapped HTJ2K fixture was not written"
+	elif ! "$TILEDUMP" "$MIPFIX" >"$VPDIR/mip_truth.dump" 2>"$VPDIR/mip.err"; then
+		fail "mipmap level viewport: the reference would not read the fixture: $(head -1 "$VPDIR/mip.err")"
+	else
+		mip_fail=0
+		mip_ran=0
+		for lv in 0 1 2; do
+			if ! "$VIEWPORT" -level "$lv" "$MIPFIX" 0 0 7 7 >"$VPDIR/mip_vp$lv.dump" 2>"$VPDIR/mip_vp.err"; then
+				fail "mipmap level viewport, level $lv: $(head -1 "$VPDIR/mip_vp.err")"
+				mip_fail=1
+				continue
+			fi
+			awk -v lv="$lv" '''!/^#/ && $1==lv && $2==lv && $3<=7 && $4<=7''' \
+				"$VPDIR/mip_truth.dump" >"$VPDIR/mip_exp$lv"
+			awk '''!/^#/''' "$VPDIR/mip_vp$lv.dump" >"$VPDIR/mip_got$lv"
+			if [ ! -s "$VPDIR/mip_exp$lv" ]; then
+				fail "mipmap level viewport, level $lv: the expectation is empty"
+				mip_fail=1
+				continue
+			fi
+			mip_ran=$((mip_ran + 1))
+			tilecmp "$VPDIR/mip_exp$lv" "$VPDIR/mip_got$lv"
+			if [ "$CMP_MISSING" != 0 ] || [ "$CMP_EXTRA" != 0 ] || [ "$CMP_MAXERR" != "0" ]; then
+				fail "mipmap level viewport, level $lv: missing=$CMP_MISSING extra=$CMP_EXTRA maxerr=$CMP_MAXERR at=$CMP_AT"
+				mip_fail=1
+			fi
+		done
+		if [ "$mip_ran" -eq 0 ]; then
+			fail "mipmap level viewport: nothing was compared"
+		elif [ "$mip_fail" -eq 0 ]; then
+			pass "mipmap level viewport: an 8x8 rectangle of $mip_ran mipmap levels matches the reference exactly, each read from that level's own chunks"
+		fi
+	fi
+
+	# ---- what the encoder will not write --------------------------------
+	#
+	# Quality layers would be the mechanism for playing a 5K plate at a lower
+	# bitrate straight from the original file, and the mechanism works: on
+	# half-float content, the first of three rate-allocated layers is 23.5% of
+	# the code-block data at 0.8% worst-case error. What stops it is that
+	# libOpenEXR's HTJ2K support is OpenJPH, which refuses any codestream with
+	# more than one layer — measured, by writing one and handing it to the
+	# reference:
+	#
+	#   ojph error 0x00030053: The current implementation supports 1 quality
+	#   layer only. This codestream has 4 quality layers
+	#
+	# So the option refuses rather than producing a file nothing else opens.
+	# The refusal is checked here beside a control, because a validator that
+	# rejects everything would satisfy half of it.
+	if out=$(go test ./compression/ -run "TestHTJ2KQualityLayersAreRefused" -v 2>&1); then
+		pass "encoder deviations: a multi-layer chunk is refused, with the reference's own error as the reason, and precinct and default requests still work"
+	else
+		fail "encoder deviations: $(printf '%s\n' "$out" | grep -E "htj2k_precinct_test" | head -1 | cut -c1-110)"
+	fi
+
 	# ---- a rectangle of a scanline part, on a file the reference wrote ----
 	#
 	# Scanline is the format's default storage and most EXRs in the world use

@@ -64,6 +64,25 @@ code-blocks the rectangle can reach.
 Nothing open. Every item that stood here is struck through below, with what it
 measured. The work that remains is under Later.
 
+### ~~A viewport of a mipmap level, in one call~~ — done, and it is the answer for HD from 5K
+
+`File.ReadRegionLevel` reads a rectangle of a chosen resolution level.
+`ReadRegion` is it at level (0, 0) and is unchanged.
+
+Everything underneath already took a level — `ChunksForRegion` has the
+parameter, `TiledReader.ReadTileLevel` is gated at every level of mipmaps and
+ripmaps — and the one-call viewport API was hardcoded to zero. That gap mattered
+more than its size, because the pyramid is the mechanism for showing a 5K plate
+at HD and the codestream's own resolution levels are not: a mipmap level is
+computed by a real downsample filter at write time, while a reduced-resolution
+decode of a float chunk averages reinterpreted bit patterns and is unusable for
+display wherever the image spans exponents or touches zero.
+
+Gated against libOpenEXR on the mipmapped HTJ2K fixture the tiled section
+already writes, at three levels, with a mutation that resolves every request at
+level 0 — the per-level fixture content differs by a constant, so a substituted
+level is unmistakable rather than merely blurry.
+
 ### ~~A precinct partition, as an opt-in~~ — done, with the deviation named
 
 `HTJ2KEncodeOptions.PrecinctSizeLog2`, reachable from either writer through
@@ -443,6 +462,42 @@ now refuses a chunk with no channels rather than producing one.
 
 
 ## Later
+
+### Quality layers, blocked below the format
+
+Writing a chunk in several quality layers would let a reader decode a prefix of
+them and get a lower-bitrate version of the same file: bitrate-scalable playback
+from the original frames, with no proxy to generate, store or keep in sync. It
+is the mechanism JPEG 2000 has for exactly this.
+
+The mechanism works. Decoding a rate-allocated three-layer codestream of
+half-float content, the first layer alone is 23.5% of the code-block data and
+its worst error is 0.8% of the true value, with no pixel more than 10% off.
+Truncation perturbs each coefficient by a bounded amount, and a float's bit
+pattern is roughly logarithmic in its value, so a bounded error there is a
+bounded *relative* error in the sample — the right behaviour for HDR, and not
+the reduced-resolution case, which averages bit patterns across discontinuities
+and fails badly. That distinction was measured rather than assumed, after the
+opposite assumption had already cost this project a working capability.
+
+Two things block it, and the second is not ours to fix.
+
+This encoder writes the layers but does not rate-allocate between them:
+everything lands in the first, so a truncated read returns the whole image and
+saves nothing. That is real work — rate-distortion optimisation over the
+code-block contributions — and it is the smaller problem.
+
+The larger one is that libOpenEXR cannot read a multi-layer chunk at all. Its
+HTJ2K support is OpenJPH, which refuses the file outright: *"The current
+implementation supports 1 quality layer only. This codestream has 4 quality
+layers"*. So even a perfect encoder would produce files nothing else opens,
+which is not a trade like the precinct partition — that one the reference reads
+exactly. `HTJ2KEncodeOptions.QualityLayers` therefore refuses, with the
+reference's own error as the reason.
+
+Done when OpenJPH reads more than one layer, and then when this encoder
+allocates between them and the saving is measured on real plate content rather
+than on the synthetic ramp above.
 
 ### Lossy codec tolerances derived rather than measured
 

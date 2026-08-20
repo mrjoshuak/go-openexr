@@ -9,16 +9,16 @@
 // prints every sample of the same file using libOpenEXR, so the two dumps
 // compare directly with scripts/tilecmp.awk.
 //
-//	exrviewport [-part N] <file.exr> <x0> <y0> <x1> <y1>
+//	exrviewport [-part N] [-level N] <file.exr> <x0> <y0> <x1> <y1>
 //
 // The rectangle is inclusive, in the image's own coordinates. Output is one
 // line per sample:
 //
-//	0 0 <x> <y> <channel> <value>
+//	<lx> <ly> <x> <y> <channel> <value>
 //
 // with x and y relative to the data window's origin, which is what exrtiledump
-// prints. The leading "0 0" is the level, which is always the full-resolution
-// one here: this reads the file's own pixels, not a pyramid. Lines beginning
+// prints. The leading pair is the level, so a mipmapped part's levels compare
+// against exrtiledump's dump of the same file by key. Lines beginning
 // with '#' report what the read cost.
 package main
 
@@ -34,9 +34,10 @@ import (
 
 func main() {
 	part := flag.Int("part", 0, "part index")
+	level := flag.Int("level", 0, "resolution level of a mipmapped or ripmapped part")
 	flag.Parse()
 	if flag.NArg() != 5 {
-		fmt.Fprintln(os.Stderr, "usage: exrviewport [-part N] <file.exr> <x0> <y0> <x1> <y1>")
+		fmt.Fprintln(os.Stderr, "usage: exrviewport [-part N] [-level N] <file.exr> <x0> <y0> <x1> <y1>")
 		os.Exit(2)
 	}
 
@@ -67,7 +68,7 @@ func main() {
 		Min: exr.V2i{X: coords[0], Y: coords[1]},
 		Max: exr.V2i{X: coords[2], Y: coords[3]},
 	}
-	got, err := f.ReadRegion(*part, region)
+	got, err := f.ReadRegionLevel(*part, region, *level, *level)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ReadRegion:", err)
 		os.Exit(1)
@@ -78,6 +79,7 @@ func main() {
 	w := bufio.NewWriter(os.Stdout)
 	defer w.Flush()
 
+	fmt.Fprintf(w, "# level %d\n", *level)
 	fmt.Fprintf(w, "# region %d %d %d %d\n",
 		got.Region.Min.X, got.Region.Min.Y, got.Region.Max.X, got.Region.Max.Y)
 	fmt.Fprintf(w, "# chunks %d %d\n", got.ChunksRead, got.ChunksTotal)
@@ -92,8 +94,8 @@ func main() {
 				v := plane[(y-int(got.Region.Min.Y))*rw+(x-int(got.Region.Min.X))]
 				// exrtiledump prints coordinates relative to the level's data
 				// window; match it so the two dumps share a key space.
-				fmt.Fprintf(w, "0 0 %d %d %s %.9g\n",
-					x-int(dw.Min.X), y-int(dw.Min.Y), name, v)
+				fmt.Fprintf(w, "%d %d %d %d %s %.9g\n",
+					*level, *level, x-int(dw.Min.X), y-int(dw.Min.Y), name, v)
 			}
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"image"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -207,5 +208,44 @@ func TestHTJ2KPrecinctRequestIsValidated(t *testing.T) {
 	if _, err := HTJ2KCompressOptions(src, h, channels, 128,
 		&HTJ2KEncodeOptions{PrecinctSizeLog2: 5}); err != nil {
 		t.Errorf("precinct size 2^5 was refused: %v", err)
+	}
+}
+
+// TestHTJ2KQualityLayersAreRefused pins a refusal that is backed by a
+// measurement rather than a guess, which is the only kind worth having here.
+//
+// Layers would be the mechanism for playing a 5K plate at a lower bitrate
+// straight from the original file. Decoding a rate-allocated three-layer
+// codestream of half-float content, the first layer alone is 23.5% of the
+// code-block data at 0.8% worst-case error — so the idea is sound. What stops
+// it is that libOpenEXR's HTJ2K support is OpenJPH, and OpenJPH refuses any
+// codestream with more than one layer outright: writing one would produce a
+// file the reference implementation cannot open at all.
+//
+// If that limitation lifts, this test is what will need changing, and the
+// refusal message says where to look.
+func TestHTJ2KQualityLayersAreRefused(t *testing.T) {
+	const w, h = 64, 64
+	channels := []HTJ2KChannelInfo{
+		{Type: HTJ2KPixelTypeFloat, Width: w, Height: h, XSampling: 1, YSampling: 1, Name: "Y"},
+	}
+	src := make([]byte, w*h*4)
+
+	_, err := HTJ2KCompressOptions(src, h, channels, 128, &HTJ2KEncodeOptions{QualityLayers: 4})
+	if err == nil {
+		t.Fatal("a four-layer chunk was written; the reference cannot read one")
+	}
+	if !strings.Contains(err.Error(), "quality layer") {
+		t.Errorf("the refusal does not name the cause: %v", err)
+	}
+
+	// The control: everything else must still work, or this is satisfied by a
+	// validator that rejects any options at all.
+	if _, err := HTJ2KCompressOptions(src, h, channels, 128,
+		&HTJ2KEncodeOptions{PrecinctSizeLog2: 5}); err != nil {
+		t.Errorf("a precinct request was refused alongside it: %v", err)
+	}
+	if _, err := HTJ2KCompressOptions(src, h, channels, 128, &HTJ2KEncodeOptions{}); err != nil {
+		t.Errorf("a zero options struct was refused: %v", err)
 	}
 }

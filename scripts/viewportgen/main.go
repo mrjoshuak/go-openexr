@@ -127,6 +127,14 @@ func main() {
 // reference can still read it is not something to assume — it is the whole
 // question, and it is a measurement.
 func writePrecinct(dir string) {
+	writeVariant(dir, "vp_htj2k_prec.exr",
+		&compression.HTJ2KEncodeOptions{PrecinctSizeLog2: 5}, "32x32 precincts")
+}
+
+// writeVariant writes the single-channel geometry with a given set of encoder
+// options, so each deviation the library offers has a fixture the reference can
+// be asked about.
+func writeVariant(dir, name string, enc *compression.HTJ2KEncodeOptions, note string) {
 	h := exr.NewTiledHeader(imgW, imgH, tileSize, tileSize)
 	h.SetDataWindow(exr.Box2i{
 		Min: exr.V2i{X: offX, Y: offY},
@@ -146,7 +154,7 @@ func writePrecinct(dir string) {
 		}
 	}
 
-	path := filepath.Join(dir, "vp_htj2k_prec.exr")
+	path := filepath.Join(dir, name)
 	f, err := os.Create(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -158,7 +166,7 @@ func writePrecinct(dir string) {
 		fmt.Fprintln(os.Stderr, "NewTiledWriter:", err)
 		os.Exit(1)
 	}
-	w.SetHTJ2KEncodeOptions(&compression.HTJ2KEncodeOptions{PrecinctSizeLog2: 5})
+	w.SetHTJ2KEncodeOptions(enc)
 	w.SetFrameBuffer(fb)
 	n := (imgW + tileSize - 1) / tileSize
 	m := (imgH + tileSize - 1) / tileSize
@@ -174,7 +182,7 @@ func writePrecinct(dir string) {
 		fmt.Fprintln(os.Stderr, "Close:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("wrote %s: one channel, 32x32 precincts\n", path)
+	fmt.Printf("wrote %s: one channel, %s\n", path, note)
 }
 
 // writeSingleChannel writes the same geometry with one channel, so a chunk's

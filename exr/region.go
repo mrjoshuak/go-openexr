@@ -59,19 +59,61 @@ type RegionSamples struct {
 // A scanline part cannot be addressed below a band of rows at the chunk level,
 // though, so the chunk-level saving is smaller than a tiled part's.
 func (f *File) ReadRegion(part int, region Box2i) (*RegionSamples, error) {
+	return f.ReadRegionLevel(part, region, 0, 0)
+}
+
+// ReadRegionLevel reads a rectangle of one resolution level of a tiled part.
+//
+// This is what serves HD playback from a 5K plate, and it is worth being clear
+// about why it rather than HTJ2K's own resolution levels. A mipmap level is
+// computed by a real downsample filter when the file is written, so level 1 of
+// a 5120x2700 frame is a proper 2560x1350 image. A reduced-resolution decode of
+// the codestream is not: an EXR chunk carries float samples as reinterpreted
+// bit patterns, so the wavelet averages bit patterns and the result is unusable
+// for display wherever the image spans exponents or touches zero. The pyramid
+// costs about a third more storage and is the answer; see
+// HTJ2KDecodeOptions.ReduceResolution for what the other mechanism is good for.
+//
+// The rectangle is in the level's own coordinates, which share the data
+// window's origin and run to the level's width and height. Level (0, 0) is the
+// full-resolution image and is what ReadRegion asks for.
+//
+// A part with only one level accepts (0, 0) and nothing else. A ripmapped part
+// takes the two indices independently; a mipmapped one requires them equal, as
+// the format does.
+func (f *File) ReadRegionLevel(part int, region Box2i, levelX, levelY int) (*RegionSamples, error) {
 	h := f.Header(part)
 	if h == nil {
 		return nil, errors.New("exr: invalid part index")
 	}
 	if !f.partIsTiled(part) {
+		if levelX != 0 || levelY != 0 {
+			return nil, fmt.Errorf("exr: a scanline part has only level (0,0); asked for (%d,%d)",
+				levelX, levelY)
+		}
 		return f.readScanlineRegion(part, h, region)
 	}
 	td := h.TileDescription()
 	if td == nil || td.XSize == 0 || td.YSize == 0 {
 		return nil, errors.New("exr: tiled part has no usable tile description")
 	}
+	if levelX < 0 || levelX >= h.NumXLevels() || levelY < 0 || levelY >= h.NumYLevels() {
+		return nil, fmt.Errorf("exr: level (%d,%d) is outside the part's %dx%d levels",
+			levelX, levelY, h.NumXLevels(), h.NumYLevels())
+	}
+	if td.Mode == LevelModeMipmap && levelX != levelY {
+		return nil, fmt.Errorf("exr: a mipmapped part has one level index; asked for (%d,%d)",
+			levelX, levelY)
+	}
 
-	dw := h.DataWindow()
+	// The level's own window: same origin as the data window, its own extent.
+	dw := Box2i{
+		Min: h.DataWindow().Min,
+		Max: V2i{
+			X: h.DataWindow().Min.X + int32(h.LevelWidth(levelX)) - 1,
+			Y: h.DataWindow().Min.Y + int32(h.LevelHeight(levelY)) - 1,
+		},
+	}
 	clipped := Box2i{
 		Min: V2i{X: maxi32(region.Min.X, dw.Min.X), Y: maxi32(region.Min.Y, dw.Min.Y)},
 		Max: V2i{X: mini32(region.Max.X, dw.Max.X), Y: mini32(region.Max.Y, dw.Max.Y)},
@@ -105,7 +147,7 @@ func (f *File) ReadRegion(part int, region Box2i) (*RegionSamples, error) {
 
 	// ChunksForRegion takes a half-open rectangle; a Box2i is inclusive.
 	chunks, err := f.ChunksForRegion(part, clipped.Min.X, clipped.Min.Y,
-		clipped.Max.X+1, clipped.Max.Y+1, 0, 0)
+		clipped.Max.X+1, clipped.Max.Y+1, levelX, levelY)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +166,9 @@ func (f *File) ReadRegion(part int, region Box2i) (*RegionSamples, error) {
 		}
 	}
 	tw, th := int(td.XSize), int(td.YSize)
+	// The level's extent, not the image's: an edge tile of level 2 is short
+	// against level 2's width, and a codec told the full-resolution one reads
+	// past its input.
 	dwW := int(dw.Max.X-dw.Min.X) + 1
 	dwH := int(dw.Max.Y-dw.Min.Y) + 1
 

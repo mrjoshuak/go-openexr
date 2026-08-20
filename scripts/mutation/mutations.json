@@ -1394,6 +1394,37 @@
         "added": "killed",
         "existing": "survived"
       }
+    },
+    {
+      "id": "region-level-ignored",
+      "codec": "core",
+      "description": "ReadRegionLevel resolves the rectangle at level 0 whatever level was asked for",
+      "spec": "OpenEXR 3.x tiled images: a multi-resolution part stores each level as its own set of chunks, and a chunk's level indices are part of its header. Reading level 1 must fetch level 1's chunks. This is the mechanism an HD view of a 5K plate uses — the codestream's own resolution levels are the wrong one for float data, since they average reinterpreted bit patterns — so a level argument that is quietly dropped returns full-resolution pixels for a request that asked for a quarter of them. The per-level fixture content differs by a constant, so the substitution is unmistakable rather than merely blurry.",
+      "symmetric": false,
+      "edits": [
+        {
+          "file": "exr/region.go",
+          "count": 1,
+          "old": "\t\tclipped.Max.X+1, clipped.Max.Y+1, levelX, levelY)",
+          "new": "\t\tclipped.Max.X+1, clipped.Max.Y+1, 0, 0)"
+        }
+      ],
+      "existing_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionDefaultsToLevelZero"
+        }
+      ],
+      "added_tests": [
+        {
+          "pkg": "./exr/",
+          "run": "TestReadRegionLevelServesAMipmapLevel"
+        }
+      ],
+      "expect": {
+        "added": "killed",
+        "existing": "survived"
+      }
     }
   ]
 }
