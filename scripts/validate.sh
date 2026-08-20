@@ -241,7 +241,11 @@ else
 	if GOARCH=$OTHER_ARCH go test ./... >"$WORK/cross.log" 2>&1; then
 		pass "go test ./... under GOARCH=$OTHER_ARCH ($(grep -c '^ok' "$WORK/cross.log") packages)"
 	elif grep -qiE "exec format error|cannot execute|bad CPU type" "$WORK/cross.log"; then
-		skip "GOARCH=$OTHER_ARCH: this host cannot run those binaries; CI covers it"
+		# Not a missing oracle but a physical limit of the host, so it is
+		# recorded rather than counted: no machine can execute both
+		# architectures, and the gate runs on both in CI precisely because of
+		# that. The cross-architecture build and vet above still run here.
+		note "GOARCH=$OTHER_ARCH: this host cannot execute those binaries; the gate's $OTHER_ARCH job runs them"
 	else
 		fail "go test ./... under GOARCH=$OTHER_ARCH"
 		grep -E '^(---|FAIL|\s+---)' "$WORK/cross.log" | head -20

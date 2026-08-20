@@ -100,8 +100,23 @@ jobs:
           go build ./cmd/exr2aces
 
   gate:
-    name: Conformance gate and mutation harness
-    runs-on: ubuntu-latest
+    name: Conformance gate (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Both architectures, because this package carries per-architecture
+          # assembly and a defect can live in one build and not the other — an
+          # SSE2 pack routine computing in 16-bit lanes what the reference
+          # computes in int produced non-conforming output on amd64 only. A
+          # host can cross-compile and cross-vet the other architecture but
+          # cannot execute it, so the only way to run both suites is to run the
+          # gate on both.
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
